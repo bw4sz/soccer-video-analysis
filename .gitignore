@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+*.pt
+*.pth
+runs/
+*.mp4
+!tests/fixtures/clip_10s_*.mp4
+*.avi
+*.mov
+.ruff_cache/
+.pytest_cache/

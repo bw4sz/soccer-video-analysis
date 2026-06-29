@@ -1,0 +1,10 @@
+broadcast:
+  output_resolution: [1920, 1080]
+  smooth_window_s: 0.4
+  min_zoom: 1.0
+  max_zoom: 2.5
+  detect_fps: 5
+
+clips:
+  pre_s: 5.0
+  post_s: 15.0

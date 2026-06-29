@@ -1,0 +1,551 @@
+[
+  {
+    "frame": 0,
+    "timestamp_s": 0.0,
+    "balls": 0,
+    "players": 32,
+    "referees": 3,
+    "total": 35,
+    "inference_ms": 848.7
+  },
+  {
+    "frame": 59,
+    "timestamp_s": 1.97,
+    "balls": 1,
+    "players": 30,
+    "referees": 5,
+    "total": 36,
+    "inference_ms": 145.0
+  },
+  {
+    "frame": 118,
+    "timestamp_s": 3.94,
+    "balls": 2,
+    "players": 45,
+    "referees": 3,
+    "total": 50,
+    "inference_ms": 142.1
+  },
+  {
+    "frame": 177,
+    "timestamp_s": 5.91,
+    "balls": 2,
+    "players": 37,
+    "referees": 3,
+    "total": 42,
+    "inference_ms": 148.8
+  },
+  {
+    "frame": 236,
+    "timestamp_s": 7.87,
+    "balls": 2,
+    "players": 42,
+    "referees": 4,
+    "total": 48,
+    "inference_ms": 139.3
+  },
+  {
+    "frame": 295,
+    "timestamp_s": 9.84,
+    "balls": 0,
+    "players": 50,
+    "referees": 3,
+    "total": 53,
+    "inference_ms": 135.9
+  },
+  {
+    "frame": 354,
+    "timestamp_s": 11.81,
+    "balls": 1,
+    "players": 43,
+    "referees": 3,
+    "total": 47,
+    "inference_ms": 136.8
+  },
+  {
+    "frame": 413,
+    "timestamp_s": 13.78,
+    "balls": 1,
+    "players": 49,
+    "referees": 4,
+    "total": 54,
+    "inference_ms": 139.4
+  },
+  {
+    "frame": 472,
+    "timestamp_s": 15.75,
+    "balls": 1,
+    "players": 50,
+    "referees": 5,
+    "total": 56,
+    "inference_ms": 137.7
+  },
+  {
+    "frame": 531,
+    "timestamp_s": 17.72,
+    "balls": 1,
+    "players": 46,
+    "referees": 4,
+    "total": 51,
+    "inference_ms": 135.8
+  },
+  {
+    "frame": 590,
+    "timestamp_s": 19.69,
+    "balls": 1,
+    "players": 52,
+    "referees": 2,
+    "total": 55,
+    "inference_ms": 137.4
+  },
+  {
+    "frame": 649,
+    "timestamp_s": 21.65,
+    "balls": 0,
+    "players": 42,
+    "referees": 4,
+    "total": 46,
+    "inference_ms": 142.2
+  },
+  {
+    "frame": 708,
+    "timestamp_s": 23.62,
+    "balls": 2,
+    "players": 58,
+    "referees": 7,
+    "total": 67,
+    "inference_ms": 136.7
+  },
+  {
+    "frame": 767,
+    "timestamp_s": 25.59,
+    "balls": 0,
+    "players": 50,
+    "referees": 3,
+    "total": 53,
+    "inference_ms": 139.4
+  },
+  {
+    "frame": 826,
+    "timestamp_s": 27.56,
+    "balls": 0,
+    "players": 52,
+    "referees": 4,
+    "total": 56,
+    "inference_ms": 146.4
+  },
+  {
+    "frame": 885,
+    "timestamp_s": 29.53,
+    "balls": 1,
+    "players": 52,
+    "referees": 3,
+    "total": 56,
+    "inference_ms": 137.8
+  },
+  {
+    "frame": 944,
+    "timestamp_s": 31.5,
+    "balls": 1,
+    "players": 50,
+    "referees": 4,
+    "total": 55,
+    "inference_ms": 136.6
+  },
+  {
+    "frame": 1003,
+    "timestamp_s": 33.47,
+    "balls": 2,
+    "players": 43,
+    "referees": 6,
+    "total": 51,
+    "inference_ms": 137.3
+  },
+  {
+    "frame": 1062,
+    "timestamp_s": 35.44,
+    "balls": 0,
+    "players": 34,
+    "referees": 7,
+    "total": 41,
+    "inference_ms": 139.0
+  },
+  {
+    "frame": 1121,
+    "timestamp_s": 37.4,
+    "balls": 1,
+    "players": 41,
+    "referees": 3,
+    "total": 45,
+    "inference_ms": 136.8
+  },
+  {
+    "frame": 1180,
+    "timestamp_s": 39.37,
+    "balls": 2,
+    "players": 43,
+    "referees": 1,
+    "total": 46,
+    "inference_ms": 140.3
+  },
+  {
+    "frame": 1239,
+    "timestamp_s": 41.34,
+    "balls": 0,
+    "players": 47,
+    "referees": 4,
+    "total": 51,
+    "inference_ms": 138.0
+  },
+  {
+    "frame": 1298,
+    "timestamp_s": 43.31,
+    "balls": 1,
+    "players": 53,
+    "referees": 3,
+    "total": 57,
+    "inference_ms": 137.0
+  },
+  {
+    "frame": 1357,
+    "timestamp_s": 45.28,
+    "balls": 0,
+    "players": 51,
+    "referees": 4,
+    "total": 55,
+    "inference_ms": 139.9
+  },
+  {
+    "frame": 1416,
+    "timestamp_s": 47.25,
+    "balls": 0,
+    "players": 47,
+    "referees": 4,
+    "total": 51,
+    "inference_ms": 147.8
+  },
+  {
+    "frame": 1475,
+    "timestamp_s": 49.22,
+    "balls": 0,
+    "players": 54,
+    "referees": 4,
+    "total": 58,
+    "inference_ms": 145.8
+  },
+  {
+    "frame": 1534,
+    "timestamp_s": 51.18,
+    "balls": 1,
+    "players": 43,
+    "referees": 3,
+    "total": 47,
+    "inference_ms": 146.7
+  },
+  {
+    "frame": 1593,
+    "timestamp_s": 53.15,
+    "balls": 2,
+    "players": 45,
+    "referees": 3,
+    "total": 50,
+    "inference_ms": 136.9
+  },
+  {
+    "frame": 1652,
+    "timestamp_s": 55.12,
+    "balls": 0,
+    "players": 41,
+    "referees": 5,
+    "total": 46,
+    "inference_ms": 145.9
+  },
+  {
+    "frame": 1711,
+    "timestamp_s": 57.09,
+    "balls": 1,
+    "players": 50,
+    "referees": 3,
+    "total": 54,
+    "inference_ms": 139.8
+  },
+  {
+    "frame": 1770,
+    "timestamp_s": 59.06,
+    "balls": 1,
+    "players": 52,
+    "referees": 4,
+    "total": 57,
+    "inference_ms": 138.6
+  },
+  {
+    "frame": 1829,
+    "timestamp_s": 61.03,
+    "balls": 2,
+    "players": 51,
+    "referees": 3,
+    "total": 56,
+    "inference_ms": 175.8
+  },
+  {
+    "frame": 1888,
+    "timestamp_s": 63.0,
+    "balls": 1,
+    "players": 53,
+    "referees": 3,
+    "total": 57,
+    "inference_ms": 140.8
+  },
+  {
+    "frame": 1947,
+    "timestamp_s": 64.96,
+    "balls": 1,
+    "players": 47,
+    "referees": 3,
+    "total": 51,
+    "inference_ms": 144.5
+  },
+  {
+    "frame": 2006,
+    "timestamp_s": 66.93,
+    "balls": 2,
+    "players": 48,
+    "referees": 4,
+    "total": 54,
+    "inference_ms": 145.2
+  },
+  {
+    "frame": 2065,
+    "timestamp_s": 68.9,
+    "balls": 1,
+    "players": 50,
+    "referees": 5,
+    "total": 56,
+    "inference_ms": 137.8
+  },
+  {
+    "frame": 2124,
+    "timestamp_s": 70.87,
+    "balls": 1,
+    "players": 50,
+    "referees": 3,
+    "total": 54,
+    "inference_ms": 149.5
+  },
+  {
+    "frame": 2183,
+    "timestamp_s": 72.84,
+    "balls": 0,
+    "players": 54,
+    "referees": 1,
+    "total": 55,
+    "inference_ms": 137.8
+  },
+  {
+    "frame": 2242,
+    "timestamp_s": 74.81,
+    "balls": 0,
+    "players": 54,
+    "referees": 1,
+    "total": 55,
+    "inference_ms": 140.4
+  },
+  {
+    "frame": 2301,
+    "timestamp_s": 76.78,
+    "balls": 1,
+    "players": 43,
+    "referees": 2,
+    "total": 46,
+    "inference_ms": 136.1
+  },
+  {
+    "frame": 2360,
+    "timestamp_s": 78.75,
+    "balls": 0,
+    "players": 37,
+    "referees": 2,
+    "total": 39,
+    "inference_ms": 137.3
+  },
+  {
+    "frame": 2419,
+    "timestamp_s": 80.71,
+    "balls": 1,
+    "players": 41,
+    "referees": 1,
+    "total": 43,
+    "inference_ms": 137.8
+  },
+  {
+    "frame": 2478,
+    "timestamp_s": 82.68,
+    "balls": 2,
+    "players": 49,
+    "referees": 4,
+    "total": 55,
+    "inference_ms": 138.0
+  },
+  {
+    "frame": 2537,
+    "timestamp_s": 84.65,
+    "balls": 0,
+    "players": 49,
+    "referees": 3,
+    "total": 52,
+    "inference_ms": 135.4
+  },
+  {
+    "frame": 2596,
+    "timestamp_s": 86.62,
+    "balls": 1,
+    "players": 46,
+    "referees": 6,
+    "total": 53,
+    "inference_ms": 137.3
+  },
+  {
+    "frame": 2655,
+    "timestamp_s": 88.59,
+    "balls": 3,
+    "players": 41,
+    "referees": 2,
+    "total": 46,
+    "inference_ms": 136.5
+  },
+  {
+    "frame": 2714,
+    "timestamp_s": 90.56,
+    "balls": 2,
+    "players": 45,
+    "referees": 4,
+    "total": 51,
+    "inference_ms": 136.3
+  },
+  {
+    "frame": 2773,
+    "timestamp_s": 92.53,
+    "balls": 1,
+    "players": 50,
+    "referees": 3,
+    "total": 54,
+    "inference_ms": 143.2
+  },
+  {
+    "frame": 2832,
+    "timestamp_s": 94.49,
+    "balls": 2,
+    "players": 47,
+    "referees": 2,
+    "total": 51,
+    "inference_ms": 140.3
+  },
+  {
+    "frame": 2891,
+    "timestamp_s": 96.46,
+    "balls": 2,
+    "players": 46,
+    "referees": 2,
+    "total": 50,
+    "inference_ms": 138.5
+  },
+  {
+    "frame": 2950,
+    "timestamp_s": 98.43,
+    "balls": 0,
+    "players": 46,
+    "referees": 2,
+    "total": 48,
+    "inference_ms": 137.8
+  },
+  {
+    "frame": 3009,
+    "timestamp_s": 100.4,
+    "balls": 2,
+    "players": 43,
+    "referees": 2,
+    "total": 47,
+    "inference_ms": 138.0
+  },
+  {
+    "frame": 3068,
+    "timestamp_s": 102.37,
+    "balls": 1,
+    "players": 56,
+    "referees": 1,
+    "total": 58,
+    "inference_ms": 136.5
+  },
+  {
+    "frame": 3127,
+    "timestamp_s": 104.34,
+    "balls": 1,
+    "players": 50,
+    "referees": 1,
+    "total": 52,
+    "inference_ms": 138.5
+  },
+  {
+    "frame": 3186,
+    "timestamp_s": 106.31,
+    "balls": 0,
+    "players": 47,
+    "referees": 3,
+    "total": 50,
+    "inference_ms": 140.1
+  },
+  {
+    "frame": 3245,
+    "timestamp_s": 108.27,
+    "balls": 1,
+    "players": 50,
+    "referees": 2,
+    "total": 53,
+    "inference_ms": 138.3
+  },
+  {
+    "frame": 3304,
+    "timestamp_s": 110.24,
+    "balls": 2,
+    "players": 49,
+    "referees": 4,
+    "total": 55,
+    "inference_ms": 137.9
+  },
+  {
+    "frame": 3363,
+    "timestamp_s": 112.21,
+    "balls": 0,
+    "players": 49,
+    "referees": 3,
+    "total": 52,
+    "inference_ms": 136.5
+  },
+  {
+    "frame": 3422,
+    "timestamp_s": 114.18,
+    "balls": 2,
+    "players": 43,
+    "referees": 4,
+    "total": 49,
+    "inference_ms": 137.5
+  },
+  {
+    "frame": 3481,
+    "timestamp_s": 116.15,
+    "balls": 1,
+    "players": 46,
+    "referees": 2,
+    "total": 49,
+    "inference_ms": 142.0
+  },
+  {
+    "frame": 3540,
+    "timestamp_s": 118.12,
+    "balls": 1,
+    "players": 51,
+    "referees": 3,
+    "total": 55,
+    "inference_ms": 138.5
+  }
+]

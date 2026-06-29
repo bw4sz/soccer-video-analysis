@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "soccer-vision"
+version = "0.1.0"
+description = "Open-source soccer video analysis toolkit"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.12"
+dependencies = [
+  "opencv-python>=4.8",
+  "numpy>=1.24",
+  "rfdetr>=1.8",
+  "torch>=2.2",
+  "torchvision>=0.17",
+  "supervision>=0.25",
+  "pyyaml>=6.0",
+  "sqlalchemy>=2.0",
+  "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+gpu = ["inference[gpu]"]
+gui = ["pyside6>=6.6", "supervision[desktop]"]
+broadcast = ["tracklab"]
+train = ["lightning"]
+dev = ["pytest", "ruff", "sphinx"]
+
+[project.scripts]
+soccer-vision = "soccer_vision.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/soccer_vision"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 99
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

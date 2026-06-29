@@ -1,0 +1,18 @@
+team_name: "Saints U10 Azul"
+season: "2026-spring"
+profile_id: "saints-u10"
+
+roster:
+  - name: Noah
+    jersey: 7
+    role: holding_mid
+    idp_focus: "stay high for back diamond"
+  - name: Bryce
+    jersey: 9
+    role: striker
+    idp_focus: "lateral movement for top diamond"
+
+idp_source: "file:///Users/benweinstein/Dropbox/Saints/idps/"
+
+claude:
+  enabled: true
