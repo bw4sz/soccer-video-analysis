@@ -42,6 +42,17 @@ def main():
     p_reel.add_argument("--player", help="Filter by player name")
     p_reel.add_argument("--out", default="highlight_reel.mp4")
 
+    # verify
+    p_verify = subparsers.add_parser("verify", help="Verify events with Claude")
+    p_verify.add_argument("--run", required=True, help="Run directory path")
+    p_verify.add_argument("--profile", help="Project profile YAML")
+
+    # ask
+    p_ask = subparsers.add_parser("ask", help="Ask Claude about a processed match")
+    p_ask.add_argument("question", help="Natural language question")
+    p_ask.add_argument("--run", required=True, help="Run directory path")
+    p_ask.add_argument("--profile", help="Project profile YAML")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -60,6 +71,12 @@ def main():
     elif args.command == "reel":
         from soccer_vision.cli.extract import run_reel
         run_reel(args)
+    elif args.command == "verify":
+        from soccer_vision.cli.ask import run_verify
+        run_verify(args)
+    elif args.command == "ask":
+        from soccer_vision.cli.ask import run_ask
+        run_ask(args)
     else:
         parser.print_help()
         sys.exit(1)

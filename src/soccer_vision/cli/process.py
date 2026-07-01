@@ -19,8 +19,9 @@ def run_pipeline(args):
     from soccer_vision.detection.ball import detect_ball_position
     from soccer_vision.detection.field_filter import filter_spectators
     from soccer_vision.detection.rfdetr import ALL_PERSON_CLASS_IDS, RFDETRSoccerDetector
+    from soccer_vision.events.associate import associate_events
     from soccer_vision.events.phases import classify_phase
-    from soccer_vision.events.set_piece import detect_all_set_pieces
+    from soccer_vision.events.sources import DetectionContext, active_sources, run_sources
     from soccer_vision.io.osl import add_event, new_osl_document, write_osl
     from soccer_vision.io.project import RunDir
     from soccer_vision.io.video import VideoReader
@@ -28,6 +29,7 @@ def run_pipeline(args):
     from soccer_vision.registration.hough import compute_homography, pixel_to_field
     from soccer_vision.store.db import MatchDB
     from soccer_vision.tracking.bytetrack import create_tracker, track_detections
+    from soccer_vision.tracking.teams import TeamClassifier
     from soccer_vision.verify.sheets import build_contact_sheet
 
     video_path = Path(args.video)
@@ -83,6 +85,10 @@ def run_pipeline(args):
     print("\n[Step 4] Player tracking...")
     tracker = create_tracker(frame_rate=int(proxy_fps))
     player_tracks: dict[int, list[tuple[float, float]]] = {}
+    # Per-frame player positions for event→player association, and jersey-colour
+    # samples for team assignment.
+    frame_players: dict[int, dict] = {}
+    team_clf = TeamClassifier()
 
     for fn, frame in proxy_reader.sample_frames(detect_interval):
         # Detect all objects
@@ -125,25 +131,55 @@ def run_pipeline(args):
                 "confidence": bconf,
             })
 
-        # Player field positions for metrics
-        if tracked.tracker_id is not None and H_cache is not None:
+        # Player positions (for metrics + event association) and jersey colour
+        if tracked.tracker_id is not None:
             for i, tid in enumerate(tracked.tracker_id):
+                tid = int(tid)
                 x1, y1, x2, y2 = tracked.xyxy[i]
                 foot_x = (x1 + x2) / 2
                 foot_y = y2  # bottom of bbox
-                fx, fy = pixel_to_field(foot_x, foot_y, H_cache)
-                player_tracks.setdefault(int(tid), []).append((fx, fy))
+
+                fx = fy = None
+                if H_cache is not None:
+                    fx, fy = pixel_to_field(foot_x, foot_y, H_cache)
+                    player_tracks.setdefault(tid, []).append((fx, fy))
+
+                frame_players.setdefault(fn, {})[tid] = {
+                    "pixel_x": float(foot_x),
+                    "pixel_y": float(foot_y),
+                    "field_x": fx,
+                    "field_y": fy,
+                }
+                team_clf.add_sample(tid, frame, (x1, y1, x2, y2))
 
         if fn % 500 == 0:
             print(f"  Processing frame {fn}/{proxy_reader.total_frames}")
 
     proxy_reader.close()
 
-    # Step 6: Event detection
-    print("\n[Step 6] Event detection (set-piece heuristics)...")
-    events = detect_all_set_pieces(ball_positions)
+    # Assign players to teams by jersey colour, then run all available event
+    # sources (set-piece heuristics today; T-DEED tackle model when trained).
+    team_clf.fit()
+    team_names = team_clf.team_names()
+    if team_names:
+        print(f"  Teams (by jersey colour): {', '.join(sorted(team_names.values()))}")
+
+    # Step 6: Event detection (pluggable, event-agnostic sources)
+    print("\n[Step 6] Event detection...")
+    ctx = DetectionContext(
+        fps=proxy_fps,
+        ball_positions=ball_positions,
+        frame_players=frame_players,
+        proxy_path=str(run_dir.broadcast_proxy),
+        config=config,
+    )
+    sources = active_sources(config)
+    print(f"  Active sources: {', '.join(s.name for s in sources) or 'none'}")
+    events = run_sources(sources, ctx)
     events = classify_phase(events)
-    print(f"  Found {len(events)} set-piece events")
+    # Associate each event with the nearest player track and their team.
+    events = associate_events(events, frame_players, team_clf)
+    print(f"  Found {len(events)} events")
 
     # Step 7: Metrics
     print("\n[Step 7] Computing metrics...")
@@ -152,11 +188,16 @@ def run_pipeline(args):
         "match_id": match_id,
         "total_events": len(events),
         "event_counts": {},
+        "event_counts_by_team": {},
+        "teams": team_names,
         "distance_per_player": {str(k): round(v, 1) for k, v in distances.items()},
     }
     for e in events:
         label = e["label"]
         stats["event_counts"][label] = stats["event_counts"].get(label, 0) + 1
+        team = e.get("team") or "unknown"
+        by_team = stats["event_counts_by_team"].setdefault(label, {})
+        by_team[team] = by_team.get(team, 0) + 1
 
     stats_path = run_dir.stats
     with open(stats_path, "w") as f:
@@ -172,8 +213,10 @@ def run_pipeline(args):
         field_dimensions={"width": 55.0, "height": 36.0},
     )
     for e in events:
+        extra = {k: e[k] for k in ("team", "track_id", "goal_zone") if e.get(k) is not None}
         add_event(osl_doc, label=e["label"], position_ms=e["position_ms"],
-                  frame=e.get("frame"), confidence=e.get("confidence"))
+                  frame=e.get("frame"), confidence=e.get("confidence"),
+                  source=e.get("source", "heuristic"), extra=extra or None)
 
     write_osl(osl_doc, run_dir.annotations)
     print(f"  OSL JSON: {run_dir.annotations}")
@@ -186,9 +229,13 @@ def run_pipeline(args):
         osl_path=str(run_dir.annotations),
         stats_path=str(stats_path),
     )
+    event_ids = []
     for e in events:
-        db.add_event(match_id, e["label"], e["position_ms"],
-                     frame=e.get("frame"), confidence=e.get("confidence"))
+        eid = db.add_event(match_id, e["label"], e["position_ms"],
+                           frame=e.get("frame"), confidence=e.get("confidence"),
+                           team=e.get("team"), track_id=e.get("track_id"),
+                           source=e.get("source"))
+        event_ids.append(eid)
 
     # Step 9: Clip extraction
     print("\n[Step 9] Extracting clips...")
@@ -200,8 +247,10 @@ def run_pipeline(args):
             pre_s=config.get("clips", {}).get("pre_s", 5.0),
             post_s=config.get("clips", {}).get("post_s", 15.0),
         )
-        for clip_path, event in zip(clip_paths, events):
-            db.add_clip(match_id, str(clip_path), pre_s=5.0, post_s=15.0)
+        for clip_path, event, eid in zip(clip_paths, events, event_ids):
+            db.add_clip(match_id, str(clip_path), event_id=eid,
+                        track_id=event.get("track_id"), team=event.get("team"),
+                        pre_s=5.0, post_s=15.0)
         print(f"  {len(clip_paths)} clips extracted")
 
     # Contact sheets

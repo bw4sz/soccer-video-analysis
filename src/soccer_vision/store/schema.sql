@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS events (
   position_ms INTEGER,
   frame INTEGER,
   confidence REAL,
+  team TEXT,
+  track_id INTEGER,
+  player_id TEXT,
+  source TEXT,
   verified BOOLEAN DEFAULT FALSE,
   FOREIGN KEY (match_id) REFERENCES matches(id)
 );
@@ -31,6 +35,8 @@ CREATE TABLE IF NOT EXISTS clips (
   match_id TEXT,
   event_id TEXT,
   player_id TEXT,
+  track_id INTEGER,
+  team TEXT,
   path TEXT,
   pre_s REAL,
   post_s REAL,

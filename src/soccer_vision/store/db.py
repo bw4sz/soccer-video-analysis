@@ -62,14 +62,21 @@ class MatchDB:
         *,
         frame: int | None = None,
         confidence: float | None = None,
+        team: str | None = None,
+        track_id: int | None = None,
+        player_id: str | None = None,
+        source: str | None = None,
         event_id: str | None = None,
     ) -> str:
         event_id = event_id or str(uuid.uuid4())[:8]
         with self.engine.begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO events (id, match_id, label, position_ms, frame, confidence) "
-                    "VALUES (:id, :mid, :label, :pos, :frame, :conf)"
+                    "INSERT INTO events "
+                    "(id, match_id, label, position_ms, frame, confidence, "
+                    "team, track_id, player_id, source) "
+                    "VALUES (:id, :mid, :label, :pos, :frame, :conf, "
+                    ":team, :track, :pid, :source)"
                 ),
                 {
                     "id": event_id,
@@ -78,6 +85,10 @@ class MatchDB:
                     "pos": position_ms,
                     "frame": frame,
                     "conf": confidence,
+                    "team": team,
+                    "track": track_id,
+                    "pid": player_id,
+                    "source": source,
                 },
             )
         return event_id
@@ -89,6 +100,8 @@ class MatchDB:
         *,
         event_id: str | None = None,
         player_id: str | None = None,
+        track_id: int | None = None,
+        team: str | None = None,
         pre_s: float = 5.0,
         post_s: float = 30.0,
         clip_id: str | None = None,
@@ -97,14 +110,17 @@ class MatchDB:
         with self.engine.begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO clips (id, match_id, event_id, player_id, path, pre_s, post_s) "
-                    "VALUES (:id, :mid, :eid, :pid, :path, :pre, :post)"
+                    "INSERT INTO clips "
+                    "(id, match_id, event_id, player_id, track_id, team, path, pre_s, post_s) "
+                    "VALUES (:id, :mid, :eid, :pid, :track, :team, :path, :pre, :post)"
                 ),
                 {
                     "id": clip_id,
                     "mid": match_id,
                     "eid": event_id,
                     "pid": player_id,
+                    "track": track_id,
+                    "team": team,
                     "path": path,
                     "pre": pre_s,
                     "post": post_s,
@@ -112,11 +128,30 @@ class MatchDB:
             )
         return clip_id
 
-    def get_events(self, match_id: str) -> list[dict]:
+    def get_events(
+        self,
+        match_id: str,
+        *,
+        label: str | None = None,
+        team: str | None = None,
+        track_id: int | None = None,
+    ) -> list[dict]:
+        clauses = ["match_id = :mid"]
+        params: dict = {"mid": match_id}
+        if label is not None:
+            clauses.append("label = :label")
+            params["label"] = label
+        if team is not None:
+            clauses.append("team = :team")
+            params["team"] = team
+        if track_id is not None:
+            clauses.append("track_id = :track")
+            params["track"] = track_id
+        where = " AND ".join(clauses)
         with self.engine.connect() as conn:
             result = conn.execute(
-                text("SELECT * FROM events WHERE match_id = :mid ORDER BY position_ms"),
-                {"mid": match_id},
+                text(f"SELECT * FROM events WHERE {where} ORDER BY position_ms"),
+                params,
             )
             return [dict(row._mapping) for row in result]
 
