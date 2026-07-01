@@ -128,6 +128,34 @@ Install extras: `uv sync --extra soccerchat` (transformers + peft + qwen-vl-util
 | Optional deps | `soccerchat`, `annotate` extras in `pyproject.toml` |
 | Offline tests | `tests/test_soccerchat.py`, `tests/test_label_studio.py` |
 
+## First smoke-test findings (6 clips, this match)
+
+Ran `slurm/submit_soccerchat_smoke.sh` on 6 evenly spaced 10s clips from
+`match-saints-16b-pre-mls-next-2026-04-26.mp4` (L4 GPU, ~1 min on warm cache).
+
+**The plumbing works:** base model + LoRA load on transformers 5.x, decord feeds
+video frames, fluent soccer-specific output comes back and maps to the taxonomy.
+
+**The model does not reliably read this youth footage** — the predicted domain
+shift, concretely:
+
+- **Class collapse:** 4 of 6 clips → "Kick-off" (defaulting).
+- **Class ↔ caption contradictions:** e.g. one clip classed *Direct free-kick*
+  but captioned as a corner; another classed *Kick-off* but captioned as a shot +
+  save.
+- **Invented broadcast tropes:** "linesman raises his flag for offside",
+  "keeper's remarkable save", "shot from 30 meters" — a fixed overhead Veo camera
+  supports none of these; it's applying professional-broadcast priors.
+- **`confidence` is not meaningful** — it is only an exact-class-echo proxy (the
+  model exposes no calibrated score through generation).
+
+**Takeaway:** usable as a *caption / hypothesis aid for human review*, not as an
+automated labeler on youth video. This is exactly what the Label Studio
+correct→fine-tune loop is for. Next steps to consider: (a) LoRA-fine-tune on
+corrected youth clips via the `annotate --export` JSONL; (b) collapse
+classify+describe into one call to cut cost and the class/caption contradiction;
+(c) keep it human-in-the-loop only.
+
 ## Caveats / open questions
 
 - **Domain shift is the whole point** — expect misses on overhead framing. Track
