@@ -33,6 +33,14 @@ from soccer_vision.events.labels import EVENT_LABELS
 MODEL_ID = "Qwen/Qwen2-VL-7B-Instruct"
 ADAPTER_ID = "SimulaMet/SoccerChat-qwen2-vl-7b"
 
+# Leaf modules the SoccerChat LoRA adapts (language-model attention + MLP; no
+# visual). Verified from the adapter weight keys; used to rebuild a LoraConfig
+# that works across transformers versions instead of the checkpoint's stored
+# regex, which matches the whole model container under modern peft.
+LORA_TARGET_MODULES = (
+    "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
+)
+
 # The 16 SoccerNet-v2 action classes SoccerChat was trained to emit, verbatim
 # from the paper's taxonomy. Note there is **no "goal kick" class** — goal kicks
 # fall under "Kick-off" / "Ball out of play" in SoccerNet, which matters for
@@ -165,9 +173,12 @@ class SoccerChatModel:
         if self._model is not None:
             return
         try:
+            import json
+
             import torch
             from huggingface_hub import snapshot_download
-            from peft import PeftModel
+            from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
+            from safetensors.torch import load_file
             from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
         except Exception as exc:  # pragma: no cover - requires optional dep
             raise RuntimeError(
@@ -178,11 +189,47 @@ class SoccerChatModel:
         base = Qwen2VLForConditionalGeneration.from_pretrained(
             self.model, torch_dtype=torch.bfloat16, device_map=self.device_map,
         )
-        # Resolve a HuggingFace adapter id to a local snapshot for peft.
-        adapter_path = self.adapter
+
+        adapter_dir = self.adapter
         if "/" in self.adapter and not Path(self.adapter).exists():
-            adapter_path = snapshot_download(self.adapter)
-        self._model = PeftModel.from_pretrained(base, adapter_path)
+            adapter_dir = snapshot_download(self.adapter)
+        adapter_dir = Path(adapter_dir)
+        cfg = json.loads((adapter_dir / "adapter_config.json").read_text())
+
+        # The checkpoint stores target_modules as a regex (``^(model)...``) that,
+        # under modern transformers/peft, matches the whole model container and
+        # errors. Rebuild the config from the explicit leaf projections the
+        # adapter actually trained (language-model attention + MLP; no visual —
+        # verified from the adapter weight keys).
+        lora = LoraConfig(
+            r=cfg.get("r", 8),
+            lora_alpha=cfg.get("lora_alpha", 32),
+            lora_dropout=cfg.get("lora_dropout", 0.05),
+            bias=cfg.get("bias", "none"),
+            target_modules=list(LORA_TARGET_MODULES),
+            task_type="CAUSAL_LM",
+        )
+        self._model = get_peft_model(base, lora)
+
+        # The weights were saved against the transformers 4.x tree
+        # (``model.layers.*``); 5.x nests decoder layers under
+        # ``model.language_model.layers.*``. Remap keys to match when needed.
+        state = load_file(str(adapter_dir / "adapter_model.safetensors"))
+        if hasattr(base.model, "language_model"):
+            state = {
+                k.replace(
+                    "base_model.model.model.layers.",
+                    "base_model.model.model.language_model.layers.",
+                ): v
+                for k, v in state.items()
+            }
+        load_result = set_peft_model_state_dict(self._model, state)
+        unexpected = getattr(load_result, "unexpected_keys", []) or []
+        if unexpected:
+            raise RuntimeError(
+                f"SoccerChat adapter did not map cleanly onto this transformers "
+                f"version: {len(unexpected)} unexpected keys, e.g. {unexpected[:3]}"
+            )
         self._model.eval()
         self._processor = AutoProcessor.from_pretrained(self.model, max_pixels=self.max_pixels)
 
