@@ -96,8 +96,8 @@ class SoccerChatSource:
     broadcast proxy, classifies each window into the 16 SoccerNet classes, and
     emits events for the non-empty ones. It is **off by default** (listed in
     :data:`_OPT_IN`) and only activates when named explicitly in
-    ``config['sources']`` *and* the ms-swift runtime is installed — so it never
-    fires on a plain ``soccer-vision process`` run.
+    ``config['sources']`` *and* the SoccerChat runtime (transformers + peft) is
+    installed — so it never fires on a plain ``soccer-vision process`` run.
 
     Trained on professional broadcast footage, so expect weak recall on youth /
     Veo video until fine-tuned; prefer the verifier path for now.

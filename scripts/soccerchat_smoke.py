@@ -1,6 +1,6 @@
 """Smoke test: run SoccerChat on a few 10s clips cut straight from a match.
 
-Isolates the SoccerChat integration (model load + ms-swift inference in
+Isolates the SoccerChat integration (model load + transformers/peft inference in
 ``soccer_vision.verify.soccerchat``) from the full pipeline, so we can see
 whether a pro-trained soccer VLM makes sense of youth/Veo footage without first
 running the heavy ``process`` pipeline.
@@ -32,7 +32,7 @@ def main():
     from soccer_vision.verify.soccerchat import ADAPTER_ID, SoccerChatModel, is_available
 
     if not is_available():
-        raise SystemExit("ms-swift not installed — run with the 'soccerchat' extra.")
+        raise SystemExit("SoccerChat runtime not installed — run with the 'soccerchat' extra.")
 
     out = Path(args.out)
     clips_dir = out / "clips"

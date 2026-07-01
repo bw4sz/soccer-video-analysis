@@ -31,16 +31,30 @@ model:
   model params and `state_dict`; load with `argus.load_model(path)`).
 - **Loss:** focal loss. **EMA** weights used at inference.
 
-### Classes (12, SoccerNet BAS 2024)
+### Classes — IMPORTANT: released weights are 2-class, not 12
+
+The repo **code** (`src/ball_action/constants.py`) lists the 12-class 2024
+taxonomy:
 
 ```
 PASS, DRIVE, HEADER, HIGH PASS, OUT, CROSS, THROW IN, SHOT,
 BALL PLAYER BLOCK, PLAYER SUCCESSFUL TACKLE, FREE KICK, GOAL
 ```
 
-These match `TEAM_ACTION_LABELS` / `TEAM_LABEL_TO_SV` in
+**But the pretrained checkpoints on the author's Drive were trained for only the
+original 2 classes (`PASS`, `DRIVE`) from the 2023 task** — verified by loading
+them: `ball_tuning_001` and `sampling_weights_001` have `num_classes=2`. So:
+
+- To spot **just PASS / DRIVE**, the released weights work out of the box.
+- To get the **12-class 2024 team-ball-action taxonomy**, you must **retrain**
+  (or fine-tune) on the SoccerNet BAS **2024** data once the NDA download lands —
+  the 12-class head does not ship pretrained.
+
+The 12 labels match `TEAM_ACTION_LABELS` / `TEAM_LABEL_TO_SV` in
 `training/sn_spotting/train_teamspotting.py` — reuse that dict to map into the
-soccer-vision taxonomy (`src/soccer_vision/events/labels.py`).
+soccer-vision taxonomy (`src/soccer_vision/events/labels.py`). (The separate
+`action_sampling_weights_002` checkpoint is a **15-class** action-spotting model,
+used only as the transfer-learning source.)
 
 ### Input expectations
 
@@ -56,11 +70,22 @@ soccer-vision taxonomy (`src/soccer_vision/events/labels.py`).
 Author's Google Drive folder (in the upstream README):
 <https://drive.google.com/drive/folders/1mIu62cIdsRn3W4o1E5vRR8V5Q1B6HHoz>
 
-| Bundle | What it is |
-|---|---|
-| `sampling_weights_001` | Ball-action model, 7-fold cross-val checkpoints |
-| `action_sampling_weights_002` | Auxiliary action-spotting model (transfer source) |
-| `ball_tuning_001` | Final transfer-learned experiment (configs present in repo) |
+| Bundle | Classes | Checkpoint | What it is |
+|---|---|---|---|
+| `sampling_weights_001` | **2** (PASS, DRIVE) | `model-029-*.pth` ×7 folds | Base ball-action model |
+| `ball_tuning_001` | **2** (PASS, DRIVE) | `model-034-*.pth` ×7 folds | Final transfer-learned ball model (predict/evaluate default) |
+| `ball_finetune_long_004` | 2 | `model-006-*.pth` ×7 folds | Longer-fine-tune variant |
+| `action_sampling_weights_002` | 15 | `model-019-0.797827.pth` | Action-spotting model (transfer source only) |
+
+**Download status (this repo):** grabbed via `scripts/bas_smoke_test.py` after
+`gdown --folder` kept hitting Google Drive's per-account daily quota. Currently
+present under `vendor/ball-action-spotting/data/gdrive_weights/`:
+`action_sampling_weights_002` (full) and `ball_tuning_001` **folds 0, 2, 3**
+(55 MB each). Remaining `ball_tuning_001` folds (1, 4, 5, 6) + `config.json` +
+`source.py`, plus `sampling_weights_001`, were quota-blocked — re-run after the
+~24h Drive quota resets. All file IDs are recorded in the download script /
+conversation. Note: `config.json`/`source.py` are **not** needed for inference —
+argus reads model params from the `.pth` itself; `predict.py` globs `*.pth`.
 
 Expected on-disk layout (README):
 

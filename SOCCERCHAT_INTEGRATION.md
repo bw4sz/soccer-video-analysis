@@ -16,7 +16,7 @@ derived from **SoccerNet-v2** broadcast footage, dense captions, ASR commentary
 - **Data:** [`SimulaMet/SoccerChat`](https://huggingface.co/datasets/SimulaMet/SoccerChat) (~85k train)
 - **Input:** one 10-second clip sampled to **24 frames (2.4 fps)**, ≤100,352 px/frame, + a text prompt
 - **Output:** free text — a description, or a class + justification
-- **Runtime:** ms-swift `PtEngine` (as in the [upstream repo](https://github.com/simula/SoccerChat))
+- **Runtime:** loaded as a PEFT LoRA over Qwen2-VL with transformers + peft + qwen-vl-utils (the checkpoint is a standard `peft_type: LORA` adapter; no ms-swift needed for inference)
 
 ### The hypothesis we're testing
 
@@ -52,7 +52,7 @@ Verdicts:
 | `UNKNOWN`   | SoccerChat produced nothing mappable. |
 
 Implementation: [`verify/soccerchat.py`](src/soccer_vision/verify/soccerchat.py).
-Heavy imports (torch / ms-swift) are deferred, so importing the module and
+Heavy imports (torch / transformers) are deferred, so importing the module and
 running the offline tests needs no GPU.
 
 ### 2. Sliding-window spotter  (optional — `SoccerChatSource`)
@@ -109,8 +109,8 @@ soccer-vision annotate --export export.json \
   --clips-root runs/<match_id>/clips --finetune-out youth_soccerchat.jsonl
 ```
 
-Install extras: `uv sync --extra soccerchat` (ms-swift, ~16 GB weights on first
-run) and `uv sync --extra annotate` (Label Studio).
+Install extras: `uv sync --extra soccerchat` (transformers + peft + qwen-vl-utils;
+~16 GB weights on first run) and `uv sync --extra annotate` (Label Studio).
 
 ## What landed on this branch
 
@@ -133,9 +133,11 @@ run) and `uv sync --extra annotate` (Label Studio).
 - **Domain shift is the whole point** — expect misses on overhead framing. Track
   the `CONFIRMED / PLAUSIBLE / REJECTED / UNKNOWN` mix from a smoke run before
   trusting it for anything automated.
-- **ms-swift API drift:** the inference call follows the upstream repo's
-  documented `PtEngine` usage; pin `ms-swift` against the version in SoccerChat's
-  notebooks if the call signature changes.
+- **Inference stack:** the wrapper loads the LoRA with transformers + peft (not
+  ms-swift, whose 4.x API dropped the `swift.llm` namespace the first attempt
+  used). Remaining risk is Qwen2-VL behaviour under transformers 5.x — the smoke
+  job is what validates end-to-end generation. Fine-tuning to youth footage still
+  uses ms-swift, which consumes the `annotate --export` JSONL.
 - **`SoccerChatSource` (spotter)** is untested on GPU and off by default — treat
   as experimental until the verifier path proves transfer.
 - **No audio:** Qwen2-VL has no audio branch, and Veo clips rarely carry useful

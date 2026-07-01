@@ -9,19 +9,21 @@ Scripts for SoccerNet tasks that need training from scratch or fine-tuning.
 | Detection (ball/player/ref/GK) | `rfdetr` + HuggingFace weights | Ready — `julianzu9612/RFDETR-Soccernet` |
 | Multi-object tracking | `supervision` ByteTrack | Ready — no training needed |
 | Field registration (Hough) | `soccer_vision.registration.hough` | Ready — classical CV |
-| **Ball action spotting** | recokick MultiDimStacker + pretrained weights | **Canonical — see [`BALL_ACTION_SPOTTING.md`](BALL_ACTION_SPOTTING.md)** |
 
 ## Needs Training
 
-| Task | Script | Framework | Data |
+| Task | Doc | Framework | Data |
 |---|---|---|---|
-| Action spotting *(deprecated)* | `sn_spotting/train_action_spotting.py` | OSL-ActionSpotting + NetVLAD | SoccerNet-v2 labels + Baidu features |
+| **Ball action spotting (player-centric)** | **[`FOOTPASS.md`](FOOTPASS.md) — primary** | TAAD (X3D + tracklets) | SN-PCBAS-2026 (HuggingFace, gated) |
+| Ball action spotting *(deprecated)* | `sn_spotting/train_action_spotting.py` | OSL-ActionSpotting + NetVLAD | SoccerNet-v2 labels + Baidu features |
 | Team ball action spotting *(deprecated)* | `sn_spotting/train_teamspotting.py` | sn-teamspotting / T-DEED | SoccerNet BAS 2024 |
 
-> **Ball action spotting is now standardized on recokick's MultiDimStacker**
-> (pretrained weights available, trains from video). The two spotting scripts
-> above are superseded — they ship no weights — and are kept only for reference.
-> See [`BALL_ACTION_SPOTTING.md`](BALL_ACTION_SPOTTING.md).
+> **Ball-action spotting is standardized on FOOTPASS / SN-PCBAS-2026**
+> (8 player-centric classes with team+jersey, `(frame, team, jersey, class)`).
+> See [`FOOTPASS.md`](FOOTPASS.md). The recokick MultiDimStacker path was
+> evaluated and dropped — its only released weights were 2-class (PASS/DRIVE),
+> now deleted; the vendored repo is kept for reference only. The two spotting
+> scripts above (OSL NetVLAD, T-DEED) ship no weights and are superseded.
 
 ## Needs Fine-tuning
 
