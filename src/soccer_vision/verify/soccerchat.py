@@ -8,23 +8,23 @@ description plus a predicted event class — mirroring the role
 :mod:`soccer_vision.verify.claude` plays with the Claude API, but with a
 soccer-specialised model and no network round-trip.
 
-Model card: ``SimulaMet/SoccerChat-qwen2-vl-7b`` (Apache-2.0), served through the
-ms-swift ``PtEngine`` exactly as in the upstream repo
-(https://github.com/simula/SoccerChat).
+Model card: ``SimulaMet/SoccerChat-qwen2-vl-7b`` (Apache-2.0). The checkpoint is
+a plain PEFT LoRA over ``Qwen2-VL-7B-Instruct``, so we load it with
+transformers + peft + qwen-vl-utils — a stable inference path independent of the
+upstream ms-swift training stack (https://github.com/simula/SoccerChat).
 
 **Caveat:** SoccerChat is trained on professional broadcast video (tight tele
 lens, on-screen graphics, commentary), *not* overhead Veo / youth footage. Treat
 its output as a hypothesis to be confirmed in Label Studio — that correction loop
 is also what produces youth fine-tuning data. See ``SOCCERCHAT_INTEGRATION.md``.
 
-The heavy imports (torch / ms-swift) are deferred into the methods that need them
-so importing this module — and running the offline tests — never requires a GPU
-or the ``soccerchat`` optional dependencies.
+The heavy imports (torch / transformers) are deferred into the methods that need
+them so importing this module — and running the offline tests — never requires a
+GPU or the ``soccerchat`` optional dependencies.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -97,14 +97,16 @@ _DESCRIBE_PROMPT = (
 
 
 def is_available() -> bool:
-    """Whether the SoccerChat runtime (ms-swift) can be imported.
+    """Whether the SoccerChat runtime (transformers + peft + qwen-vl-utils) imports.
 
-    Does not require a GPU to return True — the smoke path can run on CPU — but a
-    GPU is strongly recommended for the 7B model. Returns False when the
-    ``soccerchat`` optional dependencies are not installed.
+    Does not require a GPU to return True, but a GPU is strongly recommended for
+    the 7B model. Returns False when the ``soccerchat`` optional dependencies are
+    not installed.
     """
     try:
-        import swift.llm  # noqa: F401  (ms-swift)
+        import peft  # noqa: F401
+        import qwen_vl_utils  # noqa: F401
+        import transformers  # noqa: F401
     except Exception:
         return False
     return True
@@ -128,10 +130,14 @@ def _normalise_class(text: str) -> str | None:
 
 
 class SoccerChatModel:
-    """Lazy wrapper around the ms-swift ``PtEngine`` for SoccerChat.
+    """Lazy wrapper around Qwen2-VL-7B + the SoccerChat LoRA adapter.
 
-    The engine (and the ~16 GB of weights) is loaded on first inference, not at
-    construction, so this object is cheap to create and easy to mock in tests.
+    The SoccerChat checkpoint is a standard PEFT LoRA
+    (``adapter_config.json`` → ``peft_type: LORA``) over ``Qwen2-VL-7B-Instruct``,
+    so it loads with transformers + peft rather than ms-swift — a stable path
+    independent of the training stack. The base model (~16 GB) and adapter load on
+    first inference, not at construction, so this object stays cheap to create and
+    easy to mock in tests.
     """
 
     def __init__(
@@ -141,8 +147,9 @@ class SoccerChatModel:
         model: str = MODEL_ID,
         max_frames: int = 24,
         max_pixels: int = 100352,
-        temperature: float = 0.3,
+        temperature: float = 0.0,
         max_tokens: int = 512,
+        device_map: str = "auto",
     ):
         self.adapter = adapter
         self.model = model
@@ -150,47 +157,80 @@ class SoccerChatModel:
         self.max_pixels = max_pixels
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self._engine = None
-        self._req_cfg = None
+        self.device_map = device_map
+        self._model = None
+        self._processor = None
 
-    def _ensure_engine(self):
-        if self._engine is not None:
+    def _ensure_model(self):
+        if self._model is not None:
             return
-        # SoccerChat samples a fixed 24 frames per 10 s clip; ms-swift reads these
-        # from the environment (matches the upstream inference notebook).
-        os.environ.setdefault("FPS_MIN_FRAMES", str(self.max_frames))
-        os.environ.setdefault("FPS_MAX_FRAMES", str(self.max_frames))
-        os.environ.setdefault("VIDEO_MAX_PIXELS", str(self.max_pixels))
         try:
-            from swift.llm import PtEngine, RequestConfig
+            import torch
+            from huggingface_hub import snapshot_download
+            from peft import PeftModel
+            from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
         except Exception as exc:  # pragma: no cover - requires optional dep
             raise RuntimeError(
                 "SoccerChat needs the 'soccerchat' extra: pip install "
-                "'soccer-vision[soccerchat]' (installs ms-swift). Original error: "
-                f"{exc}"
+                f"'soccer-vision[soccerchat]'. Original error: {exc}"
             ) from exc
-        self._engine = PtEngine(adapters=[self.adapter], model_id_or_path=self.model)
-        self._req_cfg = RequestConfig(
-            max_tokens=self.max_tokens, temperature=self.temperature
+
+        base = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model, torch_dtype=torch.bfloat16, device_map=self.device_map,
         )
+        # Resolve a HuggingFace adapter id to a local snapshot for peft.
+        adapter_path = self.adapter
+        if "/" in self.adapter and not Path(self.adapter).exists():
+            adapter_path = snapshot_download(self.adapter)
+        self._model = PeftModel.from_pretrained(base, adapter_path)
+        self._model.eval()
+        self._processor = AutoProcessor.from_pretrained(self.model, max_pixels=self.max_pixels)
 
     def infer(self, clip_path: str | Path, question: str) -> str:
         """Run one clip + question through the model and return the text answer."""
-        self._ensure_engine()
-        from swift.llm import InferRequest
+        import torch
+        from qwen_vl_utils import process_vision_info
 
+        self._ensure_model()
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "video", "video": str(clip_path)},
+                    {
+                        "type": "video",
+                        "video": str(clip_path),
+                        "nframes": self.max_frames,
+                        "max_pixels": self.max_pixels,
+                    },
                     {"type": "text", "text": question},
                 ],
             }
         ]
-        resp = self._engine.infer([InferRequest(messages=messages)], self._req_cfg)
-        # ms-swift returns a list of ChatCompletionResponse-like objects.
-        return resp[0].choices[0].message.content.strip()
+        text = self._processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        # qwen-vl-utils returns (images, videos) or (images, videos, video_kwargs).
+        vision = process_vision_info(messages)
+        image_inputs, video_inputs = vision[0], vision[1]
+        video_kwargs = vision[2] if len(vision) > 2 else {}
+        inputs = self._processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+            **video_kwargs,
+        ).to(self._model.device)
+
+        gen_kwargs = {"max_new_tokens": self.max_tokens, "do_sample": self.temperature > 0}
+        if self.temperature > 0:
+            gen_kwargs["temperature"] = self.temperature
+        with torch.inference_mode():
+            generated = self._model.generate(**inputs, **gen_kwargs)
+        trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, generated)]
+        return self._processor.batch_decode(
+            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0].strip()
 
     def classify(self, clip_path: str | Path) -> dict[str, Any]:
         """Classify a clip into a SoccerChat class + canonical label.

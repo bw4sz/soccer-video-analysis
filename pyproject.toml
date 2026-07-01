@@ -27,12 +27,14 @@ gpu = ["inference[gpu]"]
 gui = ["pyside6>=6.6", "supervision[desktop]"]
 broadcast = ["tracklab"]
 train = ["lightning", "SoccerNet>=0.1.56"]
-# SoccerChat local VLM (Qwen2-VL-7B + LoRA via ms-swift). GPU strongly recommended.
+# SoccerChat local VLM: Qwen2-VL-7B + LoRA loaded via transformers + peft.
+# GPU strongly recommended. transformers >=5.1 to stay compatible with the
+# base rfdetr dependency (which requires transformers>=5.1,<6).
 soccerchat = [
-  "ms-swift>=2.5",
-  "transformers>=4.45",
+  "transformers>=5.1,<6",
+  "peft>=0.13",
+  "accelerate>=0.34",
   "qwen-vl-utils",
-  "accelerate",
   "decord",
   "av",
 ]
