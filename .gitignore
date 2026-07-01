@@ -20,3 +20,6 @@ tests/results/
 
 # Third-party training repos (vendored, not tracked)
 vendor/
+
+# SLURM job logs / per-run output dirs
+slurm/logs/
