@@ -298,6 +298,26 @@ shot, save, pass, foul, substitution, halftime
 
 Map SoccerNet/sn-teamspotting labels → this taxonomy in `events/spotting.py`.
 
+**Event sources, team & player association (event-agnostic):**
+
+Detection is decoupled from association and clip selection via a pluggable
+`EventSource` interface (`events/sources.py`): `is_available()` / `detect()`.
+Any detector — `SetPieceSource` (live), `TackleSource` (T-DEED, interface only
+until a checkpoint is trained via `training/sn_spotting/train_teamspotting.py`),
+or future SAM3-prompt / Claude-vision sources — emits the same event dicts, so
+new models add labels (`tackle`, `goal`, `losing_the_ball`, ...) without
+touching downstream code.
+
+- **Team assignment** is v1 by **jersey colour** (`tracking/teams.py`): cluster
+  tracked players into two teams and name each cluster (blue / white / ...), so
+  events are filterable by `--team blue`. Jersey OCR → named roster (sn-jersey /
+  sn-gamestate) and SAM3 masklet identity are later phases behind the same seam.
+- **Association** (`events/associate.py`) tags each event with the nearest
+  player's `track_id` and their `team`; persisted on the `events` table and in
+  OSL. Clips are then selectable per team or per player (track), composable with
+  the event label, via `soccer-vision extract` / `reel` (`--team`, `--track`,
+  `--event`).
+
 ---
 
 ## Metrics Engine

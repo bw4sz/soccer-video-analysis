@@ -40,7 +40,29 @@ from torchvision.models.segmentation import deeplabv3_resnet50
 NUM_LINE_CLASSES = 27  # 26 semantic line classes + background
 
 
-def download_sn_calib_data(data_dir: Path):
+def load_soccernet_password(explicit: str | None = None) -> str | None:
+    """Resolve the SoccerNet NDA password for restricted downloads.
+
+    Order of precedence: explicit arg -> $SOCCERNET_PASSWORD ->
+    .soccernet_token at the repo root. Returns None if none is found
+    (public files still download; NDA files will 401).
+    """
+    import os
+
+    if explicit:
+        return explicit.strip()
+    env = os.environ.get("SOCCERNET_PASSWORD")
+    if env:
+        return env.strip()
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        token = parent / ".soccernet_token"
+        if token.exists():
+            return token.read_text().strip()
+    return None
+
+
+def download_sn_calib_data(data_dir: Path, password: str | None = None):
     """Download SoccerNet calibration data."""
     try:
         from SoccerNet.Downloader import SoccerNetDownloader
@@ -48,6 +70,14 @@ def download_sn_calib_data(data_dir: Path):
         sys.exit("pip install SoccerNet")
 
     downloader = SoccerNetDownloader(LocalDirectory=str(data_dir))
+    password = load_soccernet_password(password)
+    if password:
+        downloader.password = password
+    else:
+        print("WARNING: no SoccerNet NDA password found "
+              "($SOCCERNET_PASSWORD or .soccernet_token); "
+              "calibration-2023 is NDA-restricted and will fail to download.")
+
     downloader.downloadDataTask(
         task="calibration-2023",
         split=["train", "valid", "test"],
@@ -248,11 +278,13 @@ def main():
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--download", action="store_true")
+    parser.add_argument("--password", help="SoccerNet NDA password (default: "
+                        "$SOCCERNET_PASSWORD or .soccernet_token)")
     parser.add_argument("--comet", action="store_true")
     args = parser.parse_args()
 
     if args.download:
-        download_sn_calib_data(Path(args.data_dir))
+        download_sn_calib_data(Path(args.data_dir), args.password)
         return
 
     device = args.device

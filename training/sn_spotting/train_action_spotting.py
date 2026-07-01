@@ -53,7 +53,29 @@ SOCCERNET_TO_SV = {
 }
 
 
-def download_soccernet_data(data_dir: Path):
+def load_soccernet_password(explicit: str | None = None) -> str | None:
+    """Resolve the SoccerNet NDA password for restricted downloads.
+
+    Order of precedence: explicit arg -> $SOCCERNET_PASSWORD ->
+    .soccernet_token at the repo root. Returns None if none is found
+    (public files still download; NDA files will 401).
+    """
+    import os
+
+    if explicit:
+        return explicit.strip()
+    env = os.environ.get("SOCCERNET_PASSWORD")
+    if env:
+        return env.strip()
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        token = parent / ".soccernet_token"
+        if token.exists():
+            return token.read_text().strip()
+    return None
+
+
+def download_soccernet_data(data_dir: Path, password: str | None = None):
     """Download SoccerNet-v2 labels and pre-extracted features."""
     try:
         from SoccerNet.Downloader import SoccerNetDownloader
@@ -61,6 +83,13 @@ def download_soccernet_data(data_dir: Path):
         sys.exit("Install SoccerNet SDK: pip install SoccerNet")
 
     downloader = SoccerNetDownloader(LocalDirectory=str(data_dir))
+    password = load_soccernet_password(password)
+    if password:
+        downloader.password = password
+    else:
+        print("WARNING: no SoccerNet NDA password found "
+              "($SOCCERNET_PASSWORD or .soccernet_token); "
+              "Baidu features are NDA-restricted and will fail to download.")
 
     print("Downloading SoccerNet-v2 labels...")
     downloader.downloadGames(
@@ -175,6 +204,8 @@ def main():
     parser.add_argument("--data-dir", default="data/soccernet", help="Data directory")
     parser.add_argument("--output-dir", default="training/sn_spotting/runs", help="Output dir")
     parser.add_argument("--download-only", action="store_true", help="Only download data")
+    parser.add_argument("--password", help="SoccerNet NDA password (default: "
+                        "$SOCCERNET_PASSWORD or .soccernet_token)")
     parser.add_argument("--features", default="baidu",
                         choices=["baidu", "resnet", "e2e"],
                         help="Feature type (default: baidu)")
@@ -187,7 +218,7 @@ def main():
     output_dir = Path(args.output_dir)
 
     if args.download_only:
-        download_soccernet_data(data_dir)
+        download_soccernet_data(data_dir, args.password)
         return
 
     if args.export:
@@ -200,7 +231,7 @@ def main():
         return
 
     # Full training flow
-    download_soccernet_data(data_dir)
+    download_soccernet_data(data_dir, args.password)
     config = setup_osl_config(data_dir, output_dir, args.features, args.epochs)
     train_with_osl(output_dir / "config.json")
 

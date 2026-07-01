@@ -14,3 +14,9 @@ runs/
 .ruff_cache/
 .pytest_cache/
 tests/results/
+
+# SoccerNet NDA password (secret — never commit)
+.soccernet_token
+
+# Third-party training repos (vendored, not tracked)
+vendor/

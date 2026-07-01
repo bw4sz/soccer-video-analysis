@@ -35,7 +35,7 @@ def test_rfdetr_detection(video_path: Path, out_dir: Path):
     print(f"{'='*60}")
 
     t0 = time.time()
-    detector = RFDETRSoccerDetector.from_pretrained(device="mps")
+    detector = RFDETRSoccerDetector.from_pretrained()
     print(f"  Model loaded in {time.time()-t0:.1f}s")
 
     cap = cv2.VideoCapture(str(video_path))
