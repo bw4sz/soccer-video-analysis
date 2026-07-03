@@ -21,6 +21,11 @@ def main():
     p_process.add_argument("--out-dir", default="runs", help="Output base directory")
     p_process.add_argument("--match-id", help="Match identifier (auto-generated if omitted)")
     p_process.add_argument("--device", default=None, help="PyTorch device: cpu / cuda / mps")
+    p_process.add_argument(
+        "--action-engine", nargs="+", metavar="ENGINE",
+        help="Action-detection engine(s) to run: rules (default) / learned / vlm. "
+             "Overrides the config; engines without a runtime/checkpoint are skipped.",
+    )
 
     # broadcast
     p_broadcast = subparsers.add_parser("broadcast", help="Generate broadcast proxy only")
@@ -65,7 +70,7 @@ def main():
     p_trim.add_argument("--pad", type=float, default=0.5,
                         help="Seconds of context kept around each cut (default: 0.5)")
     p_trim.add_argument("--copy", action="store_true",
-                        help="Stream-copy segments instead of re-encoding (faster, may be imprecise)")
+                        help="Stream-copy segments instead of re-encoding (faster, less precise)")
     p_trim.add_argument("--dry-run", action="store_true",
                         help="Write the edit-decision list only; render no video")
     p_trim.add_argument("--device", default=None, help="PyTorch device for the detector")

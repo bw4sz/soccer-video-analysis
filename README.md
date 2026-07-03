@@ -8,8 +8,8 @@ Built on [supervision](https://github.com/roboflow/supervision) and the [OSL JSO
 
 | Commercial feature | soccer-vision equivalent | Status |
 |---|---|---|
-| Trace — per-player highlight reels | player tracking + event→player association + reels | ✅ track-id based, ⏳ named roster |
-| Veo Editor — AI events, team stats | set-piece detection + possession/distance/shot metrics | ✅ heuristics, ⏳ learned spotting |
+| Trace — per-player highlight reels | player tracking + action→player attribution + reels | ✅ track-id based, ⏳ named roster |
+| Veo Editor — AI events, team stats | action detector + possession/distance/shot metrics | ✅ rules engine, ⏳ learned engine (training) |
 | LongoMatch — manual tagging, playlists | OSL event store + clip DB + contact-sheet review | ✅ CLI, ⏳ desktop GUI |
 
 ---
@@ -25,11 +25,11 @@ soccer-vision process match.mp4
 Under the hood ([src/soccer_vision/cli/process.py](src/soccer_vision/cli/process.py)):
 
 1. **Load** raw wide-angle video
-2. **Virtual broadcast** — RF-DETR follow-cam crop → 16:9 `broadcast_proxy.mp4` (all later steps read the proxy, not the raw file)
-3. **Ball detection** — RF-DETR fine-tuned on SoccerNet
-4. **Player tracking** — ByteTrack (via supervision); foot positions + jersey-colour samples per track
-5. **Field registration** — Hough-line homography → pixel-to-metres
-6. **Event detection** — pluggable *sources* (today: set-piece heuristics for goal kick / corner / throw-in), then each event is **associated with the nearest player track and their team colour**
+2. **Virtual broadcast** — follow-cam crop → 16:9 `broadcast_proxy.mp4` (all later steps read the proxy, not the raw file)
+3. **Detector** — ball + players per frame (RF-DETR fine-tuned on SoccerNet)
+4. **Tracker** — ByteTrack (via supervision); foot positions + jersey-colour samples per track
+5. **Field mapper** — line-based homography → pixel-to-metres
+6. **Action detector** — pluggable *engines* named by what they do, not the model behind them: `rules` (set pieces, default), `learned` (trained action model, ⏳), `vlm` (video-LM, opt-in). Each action is then **attributed to the nearest player track and their team colour**
 7. **Metrics** — distance covered, possession, shots, event counts (overall and per team)
 8. **Persist** — SQLite match/event/clip DB + OSL JSON annotations
 9. **Clips** — ffmpeg cut per event + contact sheets for review
@@ -46,13 +46,15 @@ runs/{match_id}/
 runs/soccer_vision.db      # SQLite across all matches
 ```
 
-**49 unit tests pass** (OSL round-trip, set-piece detection, possession, event association, team classification, sources, clip math). CI runs ruff + pytest on every PR — no GPU, no model weights.
+**76 unit tests pass** (OSL round-trip, action detection, possession, attribution, team classification, engine registry, clip math). CI runs ruff + pytest on every PR — no GPU, no model weights.
 
 ---
 
 ## Two clip workflows: per-player vs team-action
 
-Both share the same `process` run. They only diverge at the **selection** step, where events (already tagged with `track_id` + `team` in step 6) are filtered before cutting.
+Both share the same `process` run. They only diverge at the **selection** step, where actions (already tagged with `track_id` + `team` by the attributor in step 6) are filtered before cutting.
+
+Every stage below is named for **what it does**. The engine that implements it (RF-DETR, ByteTrack, the trained action model) is a swappable detail — the action detector in particular is a registry of engines you pick by plain name (`--action-engine rules|learned|vlm`), never by model name.
 
 ```mermaid
 flowchart TD
@@ -60,13 +62,18 @@ flowchart TD
 
     subgraph PROC["soccer-vision process · shared pipeline"]
       direction TB
-      S2[Virtual broadcast proxy<br/>RF-DETR follow-cam] --> S3[Ball detection<br/>RF-DETR]
-      S3 --> S4[Player tracking<br/>ByteTrack]
-      S4 --> S5[Field registration<br/>Hough homography]
-      S4 --> TEAM[Team assignment<br/>jersey colour → blue / white]
-      S5 --> EV[Event sources<br/>set-piece heuristics: goal kick, corner, throw-in]
-      EV --> ASSOC[Associate each event with<br/>nearest player track + team]
-      TEAM --> ASSOC
+      DET[detector<br/>ball + players] --> TRK[tracker<br/>ByteTrack lanes]
+      TRK --> TEAM[team labeler<br/>jersey colour → 2 sides]
+      TRK --> FIELD[field mapper<br/>line homography → metres]
+      FIELD --> ACT
+      subgraph ACT["action detector · pluggable engines"]
+        direction LR
+        E1["rules ✅<br/>set pieces · default"]
+        E2["learned ⏳<br/>trained model · training"]
+        E3["vlm ⏳<br/>video-LM · opt-in"]
+      end
+      ACT --> ATTR[attributor<br/>nearest player track + team]
+      TEAM --> ATTR
     end
 
     PROC --> RUN[(run dir:<br/>annotations.json · stats.json · clips.db)]
@@ -76,7 +83,15 @@ flowchart TD
     Q -->|"2 · team action"| GRP["soccer-vision extract --run RUN --events throw_in --team blue<br/>→ every blue throw-in"]
 ```
 
-The filter (`label` / `team` / `track_id`) is a single shared function ([events/select.py](src/soccer_vision/events/select.py)), so any combination works — a whole team, one player, one event label, or all three at once:
+**Action-detection engines** (`--action-engine`, or `action_engines:` in config):
+
+| Engine | Emits | Status |
+|---|---|---|
+| `rules` | goal kick · corner · throw-in (ball-position heuristics) | ✅ default, always on |
+| `learned` | 8 player-attributed actions (pass, drive, cross, shot, header, throw-in, tackle, block) | ⏳ model training; inference engine not wired yet |
+| `vlm` | SoccerNet classes via sliding-window video-LM | ⏳ opt-in, weak on youth footage |
+
+The filter (`label` / `team` / `track_id`) is a single shared function ([events/select.py](src/soccer_vision/events/select.py)), so any combination works — a whole team, one player, one action label, or all three at once:
 
 ```bash
 # 1) Individual player — everything track-id 7 was closest to
@@ -105,8 +120,10 @@ pip install -e ".[dev]"     # + pytest, ruff, sphinx
 **System requirement:** `ffmpeg` on PATH.
 
 ```bash
-# full pipeline
+# full pipeline (rules action engine by default)
 soccer-vision process match.mp4 [--config examples/process_match.yaml] [--profile examples/profiles/saints-u10.yaml]
+# pick action-detection engine(s) explicitly (unavailable engines are skipped)
+soccer-vision process match.mp4 --action-engine rules learned
 # proxy only
 soccer-vision broadcast match.mp4 --out runs/match_001/
 # select + cut clips (see workflows above)
@@ -126,10 +143,10 @@ src/soccer_vision/
 ├── cli/          process · broadcast · extract · reel · verify · ask
 ├── io/           video (ffmpeg helpers) · osl (JSON 2.0) · project (run dirs)
 ├── broadcast/    virtual_cam — follow-cam proxy
-├── detection/    rfdetr · ball · field_filter (spectator removal)
-├── tracking/     bytetrack ✅ · teams ✅ · sam3 ⏳ · gamestate ⏳
-├── registration/ hough ✅ · sn_calib ⏳ · kpsfr ⏳
-├── events/       set_piece ✅ · phases ✅ · sources ✅ · associate ✅ · select ✅ · spotting ⏳
+├── detection/    detector (rfdetr) · ball · field_filter (spectator removal)
+├── tracking/     tracker (bytetrack) ✅ · team labeler (teams) ✅ · sam3 ⏳ · gamestate ⏳
+├── registration/ field mapper: hough ✅ · sn_calib ⏳ · kpsfr ⏳
+├── events/       action detector (sources: rules ✅ · learned ⏳ · vlm ⏳) · set_piece ✅ · phases ✅ · attributor (associate) ✅ · select ✅
 ├── metrics/      distance · possession · shots · heatmap
 ├── store/        db (SQLite) + schema.sql
 ├── clips/        extract (ffmpeg cut) · reels (concat)
@@ -140,7 +157,7 @@ src/soccer_vision/
 training/         FOOTPASS.md (player-centric ball-action spotting, primary) ·
                   sn_calib/ (calibration) · sn_spotting/ (T-DEED tackle model) + SLURM sbatch
 docs/             Sphinx → Read the Docs
-tests/            49 tests + video fixtures
+tests/            76 tests + video fixtures
 ```
 
 `SOCCER_VISION_SPEC.md` is the full architecture spec and phase plan. `CLAUDE.md` documents the older two-script prototypes ([detect_actions.py](detect_actions.py), [extract_clips.py](extract_clips.py), [register.py](register.py)) still usable standalone.
@@ -151,12 +168,11 @@ tests/            49 tests + video fixtures
 
 Roughly in priority order:
 
-- **Learned event spotting (FOOTPASS/TAAD)** — the primary path for player-centric ball-action spotting ([training/FOOTPASS.md](training/FOOTPASS.md)). Data is fetched, the TAAD baseline is training on SN-PCBAS-2026, and [scripts/footpass_extract_tracklets.py](scripts/footpass_extract_tracklets.py) can already build tracklets from our own Veo footage (RF-DETR + ByteTrack + team clustering) — smoke-tested on real match footage. Remaining: finish the FOOTPASS-baseline training run, then write the TAAD inference adapter that feeds our tracklets through the trained model, and improve team/jersey attribution quality (see gaps noted in FOOTPASS.md). SoccerChat (a local VLM, [verify/soccerchat.py](src/soccer_vision/verify/soccerchat.py)) was evaluated as an alternative and found unreliable as a structured classifier on our footage — see [training/FOOTPASS_vs_soccerchat.md](training/FOOTPASS_vs_soccerchat.md); it's kept only as a caption/verification aid.
-- [events/spotting.py](src/soccer_vision/events/spotting.py) and the `TackleSource` in [events/sources.py](src/soccer_vision/events/sources.py) are interface-only for the separate team-action T-DEED path ([training/sn_spotting/train_teamspotting.py](training/sn_spotting/train_teamspotting.py)) — lower priority than FOOTPASS.
+- **The `learned` action engine** — the biggest gap and the whole point of the current phase. The trained model itself ([`LearnedActionDetector`](src/soccer_vision/events/sources.py) — the `learned` engine) is interface-only: it needs the **inference path** that loads a checkpoint and runs our player tracklets through it to predict actions. Upstream is already built — the model is training on our data, and [scripts/footpass_extract_tracklets.py](scripts/footpass_extract_tracklets.py) turns our own Veo footage into tracklets (detector + tracker + team labeler), smoke-tested on real footage. Remaining: finish the training run, wire the inference engine (`is_available()` flips true once a checkpoint is passed), and improve team/jersey attribution quality. Background: [training/FOOTPASS.md](training/FOOTPASS.md). The `vlm` engine ([verify/soccerchat.py](src/soccer_vision/verify/soccerchat.py)) was evaluated as an alternative and found unreliable as a structured classifier on youth footage — see [training/FOOTPASS_vs_soccerchat.md](training/FOOTPASS_vs_soccerchat.md); kept only as a caption/verification aid (`soccer-vision describe`).
 - **Stable player identity** — jersey OCR / sn-gamestate / SAM3 so `--player <name>` resolves to a real roster number instead of a track id ([tracking/sam3.py](src/soccer_vision/tracking/sam3.py), [tracking/gamestate.py](src/soccer_vision/tracking/gamestate.py)).
-- **Better registration** — neural calibration ([registration/sn_calib.py](src/soccer_vision/registration/sn_calib.py), [registration/kpsfr.py](src/soccer_vision/registration/kpsfr.py)) for footage where Hough lines are weak.
+- **Better field mapper** — neural calibration ([registration/sn_calib.py](src/soccer_vision/registration/sn_calib.py), [registration/kpsfr.py](src/soccer_vision/registration/kpsfr.py)) for footage where field lines are weak.
 - **Desktop reviewer** — PySide6 timeline / clip bin / stats tabs ([gui/](src/soccer_vision/gui/) is empty).
-- **More event detectors** — free kicks, kickoff, substitutions; each is a new `EventSource`.
+- **More action engines / labels** — free kicks, kickoff, substitutions; each is a new engine behind the same `ActionDetector` interface.
 - **Packaging** — Read the Docs build, PyPI release, example notebooks.
 
 ---
@@ -165,10 +181,10 @@ Roughly in priority order:
 
 Early-stage — high-leverage contributions right now:
 
-1. **New event detectors** — implement the `EventSource` protocol ([events/sources.py](src/soccer_vision/events/sources.py)); it plugs in behind association + clip selection with zero downstream changes.
-2. **Registration for non-broadcast cameras** — improve Hough fallback or wire a calibration model.
-3. **Test fixtures** — short anonymized clips with known events grow the CI suite.
-4. **Try it on your footage** and file issues on detection accuracy — set-piece thresholds are tuned for youth 7v7 (55×36 m field) and need real-world data.
+1. **New action engines** — implement the `ActionDetector` protocol ([events/sources.py](src/soccer_vision/events/sources.py)); it plugs in behind attribution + clip selection with zero downstream changes.
+2. **Field mapper for non-broadcast cameras** — improve the line-based fallback or wire a calibration model.
+3. **Test fixtures** — short anonymized clips with known actions grow the CI suite.
+4. **Try it on your footage** and file issues on detection accuracy — `rules`-engine thresholds are tuned for youth 7v7 (55×36 m field) and need real-world data.
 
 Dev loop: `pip install -e ".[dev]"` → `ruff check src/ tests/` → `pytest -q`. Issues and PRs welcome.
 
