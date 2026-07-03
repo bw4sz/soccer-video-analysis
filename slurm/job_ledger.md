@@ -48,8 +48,16 @@ Why: Run `trim-empty` end-to-end on a real match (match-saints-16b-pre-mls-next-
 Result: COMPLETED in 55min. Ball visible in 92.5% of samples; cut 11 dead spans (10
   stationary, 1 mixed), removing 1.1min (2%) of a 53.4min match. Track/EDL/trimmed video
   saved under slurm/logs/trim_empty_20260702_102933/.
-Next: Spot-check the trimmed output and EDL for correctness; if good, this is the
-  reference invocation for running trim-empty on other matches.
+Reviewed: Pipeline is correct but this clip has little dead time to cut. No halftime is
+  present — the longest offscreen block is 4.5s (Veo likely pre-trimmed the break), so the
+  "large halftime" premise doesn't hold for this file. Ball speed is median 251 px/s and the
+  longest continuous near-stationary stretch is only 15s: the ball is almost always moving,
+  so few spans meet the offscreen/stationary >5s rule. The 11 short cuts (4–14s) are genuine
+  set-piece setups. Detection is NOT the bottleneck (92.5% visible); the dead-time definition
+  is. To trim more, extend "dead" beyond ball-only (e.g. low ball speed <80 px/s ≈ 23% of
+  match, or player-cluster/idle cues) rather than loosening stationary-px.
+Next: Decide whether to add a speed-based / player-based dead-time criterion, and test on a
+  match that actually contains an untrimmed halftime.
 
 ## 36183406 — 2026-07-01 16:17 — training/slurm/soccerchat_describe.sbatch (smoke test)
 Why: 3rd attempt at a SoccerChat GPU smoke test after switching the inference path from

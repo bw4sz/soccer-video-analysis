@@ -4,6 +4,15 @@ Two pipelines are available. Use **Pipeline A** for quick visual review or when
 YOLO detection is unreliable. Use **Pipeline B** when you want automated
 candidate detection and only need Claude for final verification.
 
+## SLURM job ledger
+
+`slurm/job_ledger.md` tracks every SLURM job submitted for this project (why it
+was run, its outcome, and follow-up). It's a project-scoped copy of the
+cross-project `/home/b.weinstein/logs/job_ledger.md`, which mixes in other
+projects. When you submit a job for this repo, append an entry here; when it
+finishes, check its raw output under `/home/b.weinstein/logs/` or
+`slurm/logs/<name>_<timestamp>/` and fill in the `Result` line.
+
 ---
 
 ## Pipeline A — Frame sampling (no YOLO)
