@@ -133,11 +133,12 @@ src/soccer_vision/
 ├── metrics/      distance · possession · shots · heatmap
 ├── store/        db (SQLite) + schema.sql
 ├── clips/        extract (ffmpeg cut) · reels (concat)
-├── verify/       sheets (contact sheets) · claude (API)
+├── verify/       sheets (contact sheets) · claude (API) · soccerchat (local VLM, caption/verify only)
 ├── profiles/     loader (YAML roster / IDP)
 └── gui/          ⏳ empty — PySide6 reviewer planned
 
-training/         sn_calib/ (calibration) · sn_spotting/ (T-DEED tackle model) + SLURM sbatch
+training/         FOOTPASS.md (player-centric ball-action spotting, primary) ·
+                  sn_calib/ (calibration) · sn_spotting/ (T-DEED tackle model) + SLURM sbatch
 docs/             Sphinx → Read the Docs
 tests/            49 tests + video fixtures
 ```
@@ -150,7 +151,8 @@ tests/            49 tests + video fixtures
 
 Roughly in priority order:
 
-- **Learned event spotting** — [events/spotting.py](src/soccer_vision/events/spotting.py) and the `TackleSource` in [events/sources.py](src/soccer_vision/events/sources.py) are interface-only. Train/export a T-DEED model ([training/sn_spotting/train_teamspotting.py](training/sn_spotting/train_teamspotting.py)) and load it — association and clip code need no changes to gain a team-aware `tackle` label.
+- **Learned event spotting (FOOTPASS/TAAD)** — the primary path for player-centric ball-action spotting ([training/FOOTPASS.md](training/FOOTPASS.md)). Data is fetched, the TAAD baseline is training on SN-PCBAS-2026, and [scripts/footpass_extract_tracklets.py](scripts/footpass_extract_tracklets.py) can already build tracklets from our own Veo footage (RF-DETR + ByteTrack + team clustering) — smoke-tested on real match footage. Remaining: finish the FOOTPASS-baseline training run, then write the TAAD inference adapter that feeds our tracklets through the trained model, and improve team/jersey attribution quality (see gaps noted in FOOTPASS.md). SoccerChat (a local VLM, [verify/soccerchat.py](src/soccer_vision/verify/soccerchat.py)) was evaluated as an alternative and found unreliable as a structured classifier on our footage — see [training/FOOTPASS_vs_soccerchat.md](training/FOOTPASS_vs_soccerchat.md); it's kept only as a caption/verification aid.
+- [events/spotting.py](src/soccer_vision/events/spotting.py) and the `TackleSource` in [events/sources.py](src/soccer_vision/events/sources.py) are interface-only for the separate team-action T-DEED path ([training/sn_spotting/train_teamspotting.py](training/sn_spotting/train_teamspotting.py)) — lower priority than FOOTPASS.
 - **Stable player identity** — jersey OCR / sn-gamestate / SAM3 so `--player <name>` resolves to a real roster number instead of a track id ([tracking/sam3.py](src/soccer_vision/tracking/sam3.py), [tracking/gamestate.py](src/soccer_vision/tracking/gamestate.py)).
 - **Better registration** — neural calibration ([registration/sn_calib.py](src/soccer_vision/registration/sn_calib.py), [registration/kpsfr.py](src/soccer_vision/registration/kpsfr.py)) for footage where Hough lines are weak.
 - **Desktop reviewer** — PySide6 timeline / clip bin / stats tabs ([gui/](src/soccer_vision/gui/) is empty).
