@@ -16,6 +16,18 @@ Result: <outcome once known>
 Next: <follow-up action>
 ```
 
+## 36305311 — 2026-07-03 10:03 — training/slurm/train_footpass_taad.sbatch
+Why: Resubmit after job 36260512's epoch-3 CUDA OOM. Root cause isn't a leak: the
+  vendored `set_x3d_freezing_schedule` trains head-only (X3D frozen) for epochs 1-2,
+  so autograd skips storing backbone activations; at epoch 3 the backbone unfreezes
+  and full backprop through X3D-S needs much more activation memory on the 22GB L4
+  — batch_size=6 no longer fits once that happens. Halved to batch_size=3 (AMP
+  fp16 already in use, so batch size is the only lever left); run dir
+  `taad_$(date)` under `/blue/.../footpass/runs/`.
+Result: pending.
+Next: watch for the epoch-3 boundary specifically — if it still OOMs there, drop
+  to batch_size=2 or add gradient checkpointing to the X3D backbone.
+
 ## 36260512 — 2026-07-02 11:14 — training/slurm/train_footpass_taad.sbatch
 Why: First full training run of the FOOTPASS TAAD baseline (player-centric ball-action
   spotting model) on the fetched SN-PCBAS-2026 tactical-cam data. 20 epochs, batch_size=6,

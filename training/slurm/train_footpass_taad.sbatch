@@ -34,9 +34,13 @@ if [ ! -f "$DATA_ROOT/data/train_tactical_data.h5" ]; then
 fi
 
 cd "$FOOTPASS"
+# batch_size=6 OOM'd on an L4 (22GB) at epoch 3 (job 36260512): epochs 1-2 train
+# head-only (X3D frozen per set_x3d_freezing_schedule), so autograd skips backbone
+# activations; unfreezing at epoch 3 makes it retain them, spiking memory. Halved
+# to 3 to fit the unfrozen backward pass — not a leak, so no other change needed.
 "$FOOTPASS_PY" train_TAAD_Baseline.py \
   --data_root "$DATA_ROOT" \
   --run_path "$DATA_ROOT/runs/taad_$(date +%d%m%Y_%H%M)" \
   --epochs 20 \
-  --batch_size 6 \
+  --batch_size "${BATCH_SIZE:-3}" \
   --num_workers "${SLURM_CPUS_PER_TASK:-6}"
