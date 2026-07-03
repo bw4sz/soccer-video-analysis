@@ -50,6 +50,7 @@ def run_trim_empty(args):
         video,
         track,
         out_path=args.out,
+        edl_path=args.edl,
         min_dead_s=args.min_dead,
         stationary_px=args.stationary_px,
         pad_s=args.pad,

@@ -58,17 +58,30 @@ def resolve_zip_password(explicit: str | None) -> str | None:
     return None
 
 
+def _is_aes(zip_path: Path) -> bool:
+    """WinZip AES entries report compress_type 99 — stdlib zipfile can't read them."""
+    with zipfile.ZipFile(zip_path) as zf:
+        return any(i.compress_type == 99 for i in zf.infolist())
+
+
 def extract(zip_path: Path, out_dir: Path, password: str | None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     pwd = password.encode() if password else None
-    with zipfile.ZipFile(zip_path) as zf:
+    # The FOOTPASS *video* zips are WinZip-AES encrypted (method 99); stdlib
+    # zipfile (and system `unzip`) can't decrypt them. Use pyzipper for those.
+    if _is_aes(zip_path):
         try:
+            import pyzipper
+        except ImportError:
+            sys.exit(f"{zip_path.name} is AES-encrypted — `uv pip install pyzipper`.")
+        if pwd is None:
+            sys.exit(f"{zip_path.name} is AES-encrypted; provide the SoccerNet "
+                     "password via --zip-password or the gitignored .soccernet_token.")
+        with pyzipper.AESZipFile(zip_path) as zf:
             zf.extractall(out_dir, pwd=pwd)
-        except RuntimeError as e:
-            if "password" in str(e).lower() and pwd is None:
-                sys.exit(f"{zip_path.name}: needs an extraction password. "
-                         "Re-run with --zip-password (SoccerNet NDA password).")
-            raise
+    else:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(out_dir, pwd=pwd)
     print(f"  extracted {zip_path.name} -> {out_dir}")
 
 
@@ -103,10 +116,19 @@ def main() -> int:
         return 0
 
     try:
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import get_token, hf_hub_download
         from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
     except ImportError:
         sys.exit("pip/uv install huggingface_hub")
+
+    if not get_token():
+        sys.exit(
+            "No HuggingFace token found. Authenticate first (the `.venv/bin/hf` on "
+            "PATH is broken — use the blue env or $HF_TOKEN):\n"
+            "  /blue/ewhite/b.weinstein/envs/soccer-vision/bin/hf auth login\n"
+            "  # or:  export HF_TOKEN=hf_xxx\n"
+            f"and accept terms at https://huggingface.co/datasets/{HF_REPO}"
+        )
 
     data_dir = args.dest / "data"
     videos_dir = args.dest / "videos"

@@ -225,13 +225,16 @@ def trim_empty(
         **plan,
     }
 
+    # Persist the plan before touching ffmpeg so the edit list survives even if
+    # rendering fails (e.g. a degenerate keep list from sparse ball detections).
+    edl_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(edl_path, "w") as f:
+        json.dump(edl, f, indent=2)
+    edl["edl_path"] = str(edl_path)
+
     if not dry_run:
         assemble_segments(
             video_path, plan["keep_segments"], out_path, reencode=reencode
         )
 
-    edl_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(edl_path, "w") as f:
-        json.dump(edl, f, indent=2)
-    edl["edl_path"] = str(edl_path)
     return edl

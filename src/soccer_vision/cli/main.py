@@ -54,6 +54,7 @@ def main():
     p_trim.add_argument("video", help="Path to input video file")
     p_trim.add_argument("--track", help="Ball-track JSON (built from detector if omitted)")
     p_trim.add_argument("--out", help="Output video path (default: <video>.trimmed.mp4)")
+    p_trim.add_argument("--edl", help="Edit-decision-list JSON path (default: <video>.trim.json)")
     p_trim.add_argument("--save-track", help="Where to save an auto-built ball track")
     p_trim.add_argument("--sample-fps", type=float, default=5.0,
                         help="Sample rate when building a track (default: 5)")

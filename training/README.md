@@ -12,18 +12,15 @@ Scripts for SoccerNet tasks that need training from scratch or fine-tuning.
 
 ## Needs Training
 
-| Task | Doc | Framework | Data |
+| Task | Script / Doc | Framework | Data |
 |---|---|---|---|
-| **Ball action spotting (player-centric)** | **[`FOOTPASS.md`](FOOTPASS.md) — primary** | TAAD (X3D + tracklets) | SN-PCBAS-2026 (HuggingFace, gated) |
-| Ball action spotting *(deprecated)* | `sn_spotting/train_action_spotting.py` | OSL-ActionSpotting + NetVLAD | SoccerNet-v2 labels + Baidu features |
-| Team ball action spotting *(deprecated)* | `sn_spotting/train_teamspotting.py` | sn-teamspotting / T-DEED | SoccerNet BAS 2024 |
+| **Ball action spotting (player-centric)** | **[`FOOTPASS.md`](FOOTPASS.md)** | TAAD (X3D + tracklets) | SN-PCBAS-2026 (HuggingFace, gated) |
+| Action spotting | `sn_spotting/train_action_spotting.py` | OSL-ActionSpotting + NetVLAD | SoccerNet-v2 labels + Baidu features |
+| Team ball action spotting | `sn_spotting/train_teamspotting.py` | sn-teamspotting / T-DEED | SoccerNet BAS 2024 |
 
 > **Ball-action spotting is standardized on FOOTPASS / SN-PCBAS-2026**
 > (8 player-centric classes with team+jersey, `(frame, team, jersey, class)`).
-> See [`FOOTPASS.md`](FOOTPASS.md). The recokick MultiDimStacker path was
-> evaluated and dropped — its only released weights were 2-class (PASS/DRIVE),
-> now deleted; the vendored repo is kept for reference only. The two spotting
-> scripts above (OSL NetVLAD, T-DEED) ship no weights and are superseded.
+> See [`FOOTPASS.md`](FOOTPASS.md).
 
 ## Needs Fine-tuning
 
