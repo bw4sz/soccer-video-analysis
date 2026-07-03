@@ -11,11 +11,11 @@ import yaml
 
 def run_pipeline(args):
     """Execute the full 9-step pipeline on a match video."""
-    from soccer_vision.broadcast.virtual_cam import BroadcastConfig, generate_broadcast_proxy
-    from soccer_vision.clips.extract import extract_event_clips
     import numpy as np
     import supervision as sv
 
+    from soccer_vision.broadcast.virtual_cam import BroadcastConfig, generate_broadcast_proxy
+    from soccer_vision.clips.extract import extract_event_clips
     from soccer_vision.detection.ball import detect_ball_position
     from soccer_vision.detection.field_filter import filter_spectators
     from soccer_vision.detection.rfdetr import ALL_PERSON_CLASS_IDS, RFDETRSoccerDetector

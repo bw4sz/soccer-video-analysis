@@ -1,110 +1,177 @@
 # soccer-vision
 
-Open-source soccer video analysis toolkit. Replicates capabilities of subscription products (Trace, Veo Editor, LongoMatch) without vendor lock-in — designed for coaches and analysts who want programmatic control over their match footage.
+Open-source soccer video analysis toolkit. Replicates the useful parts of subscription products (Trace, Veo Editor, LongoMatch) without vendor lock-in — programmatic control over your own match footage.
 
-**Target audience:** coaches, sports analysts, and developers working with single-camera match video (Veo, TrackMan, or any fixed/overhead camera). Python 3.12+, CPU-viable, no cloud dependency.
+**For:** coaches, analysts, and developers working with single-camera match video (any fixed/overhead/wide-angle source). Python 3.12+, CPU-viable, no cloud dependency.
 
-Built on [OpenSportsLib](https://github.com/OpenSportsLab/opensportslib) and [supervision](https://github.com/roboflow/supervision). Uses Transformers-based models (RF-DETR, SAM3) — no Ultralytics/YOLO.
+Built on [supervision](https://github.com/roboflow/supervision) and the [OSL JSON](https://opensportslab.github.io/opensportslib/data/osl-json-format/) interchange format. Uses transformers-based detection (RF-DETR) — **no Ultralytics/YOLO**.
 
-## Install
+| Commercial feature | soccer-vision equivalent | Status |
+|---|---|---|
+| Trace — per-player highlight reels | player tracking + event→player association + reels | ✅ track-id based, ⏳ named roster |
+| Veo Editor — AI events, team stats | set-piece detection + possession/distance/shot metrics | ✅ heuristics, ⏳ learned spotting |
+| LongoMatch — manual tagging, playlists | OSL event store + clip DB + contact-sheet review | ✅ CLI, ⏳ desktop GUI |
 
-```bash
-pip install -e .
+---
 
-# With GPU support
-pip install -e ".[gpu]"
+## What's here now
 
-# With desktop reviewer
-pip install -e ".[gui]"
-```
-
-**System requirement:** `ffmpeg` on PATH.
-
-## Usage
+The canonical pipeline runs end to end on CPU. One command turns a raw match into a proxy video, an event stream, team stats, and cut clips:
 
 ```bash
-# Full pipeline: broadcast proxy → detection → tracking → events → metrics → clips
 soccer-vision process match.mp4
-
-# With config
-soccer-vision process match.mp4 --config examples/process_match.yaml
-
-# Generate broadcast proxy only
-soccer-vision broadcast match.mp4
-
-# Extract clips from a processed run
-soccer-vision extract --run runs/match_001/ --events goal_kick corner_kick
-
-# Build highlight reel
-soccer-vision reel --event goal_kick --run runs/match_001/ --out goal_kicks.mp4
 ```
 
-## Pipeline
+Under the hood ([src/soccer_vision/cli/process.py](src/soccer_vision/cli/process.py)):
 
-Every match video runs through a single canonical workflow:
-
-1. **Load raw video**
-2. **Virtual broadcast** — follow-cam 16:9 proxy from wide-angle single-camera footage
+1. **Load** raw wide-angle video
+2. **Virtual broadcast** — RF-DETR follow-cam crop → 16:9 `broadcast_proxy.mp4` (all later steps read the proxy, not the raw file)
 3. **Ball detection** — RF-DETR fine-tuned on SoccerNet
-4. **Player tracking** — ByteTrack via supervision
-5. **Field registration** — Hough-line homography (sn-calibration fallback)
-6. **Event detection** — set-piece heuristics + spotting model adapters
-7. **Team metrics** — distance, possession, shots, heatmaps
-8. **Database logging** — SQLite + OSL JSON 2.0
-9. **Clip creation** — ffmpeg extraction + highlight reels
+4. **Player tracking** — ByteTrack (via supervision); foot positions + jersey-colour samples per track
+5. **Field registration** — Hough-line homography → pixel-to-metres
+6. **Event detection** — pluggable *sources* (today: set-piece heuristics for goal kick / corner / throw-in), then each event is **associated with the nearest player track and their team colour**
+7. **Metrics** — distance covered, possession, shots, event counts (overall and per team)
+8. **Persist** — SQLite match/event/clip DB + OSL JSON annotations
+9. **Clips** — ffmpeg cut per event + contact sheets for review
 
-## Outputs
-
-Each processed match produces:
+Every match writes a self-contained run directory:
 
 ```
 runs/{match_id}/
 ├── broadcast_proxy.mp4    # 16:9 follow-cam proxy
-├── annotations.json       # OSL JSON 2.0 events
+├── annotations.json       # OSL JSON events (label, frame, team, track_id)
 ├── stats.json             # team metrics
 ├── clips/                 # extracted clips
-└── sheets/                # contact sheets for review
+└── sheets/                # contact sheets for human/Claude review
+runs/soccer_vision.db      # SQLite across all matches
 ```
 
-## Project Profiles
+**49 unit tests pass** (OSL round-trip, set-piece detection, possession, event association, team classification, sources, clip math). CI runs ruff + pytest on every PR — no GPU, no model weights.
 
-Customize for your team with a YAML profile:
+---
+
+## Two clip workflows: per-player vs team-action
+
+Both share the same `process` run. They only diverge at the **selection** step, where events (already tagged with `track_id` + `team` in step 6) are filtered before cutting.
+
+```mermaid
+flowchart TD
+    RAW[Raw match video<br/>wide-angle single camera] --> PROC
+
+    subgraph PROC["soccer-vision process · shared pipeline"]
+      direction TB
+      S2[Virtual broadcast proxy<br/>RF-DETR follow-cam] --> S3[Ball detection<br/>RF-DETR]
+      S3 --> S4[Player tracking<br/>ByteTrack]
+      S4 --> S5[Field registration<br/>Hough homography]
+      S4 --> TEAM[Team assignment<br/>jersey colour → blue / white]
+      S5 --> EV[Event sources<br/>set-piece heuristics: goal kick, corner, throw-in]
+      EV --> ASSOC[Associate each event with<br/>nearest player track + team]
+      TEAM --> ASSOC
+    end
+
+    PROC --> RUN[(run dir:<br/>annotations.json · stats.json · clips.db)]
+    RUN --> Q{Select and cut clips}
+
+    Q -->|"1 · individual player"| IND["soccer-vision reel --run RUN --track 7 --event throw_in<br/>→ player #7's throw-ins only"]
+    Q -->|"2 · team action"| GRP["soccer-vision extract --run RUN --events throw_in --team blue<br/>→ every blue throw-in"]
+```
+
+The filter (`label` / `team` / `track_id`) is a single shared function ([events/select.py](src/soccer_vision/events/select.py)), so any combination works — a whole team, one player, one event label, or all three at once:
 
 ```bash
-soccer-vision process match.mp4 --profile examples/profiles/saints-u10.yaml
+# 1) Individual player — everything track-id 7 was closest to
+soccer-vision reel --run runs/match_001 --track 7 --out player7.mp4
+
+# 2) Team action — all throw-ins by the blue team
+soccer-vision extract --run runs/match_001 --events throw_in --team blue
+
+# combine: only #7's throw-ins into one reel
+soccer-vision reel --run runs/match_001 --track 7 --event throw_in --out p7_throwins.mp4
 ```
 
-## Dependencies
+> **Player identity is track-id based (v1).** A `track_id` is a ByteTrack lane, not yet a named jersey number. Stable per-player identity (jersey OCR / sn-gamestate / SAM3 masklets) is a later phase; `--player <name>` is stubbed until then. Teams are assigned by clustering torso colour into two groups and naming each (blue/white/…), so `--team` works today.
 
-- Python 3.12+
-- `opencv-python`, `numpy`, `torch`, `transformers`, `supervision`
-- `ffmpeg` on PATH
+---
 
-## Quick two-script usage (no install)
-
-If you just want to extract highlight clips without the full pipeline:
+## Install
 
 ```bash
-pip install opencv-python numpy   # ffmpeg must be on PATH
-
-# Detect goal-kick candidates (CPU, ~2–4 min per 60-min match)
-python detect_actions.py --video match.mp4 --action goal_kick --preview --out candidates.json
-
-# Review candidates_sheet.jpg, then extract clips
-python extract_clips.py --video match.mp4 --candidates candidates.json \
-  --pre 5 --post 30 --concat --concat-out goal_kicks.mp4
+pip install -e .            # core (CPU)
+pip install -e ".[gpu]"     # + SAM3 / GPU inference
+pip install -e ".[gui]"     # + desktop reviewer deps (GUI not yet implemented)
+pip install -e ".[dev]"     # + pytest, ruff, sphinx
 ```
 
-For YOLO-assisted detection with field registration, see [`track.py`](track.py) and [`register.py`](register.py).
+**System requirement:** `ffmpeg` on PATH.
 
-## Contributing
+```bash
+# full pipeline
+soccer-vision process match.mp4 [--config examples/process_match.yaml] [--profile examples/profiles/saints-u10.yaml]
+# proxy only
+soccer-vision broadcast match.mp4 --out runs/match_001/
+# select + cut clips (see workflows above)
+soccer-vision extract --run runs/match_001/ --events goal_kick corner_kick
+soccer-vision reel    --run runs/match_001/ --event goal_kick --out goal_kicks.mp4
+# review / query with Claude (needs ANTHROPIC_API_KEY)
+soccer-vision verify  --run runs/match_001/ --profile examples/profiles/saints-u10.yaml
+soccer-vision ask "which team had more corners?" --run runs/match_001/
+```
 
-Issues and PRs welcome. The project is early-stage — the most useful contributions right now are:
+---
 
-- Additional event detectors (free kicks, throw-ins, substitutions)
-- Field registration improvements for non-broadcast cameras
-- Test fixtures (short anonymized video clips)
+## Project structure
+
+```
+src/soccer_vision/
+├── cli/          process · broadcast · extract · reel · verify · ask
+├── io/           video (ffmpeg helpers) · osl (JSON 2.0) · project (run dirs)
+├── broadcast/    virtual_cam — follow-cam proxy
+├── detection/    rfdetr · ball · field_filter (spectator removal)
+├── tracking/     bytetrack ✅ · teams ✅ · sam3 ⏳ · gamestate ⏳
+├── registration/ hough ✅ · sn_calib ⏳ · kpsfr ⏳
+├── events/       set_piece ✅ · phases ✅ · sources ✅ · associate ✅ · select ✅ · spotting ⏳
+├── metrics/      distance · possession · shots · heatmap
+├── store/        db (SQLite) + schema.sql
+├── clips/        extract (ffmpeg cut) · reels (concat)
+├── verify/       sheets (contact sheets) · claude (API) · soccerchat (local VLM, caption/verify only)
+├── profiles/     loader (YAML roster / IDP)
+└── gui/          ⏳ empty — PySide6 reviewer planned
+
+training/         FOOTPASS.md (player-centric ball-action spotting, primary) ·
+                  sn_calib/ (calibration) · sn_spotting/ (T-DEED tackle model) + SLURM sbatch
+docs/             Sphinx → Read the Docs
+tests/            49 tests + video fixtures
+```
+
+`SOCCER_VISION_SPEC.md` is the full architecture spec and phase plan. `CLAUDE.md` documents the older two-script prototypes ([detect_actions.py](detect_actions.py), [extract_clips.py](extract_clips.py), [register.py](register.py)) still usable standalone.
+
+---
+
+## What's left to build
+
+Roughly in priority order:
+
+- **Learned event spotting (FOOTPASS/TAAD)** — the primary path for player-centric ball-action spotting ([training/FOOTPASS.md](training/FOOTPASS.md)). Data is fetched, the TAAD baseline is training on SN-PCBAS-2026, and [scripts/footpass_extract_tracklets.py](scripts/footpass_extract_tracklets.py) can already build tracklets from our own Veo footage (RF-DETR + ByteTrack + team clustering) — smoke-tested on real match footage. Remaining: finish the FOOTPASS-baseline training run, then write the TAAD inference adapter that feeds our tracklets through the trained model, and improve team/jersey attribution quality (see gaps noted in FOOTPASS.md). SoccerChat (a local VLM, [verify/soccerchat.py](src/soccer_vision/verify/soccerchat.py)) was evaluated as an alternative and found unreliable as a structured classifier on our footage — see [training/FOOTPASS_vs_soccerchat.md](training/FOOTPASS_vs_soccerchat.md); it's kept only as a caption/verification aid.
+- [events/spotting.py](src/soccer_vision/events/spotting.py) and the `TackleSource` in [events/sources.py](src/soccer_vision/events/sources.py) are interface-only for the separate team-action T-DEED path ([training/sn_spotting/train_teamspotting.py](training/sn_spotting/train_teamspotting.py)) — lower priority than FOOTPASS.
+- **Stable player identity** — jersey OCR / sn-gamestate / SAM3 so `--player <name>` resolves to a real roster number instead of a track id ([tracking/sam3.py](src/soccer_vision/tracking/sam3.py), [tracking/gamestate.py](src/soccer_vision/tracking/gamestate.py)).
+- **Better registration** — neural calibration ([registration/sn_calib.py](src/soccer_vision/registration/sn_calib.py), [registration/kpsfr.py](src/soccer_vision/registration/kpsfr.py)) for footage where Hough lines are weak.
+- **Desktop reviewer** — PySide6 timeline / clip bin / stats tabs ([gui/](src/soccer_vision/gui/) is empty).
+- **More event detectors** — free kicks, kickoff, substitutions; each is a new `EventSource`.
+- **Packaging** — Read the Docs build, PyPI release, example notebooks.
+
+---
+
+## How to get involved
+
+Early-stage — high-leverage contributions right now:
+
+1. **New event detectors** — implement the `EventSource` protocol ([events/sources.py](src/soccer_vision/events/sources.py)); it plugs in behind association + clip selection with zero downstream changes.
+2. **Registration for non-broadcast cameras** — improve Hough fallback or wire a calibration model.
+3. **Test fixtures** — short anonymized clips with known events grow the CI suite.
+4. **Try it on your footage** and file issues on detection accuracy — set-piece thresholds are tuned for youth 7v7 (55×36 m field) and need real-world data.
+
+Dev loop: `pip install -e ".[dev]"` → `ruff check src/ tests/` → `pytest -q`. Issues and PRs welcome.
 
 ## License
 
-AGPL-3.0 (matches opensportslib upstream).
+AGPL-3.0-or-later.

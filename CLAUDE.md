@@ -4,6 +4,15 @@ Two pipelines are available. Use **Pipeline A** for quick visual review or when
 YOLO detection is unreliable. Use **Pipeline B** when you want automated
 candidate detection and only need Claude for final verification.
 
+## SLURM job ledger
+
+`slurm/job_ledger.md` tracks every SLURM job submitted for this project (why it
+was run, its outcome, and follow-up). It's a project-scoped copy of the
+cross-project `/home/b.weinstein/logs/job_ledger.md`, which mixes in other
+projects. When you submit a job for this repo, append an entry here; when it
+finishes, check its raw output under `/home/b.weinstein/logs/` or
+`slurm/logs/<name>_<timestamp>/` and fill in the `Result` line.
+
 ---
 
 ## Pipeline A — Frame sampling (no YOLO)
@@ -157,6 +166,48 @@ python extract_clips.py \
   --pre 0 --post 20 \
   --concat --concat-out goal_kick_reel.mp4
 ```
+
+---
+
+## Trim empty — cut dead time into a shorter clip
+
+Youth matches are mostly dead time (ball out of play, or sitting still while
+players reposition). `trim-empty` removes spans where the ball is **offscreen**
+or **not moving** for longer than `--min-dead` seconds, splicing the rest into a
+new file. **The original is never modified.**
+
+```bash
+# Auto-build a ball track from the RF-DETR detector, then trim:
+soccer-vision trim-empty match.mp4 --save-track ball_track.json
+
+# Reuse a precomputed track (from the detector, or track.py in future):
+soccer-vision trim-empty match.mp4 --track ball_track.json --out match.short.mp4
+
+# Preview the cut list without rendering:
+soccer-vision trim-empty match.mp4 --track ball_track.json --dry-run
+```
+
+Outputs `match.trimmed.mp4` (or `--out`) plus `match.trim.json`, an
+edit-decision list recording every kept/removed span and why.
+
+**Ball-track schema** (the input; the tracker is optional — supply your own
+until it lands). Defined in `soccer_vision.events.deadball`:
+
+```json
+{
+  "video": "match.mp4", "fps": 30.0, "sample_fps": 5.0,
+  "width": 1920, "height": 1080, "total_frames": 108000,
+  "samples": [
+    {"frame": 0, "timestamp_s": 0.0, "visible": true,
+     "pixel_x": 950.0, "pixel_y": 540.0, "confidence": 0.82},
+    {"frame": 6, "timestamp_s": 0.2, "visible": false,
+     "pixel_x": null, "pixel_y": null, "confidence": 0.0}
+  ]
+}
+```
+
+Key options: `--min-dead 5` (dead-span threshold), `--stationary-px 40` (max
+drift to count as "not moving"), `--pad 0.5` (context kept around each cut).
 
 ---
 

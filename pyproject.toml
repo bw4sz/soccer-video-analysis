@@ -19,17 +19,46 @@ dependencies = [
   "pyyaml>=6.0",
   "sqlalchemy>=2.0",
   "anthropic>=0.40",
+  "gdown>=6.1.0",
 ]
 
 [project.optional-dependencies]
 gpu = ["inference[gpu]"]
 gui = ["pyside6>=6.6", "supervision[desktop]"]
 broadcast = ["tracklab"]
-train = ["lightning"]
+train = ["lightning", "SoccerNet>=0.1.56"]
+# SoccerChat local VLM: Qwen2-VL-7B + LoRA loaded via transformers + peft.
+# GPU strongly recommended. transformers >=5.1 to stay compatible with the
+# base rfdetr dependency (which requires transformers>=5.1,<6).
+soccerchat = [
+  "transformers>=5.1,<6",
+  "peft>=0.13",
+  "accelerate>=0.34",
+  "qwen-vl-utils",
+  "decord",
+  "av",
+]
+# Label Studio annotation UI + Python SDK for pushing pre-filled review projects.
+annotate = ["label-studio>=1.13", "label-studio-sdk>=1.0"]
 dev = ["pytest", "ruff", "sphinx"]
 
 [project.scripts]
 soccer-vision = "soccer_vision.cli.main:main"
+
+[tool.uv]
+# These heavy extras pin mutually incompatible versions of numpy / anthropic /
+# supervision (e.g. inference[gpu] wants numpy<2.4 + old anthropic, while
+# label-studio and ms-swift want newer). Declaring them as conflicting lets uv
+# resolve the lock by forking instead of failing on an unsatisfiable universe.
+# Install at most one of these per environment.
+conflicts = [
+  [
+    { extra = "gpu" },
+    { extra = "annotate" },
+    { extra = "soccerchat" },
+    { extra = "broadcast" },
+  ],
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/soccer_vision"]

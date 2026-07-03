@@ -16,31 +16,33 @@
 # Train sn-calibration DeepLabv3 for field line segmentation.
 # Single-GPU job: DeepLabv3-ResNet50 is ~40M params, fits easily on one L4.
 
-cd /blue/ewhite/b.weinstein/src/soccer-video-analysis
+REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
+PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+cd "$REPO"
 
-DATA_DIR=/orange/ewhite/soccer-vision/sn-calib
-PRETRAINED=weights/deeplabv3_sn.pth
+DATA_DIR=/blue/ewhite/b.weinstein/soccer-vision-data/sn-calib
+PRETRAINED=/blue/ewhite/b.weinstein/soccer-vision-data/weights/deeplabv3_sn.pth
 
 # Download pretrained weights if not present
 if [ ! -f "$PRETRAINED" ]; then
-  mkdir -p weights
+  mkdir -p "$(dirname "$PRETRAINED")"
   echo "Downloading pretrained DeepLabv3 from Google Drive..."
-  uv run python -c "
+  "$PY" -c "
 import gdown
 gdown.download(id='1dbN7LdMV03BR1Eda8n7iKNIyYp9r07sM', output='$PRETRAINED')
 "
 fi
 
 # Download SoccerNet calibration data if not present
-if [ ! -d "$DATA_DIR/train" ]; then
+if [ -z "$(ls -A "$DATA_DIR" 2>/dev/null)" ]; then
   echo "Downloading SoccerNet calibration data..."
-  uv run python training/sn_calib/train.py --download --data-dir "$DATA_DIR"
+  "$PY" training/sn_calib/train.py --download --data-dir "$DATA_DIR"
 fi
 
-uv run python training/sn_calib/train.py \
+"$PY" training/sn_calib/train.py \
   --data-dir "$DATA_DIR" \
   --pretrained "$PRETRAINED" \
-  --output-dir training/sn_calib/runs \
+  --output-dir /blue/ewhite/b.weinstein/soccer-vision-data/training/sn_calib/runs \
   --epochs 30 \
   --lr 1e-4 \
   --batch-size 8 \

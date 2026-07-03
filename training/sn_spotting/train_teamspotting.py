@@ -52,7 +52,29 @@ TEAM_LABEL_TO_SV = {
 }
 
 
-def download_data(data_dir: Path):
+def load_soccernet_password(explicit: str | None = None) -> str | None:
+    """Resolve the SoccerNet NDA password for restricted downloads.
+
+    Order of precedence: explicit arg -> $SOCCERNET_PASSWORD ->
+    .soccernet_token at the repo root. Returns None if none is found
+    (public files still download; NDA files will 401).
+    """
+    import os
+
+    if explicit:
+        return explicit.strip()
+    env = os.environ.get("SOCCERNET_PASSWORD")
+    if env:
+        return env.strip()
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        token = parent / ".soccernet_token"
+        if token.exists():
+            return token.read_text().strip()
+    return None
+
+
+def download_data(data_dir: Path, password: str | None = None):
     """Download SoccerNet Ball Action Spotting data."""
     try:
         from SoccerNet.Downloader import SoccerNetDownloader
@@ -60,6 +82,13 @@ def download_data(data_dir: Path):
         sys.exit("Install SoccerNet SDK: pip install SoccerNet")
 
     downloader = SoccerNetDownloader(LocalDirectory=str(data_dir))
+    password = load_soccernet_password(password)
+    if password:
+        downloader.password = password
+    else:
+        print("WARNING: no SoccerNet NDA password found "
+              "($SOCCERNET_PASSWORD or .soccernet_token); "
+              "spotting-ball-2024 is NDA-restricted and will fail to download.")
 
     print("Downloading SoccerNet Ball Action Spotting labels...")
     downloader.downloadDataTask(
@@ -150,13 +179,15 @@ def main():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--export", action="store_true")
     parser.add_argument("--checkpoint", help="Checkpoint path for export")
+    parser.add_argument("--password", help="SoccerNet NDA password (default: "
+                        "$SOCCERNET_PASSWORD or .soccernet_token)")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
     output_dir = Path(args.output_dir)
 
     if args.download_only:
-        download_data(data_dir)
+        download_data(data_dir, args.password)
     elif args.extract_features:
         extract_features(data_dir, output_dir / "features")
     elif args.train:

@@ -16,20 +16,22 @@
 # Train action spotting (NetVLAD on Baidu features).
 # Single-GPU: feature-based training is lightweight.
 
-cd /blue/ewhite/b.weinstein/src/soccer-video-analysis
+REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
+PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+cd "$REPO"
 
-DATA_DIR=/orange/ewhite/soccer-vision/soccernet
+DATA_DIR=/blue/ewhite/b.weinstein/soccer-vision-data/soccernet
 
 # Download data if not present
-if [ ! -d "$DATA_DIR/train" ]; then
+if [ -z "$(ls -A "$DATA_DIR" 2>/dev/null)" ]; then
   echo "Downloading SoccerNet-v2 labels and Baidu features..."
-  uv run python training/sn_spotting/train_action_spotting.py \
+  "$PY" training/sn_spotting/train_action_spotting.py \
     --download-only \
     --data-dir "$DATA_DIR"
 fi
 
-uv run python training/sn_spotting/train_action_spotting.py \
+"$PY" training/sn_spotting/train_action_spotting.py \
   --data-dir "$DATA_DIR" \
-  --output-dir training/sn_spotting/runs \
+  --output-dir /blue/ewhite/b.weinstein/soccer-vision-data/training/sn_spotting/runs \
   --features baidu \
   --epochs 50

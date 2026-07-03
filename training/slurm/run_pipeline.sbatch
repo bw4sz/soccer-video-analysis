@@ -20,9 +20,11 @@
 #   sbatch run_pipeline.sbatch /path/to/match.mp4
 #   sbatch run_pipeline.sbatch /path/to/match.mp4 /path/to/output_dir
 
-cd /blue/ewhite/b.weinstein/src/soccer-video-analysis
+REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
+PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+cd "$REPO"
 
 VIDEO=${1:?Usage: sbatch run_pipeline.sbatch VIDEO [OUTPUT_DIR]}
-OUTPUT_DIR=${2:-runs/$(basename "${VIDEO%.*}")}
+OUTPUT_DIR=${2:-/blue/ewhite/b.weinstein/soccer-vision-data/runs/$(basename "${VIDEO%.*}")}
 
-uv run python -m soccer_vision.cli.process "$VIDEO" --output-dir "$OUTPUT_DIR"
+"$PY" -m soccer_vision.cli.process "$VIDEO" --output-dir "$OUTPUT_DIR"
