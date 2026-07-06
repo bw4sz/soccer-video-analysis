@@ -1,12 +1,12 @@
-"""Event-source abstraction tests."""
+"""Action-detector abstraction tests."""
 
 from soccer_vision.events.set_piece import detect_all_set_pieces
 from soccer_vision.events.sources import (
-    DetectionContext,
-    SetPieceSource,
-    TackleSource,
-    active_sources,
-    run_sources,
+    ActionContext,
+    LearnedActionDetector,
+    RulesActionDetector,
+    active_detectors,
+    run_detectors,
 )
 
 
@@ -19,33 +19,48 @@ def _ball_track():
     ]
 
 
-def test_setpiece_source_matches_heuristic():
+def test_rules_engine_matches_heuristic():
     ball = _ball_track()
-    ctx = DetectionContext(fps=5.0, ball_positions=ball)
-    src = SetPieceSource()
-    assert src.is_available()
+    ctx = ActionContext(fps=5.0, ball_positions=ball)
+    det = RulesActionDetector()
+    assert det.is_available()
 
-    from_source = src.detect(ctx)
+    from_engine = det.detect(ctx)
     direct = detect_all_set_pieces(ball)
-    assert [e["label"] for e in from_source] == [e["label"] for e in direct]
-    assert from_source and from_source[0]["source"] == "set_piece"
+    assert [e["label"] for e in from_engine] == [e["label"] for e in direct]
+    assert from_engine and from_engine[0]["source"] == "rules"
 
 
-def test_tackle_source_unavailable_and_empty():
-    src = TackleSource()
-    assert src.is_available() is False
-    assert src.detect(DetectionContext(fps=5.0)) == []
+def test_learned_engine_unavailable_and_empty():
+    det = LearnedActionDetector()
+    assert det.is_available() is False
+    assert det.detect(ActionContext(fps=5.0)) == []
 
 
-def test_active_sources_drops_unavailable():
-    sources = active_sources()
-    names = {s.name for s in sources}
-    assert "set_piece" in names
-    assert "tackle" not in names  # no checkpoint yet
+def test_active_detectors_drops_unavailable():
+    detectors = active_detectors()
+    names = {d.name for d in detectors}
+    assert "rules" in names
+    assert "learned" not in names  # no checkpoint yet
 
 
-def test_run_sources_merges_and_sorts():
-    ctx = DetectionContext(fps=5.0, ball_positions=_ball_track())
-    events = run_sources(active_sources(), ctx)
+def test_run_detectors_merges_and_sorts():
+    ctx = ActionContext(fps=5.0, ball_positions=_ball_track())
+    events = run_detectors(active_detectors(), ctx)
     times = [e.get("timestamp_s", 0) for e in events]
     assert times == sorted(times)
+
+
+def test_legacy_source_names_still_import():
+    """Back-compat aliases keep the pre-rename import paths working."""
+    from soccer_vision.events.sources import (
+        DetectionContext,
+        SetPieceSource,
+        active_sources,
+    )
+
+    assert SetPieceSource is RulesActionDetector
+    assert DetectionContext is ActionContext
+    # legacy config key 'sources' still selects engines
+    names = {d.name for d in active_sources({"sources": ["set_piece"]})}
+    assert names == {"rules"}

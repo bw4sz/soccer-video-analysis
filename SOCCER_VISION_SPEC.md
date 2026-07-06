@@ -298,15 +298,19 @@ shot, save, pass, foul, substitution, halftime
 
 Map SoccerNet/sn-teamspotting labels → this taxonomy in `events/spotting.py`.
 
-**Event sources, team & player association (event-agnostic):**
+**Action detector, team & player attribution (action-agnostic):**
 
-Detection is decoupled from association and clip selection via a pluggable
-`EventSource` interface (`events/sources.py`): `is_available()` / `detect()`.
-Any detector — `SetPieceSource` (live), `TackleSource` (T-DEED, interface only
-until a checkpoint is trained via `training/sn_spotting/train_teamspotting.py`),
-or future SAM3-prompt / Claude-vision sources — emits the same event dicts, so
-new models add labels (`tackle`, `goal`, `losing_the_ball`, ...) without
-touching downstream code.
+Detection is decoupled from attribution and clip selection via a pluggable
+`ActionDetector` interface (`events/sources.py`): `is_available()` / `detect()`.
+Each implementation is an *engine* named by what it does, not the model behind it,
+and selected by plain name (`--action-engine`, or `action_engines:` in config):
+`RulesActionDetector` = `rules` (live), `LearnedActionDetector` = `learned`
+(interface until a checkpoint is passed), `VLMActionDetector` = `vlm` (opt-in).
+All emit the same event dicts, so new engines add labels (`tackle`, `goal`,
+`losing_the_ball`, ...) without touching downstream code. (Pre-rename names
+`EventSource` / `SetPieceSource` / `TackleSource` / `SoccerChatSource` and the
+`sources`/`set_piece`/`tackle`/`soccerchat` config keys remain as back-compat
+aliases.)
 
 - **Team assignment** is v1 by **jersey colour** (`tracking/teams.py`): cluster
   tracked players into two teams and name each cluster (blue / white / ...), so

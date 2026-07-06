@@ -23,9 +23,13 @@ SoccerNet calibration line class semantics (1-indexed, background=0):
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
+
+if TYPE_CHECKING:
+    import torch
 
 from soccer_vision.registration.hough import FIELD_H_M, FIELD_W_M
 

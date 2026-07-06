@@ -16,6 +16,30 @@ Result: <outcome once known>
 Next: <follow-up action>
 ```
 
+## 36352646 — 2026-07-04 — slurm/submit_footpass_ours_smoke.sh
+Why: Smoke test of the completed TAAD model (36305311 best_model.pt, epoch 18) on OUR
+  Veo footage (match-saints). Extract tracklets on a ~20s window (frame 38361, 600
+  frames — the restart after the 14s stoppage at 1268-1283s in the trim EDL) via
+  RF-DETR+ByteTrack (.venv), then run TAAD + render annotated.mp4 + key frames via the
+  new scripts/footpass_infer_ours.py (footpass env). The adapter assigns each track to
+  a per-team slot 1..13 (the network doesn't use ROLE semantics), working around
+  run_TAAD_on_matches.py's ROLE_ID 1..13 grouping that empties our ROLE_ID=0 ROIs.
+Result: RAN end-to-end (adapter works!) but OOM-killed (exit 125, host RAM 32GB) during
+  the final cv2 render — predictions.json + 6 key frames + partial annotated.mp4 were
+  written first, so the assessment is intact. Findings: (1) my window (1280-1300s) was
+  still DEAD TIME — ball stationary in center circle, players lined up on the far
+  touchline (a stoppage/subs), so no true live actions to detect. (2) Domain shift is
+  real and multi-stage on Veo footage: RF-DETR tags spectators/coaches as players (t1 =
+  an adult filming, people in camping chairs all boxed); team clustering FAILS (both
+  kits read 'black' under harsh backlight → team_a/team_b meaningless); TAAD collapses
+  to 'throw-in' (13/15 events), spuriously triggered by people clustered near the field
+  boundary. Same domain-shift story as SoccerChat (job 36183406). Fixed the render OOM
+  in footpass_infer_ours.py (release decord reader before cv2; bump --mem to 64GB on
+  re-run).
+Next: (a) re-run on a genuine LIVE-ACTION window (mid-possession, not a trim "removed"
+  span) to fairly judge TAAD; (b) spectator/coach false detections + failed team split
+  are upstream blockers worth fixing before trusting any action output on this footage.
+
 ## 36305311 — 2026-07-03 10:03 — training/slurm/train_footpass_taad.sbatch
 Why: Resubmit after job 36260512's epoch-3 CUDA OOM. Root cause isn't a leak: the
   vendored `set_x3d_freezing_schedule` trains head-only (X3D frozen) for epochs 1-2,
@@ -24,9 +48,19 @@ Why: Resubmit after job 36260512's epoch-3 CUDA OOM. Root cause isn't a leak: th
   — batch_size=6 no longer fits once that happens. Halved to batch_size=3 (AMP
   fp16 already in use, so batch size is the only lever left); run dir
   `taad_$(date)` under `/blue/.../footpass/runs/`.
-Result: pending.
-Next: watch for the epoch-3 boundary specifically — if it still OOMs there, drop
-  to batch_size=2 or add gradient checkpointing to the X3D backbone.
+Result: COMPLETED (exit 0) 2026-07-03 20:56, 9h43m, all 20 epochs. The batch_size=3
+  fix held — cleared the epoch-3 backbone-unfreeze boundary with no OOM. Logs to
+  TensorBoard (runs/Jul03_11-13-14_c0606a-s22.ufhpc), NOT Comet. Checkpoints in
+  runs/taad_03072026_1113/checkpoints/ (best_model.pt = epoch 18, lowest val loss
+  0.0259). Final val (epoch 20, thresholded): pass P0.66/R0.72, throw-in 0.58/0.93,
+  drive 0.46/0.76, header 0.40/0.88, cross 0.36/0.95, shot 0.31/0.78, block 0.15/0.71,
+  tackle 0.05/0.75. Precision is the weak axis (rare classes tackle/block worst);
+  recall is healthy across the board.
+Next: Test best_model.pt on our Veo footage (match-saints). BLOCKED on an adapter:
+  run_TAAD_on_matches.py groups ROIs by ROLE_ID 1-13, but our tracklet extractor
+  writes ROLE_ID=0 (no role model) -> empty ROIs. Needs a slot/pseudo-role assignment
+  + pred-overlay in footpass_visualize.py (the --source pred path is unimplemented),
+  and rfdetr installed in the footpass env for extraction.
 
 ## 36260512 — 2026-07-02 11:14 — training/slurm/train_footpass_taad.sbatch
 Why: First full training run of the FOOTPASS TAAD baseline (player-centric ball-action

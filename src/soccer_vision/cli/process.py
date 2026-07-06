@@ -21,7 +21,7 @@ def run_pipeline(args):
     from soccer_vision.detection.rfdetr import ALL_PERSON_CLASS_IDS, RFDETRSoccerDetector
     from soccer_vision.events.associate import associate_events
     from soccer_vision.events.phases import classify_phase
-    from soccer_vision.events.sources import DetectionContext, active_sources, run_sources
+    from soccer_vision.events.sources import ActionContext, active_detectors, run_detectors
     from soccer_vision.io.osl import add_event, new_osl_document, write_osl
     from soccer_vision.io.project import RunDir
     from soccer_vision.io.video import VideoReader
@@ -40,6 +40,10 @@ def run_pipeline(args):
     if args.config:
         with open(args.config) as f:
             config = yaml.safe_load(f) or {}
+
+    # --action-engine overrides which action-detection engines run.
+    if getattr(args, "action_engine", None):
+        config["action_engines"] = args.action_engine
 
     broadcast_config = BroadcastConfig()
     if "broadcast" in config:
@@ -157,25 +161,25 @@ def run_pipeline(args):
 
     proxy_reader.close()
 
-    # Assign players to teams by jersey colour, then run all available event
-    # sources (set-piece heuristics today; T-DEED tackle model when trained).
+    # Assign players to teams by jersey colour, then run all available action
+    # detectors (the rules engine today; the learned engine once a checkpoint ships).
     team_clf.fit()
     team_names = team_clf.team_names()
     if team_names:
         print(f"  Teams (by jersey colour): {', '.join(sorted(team_names.values()))}")
 
-    # Step 6: Event detection (pluggable, event-agnostic sources)
-    print("\n[Step 6] Event detection...")
-    ctx = DetectionContext(
+    # Step 6: Action detection (pluggable engines, attribution-agnostic)
+    print("\n[Step 6] Action detection...")
+    ctx = ActionContext(
         fps=proxy_fps,
         ball_positions=ball_positions,
         frame_players=frame_players,
         proxy_path=str(run_dir.broadcast_proxy),
         config=config,
     )
-    sources = active_sources(config)
-    print(f"  Active sources: {', '.join(s.name for s in sources) or 'none'}")
-    events = run_sources(sources, ctx)
+    detectors = active_detectors(config)
+    print(f"  Active action engines: {', '.join(d.name for d in detectors) or 'none'}")
+    events = run_detectors(detectors, ctx)
     events = classify_phase(events)
     # Associate each event with the nearest player track and their team.
     events = associate_events(events, frame_players, team_clf)

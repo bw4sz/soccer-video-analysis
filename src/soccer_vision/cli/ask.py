@@ -9,7 +9,6 @@ from pathlib import Path
 def run_verify(args):
     """Verify candidate events from a run using Claude."""
     from soccer_vision.io.osl import read_osl, write_osl
-    from soccer_vision.io.project import RunDir
     from soccer_vision.profiles.loader import load_profile
     from soccer_vision.verify.claude import verify_events
 

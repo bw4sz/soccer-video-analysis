@@ -75,11 +75,14 @@ def test_removed_offscreen_run_over_threshold():
     samples = []
     t = 0.0
     while t < 3.0:
-        samples.append(_moving(t)); t += 0.2
+        samples.append(_moving(t))
+        t += 0.2
     while t < 11.0:
-        samples.append(_offscreen(t)); t += 0.2
+        samples.append(_offscreen(t))
+        t += 0.2
     while t < 14.0:
-        samples.append(_moving(t, x0=5000.0)); t += 0.2
+        samples.append(_moving(t, x0=5000.0))
+        t += 0.2
 
     removed = find_removed_segments(samples, total_duration_s=14.0, min_dead_s=5.0, pad_s=0.5)
     assert len(removed) == 1
@@ -96,11 +99,14 @@ def test_short_dead_run_kept():
     samples = []
     t = 0.0
     while t < 3.0:
-        samples.append(_moving(t)); t += 0.2
+        samples.append(_moving(t))
+        t += 0.2
     while t < 5.0:
-        samples.append(_offscreen(t)); t += 0.2
+        samples.append(_offscreen(t))
+        t += 0.2
     while t < 8.0:
-        samples.append(_moving(t, x0=5000.0)); t += 0.2
+        samples.append(_moving(t, x0=5000.0))
+        t += 0.2
 
     removed = find_removed_segments(samples, total_duration_s=8.0, min_dead_s=5.0)
     assert removed == []
@@ -124,11 +130,14 @@ def test_plan_trim_bookkeeping():
     samples = []
     t = 0.0
     while t < 3.0:
-        samples.append(_moving(t)); t += 0.2
+        samples.append(_moving(t))
+        t += 0.2
     while t < 11.0:
-        samples.append(_offscreen(t)); t += 0.2
+        samples.append(_offscreen(t))
+        t += 0.2
     while t < 14.0:
-        samples.append(_moving(t, x0=5000.0)); t += 0.2
+        samples.append(_moving(t, x0=5000.0))
+        t += 0.2
 
     plan = plan_trim(samples, 14.0, min_dead_s=5.0, pad_s=0.5)
     assert plan["source_duration_s"] == 14.0
@@ -143,11 +152,14 @@ def test_stationary_ball_is_trimmed():
     samples = []
     t = 0.0
     while t < 3.0:
-        samples.append(_moving(t)); t += 0.2
+        samples.append(_moving(t))
+        t += 0.2
     while t < 11.0:
-        samples.append(_still(t, x=800.0)); t += 0.2
+        samples.append(_still(t, x=800.0))
+        t += 0.2
     while t < 14.0:
-        samples.append(_moving(t, x0=5000.0)); t += 0.2
+        samples.append(_moving(t, x0=5000.0))
+        t += 0.2
 
     removed = find_removed_segments(samples, total_duration_s=14.0, min_dead_s=5.0)
     assert len(removed) == 1

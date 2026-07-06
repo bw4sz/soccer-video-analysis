@@ -47,6 +47,43 @@ from soccer_vision.tracking.teams import TeamClassifier
 TEAM_COLOR = sv.ColorPalette(colors=[sv.Color(56, 130, 246), sv.Color(239, 68, 68)])
 
 
+def build_field_polygon(video, f0, f1, W, H, n_samples=25, freq=0.4, min_area=0.15):
+    """Turf-segmentation field polygon (no calibration needed).
+
+    Samples ``n_samples`` frames, thresholds green turf in HSV, keeps pixels that
+    are green in >= ``freq`` of samples (persistent field, not transient players),
+    and returns the convex hull of the largest turf blob. Returns None if the blob
+    is smaller than ``min_area`` of the frame (segmentation unreliable — caller
+    then keeps all detections rather than nuking everything).
+    """
+    cap = cv2.VideoCapture(video)
+    idxs = np.linspace(f0, max(f0, f1 - 1), n_samples).astype(int)
+    acc = np.zeros((H, W), np.float32)
+    used = 0
+    for i in idxs:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(i))
+        ok, fr = cap.read()
+        if not ok:
+            continue
+        hsv = cv2.cvtColor(fr, cv2.COLOR_BGR2HSV)
+        acc += (cv2.inRange(hsv, (30, 25, 25), (95, 255, 255)) > 0).astype(np.float32)
+        used += 1
+    cap.release()
+    if used == 0:
+        return None
+    field = ((acc / used) >= freq).astype(np.uint8) * 255
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
+    field = cv2.morphologyEx(field, cv2.MORPH_CLOSE, k)
+    field = cv2.morphologyEx(field, cv2.MORPH_OPEN, k)
+    cnts, _ = cv2.findContours(field, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    hull = cv2.convexHull(max(cnts, key=cv2.contourArea))
+    if cv2.contourArea(hull) < min_area * W * H:
+        return None
+    return hull  # (N,1,2) int32, ready for cv2.pointPolygonTest / polylines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--video", required=True)
@@ -58,6 +95,11 @@ def main() -> int:
     ap.add_argument("--preview", default=None, help="optional annotated mp4 to sanity-check tracking")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--conf", type=float, default=0.3)
+    ap.add_argument("--field-mask", choices=["auto", "none"], default="auto",
+                    help="auto: drop detections whose foot-point is off the turf (removes "
+                         "spectators/coaches); none: keep all detections")
+    ap.add_argument("--field-margin", type=float, default=20.0,
+                    help="px slack outside the field polygon still counted as on-field")
     args = ap.parse_args()
 
     det = RFDETRSoccerDetector.from_pretrained(device=args.device)
@@ -69,10 +111,30 @@ def main() -> int:
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     f0, f1 = args.start_frame, args.start_frame + args.num_frames
-    cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
 
+    # Spatial gate: a field polygon from turf segmentation. Detections whose
+    # foot-point falls off the turf (spectators, coaches, ball kids) are dropped
+    # before tracking/team-clustering — this both cleans the tracklets and stops
+    # the jersey-colour clusterer being poisoned by sideline adults.
+    field_poly = None
+    if args.field_mask == "auto":
+        field_poly = build_field_polygon(args.video, f0, f1, W, H)
+        if field_poly is None:
+            print("[field-mask] turf polygon unreliable — keeping all detections")
+        else:
+            print(f"[field-mask] field polygon: {len(field_poly)} pts, "
+                  f"{cv2.contourArea(field_poly)/(W*H):.0%} of frame")
+
+    def on_field(x1, y1, x2, y2):
+        if field_poly is None:
+            return True
+        foot = ((x1 + x2) / 2.0, y2)  # feet, where a player meets the pitch
+        return cv2.pointPolygonTest(field_poly, foot, True) >= -args.field_margin
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
     # Pass 1: detect + track, accumulate rows and team-colour samples.
     rows = []  # (frame, track_id, x, y, w, h)
+    n_off = 0
     for t in range(f0, f1):
         ok, frame = cap.read()
         if not ok:
@@ -85,9 +147,14 @@ def main() -> int:
             continue
         for xyxy, tid in zip(tracked.xyxy, tracked.tracker_id):
             x1, y1, x2, y2 = [float(v) for v in xyxy]
+            if not on_field(x1, y1, x2, y2):
+                n_off += 1
+                continue
             rows.append((t, int(tid), x1, y1, x2 - x1, y2 - y1))
             teams.add_sample(int(tid), frame, xyxy)
     cap.release()
+    if field_poly is not None:
+        print(f"[field-mask] dropped {n_off} off-field detections")
     teams.fit()
 
     # Map team colour-name -> LEFT_TO_RIGHT 0/1 (stable: first-seen team = 0).
@@ -121,16 +188,18 @@ def main() -> int:
         "fps": fps, "start_frame": f0, "num_frames": args.num_frames, "stride": args.stride,
         "n_tracks": int(len(set(r[1] for r in rows))), "n_rows": len(out),
         "team_names": tname, "note": "SHIRT_NUMBER=-1, ROLE_ID=0, CLS=0 (unknown)",
+        "field_mask": args.field_mask, "off_field_dropped": int(n_off),
+        "field_polygon": field_poly.reshape(-1, 2).tolist() if field_poly is not None else None,
     }
     Path(args.out_h5).with_suffix(".manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"wrote {args.out_h5} ({len(out)} rows, {manifest['n_tracks']} tracks) + manifest")
 
     if args.preview:
-        _render_preview(args.video, arr, W, H, fps, f0, f1, args.preview, tname)
+        _render_preview(args.video, arr, W, H, fps, f0, f1, args.preview, tname, field_poly)
     return 0
 
 
-def _render_preview(video, arr, W, H, fps, f0, f1, out, tname):
+def _render_preview(video, arr, W, H, fps, f0, f1, out, tname, field_poly=None):
     cap = cv2.VideoCapture(video)
     cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
     writer = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
@@ -142,6 +211,8 @@ def _render_preview(video, arr, W, H, fps, f0, f1, out, tname):
         ok, frame = cap.read()
         if not ok:
             break
+        if field_poly is not None:
+            cv2.polylines(frame, [field_poly], True, (0, 255, 0), 2, cv2.LINE_AA)
         fr = arr[arr[:, FRAME] == t]
         if len(fr):
             xyxy = np.stack([fr[:, RX], fr[:, RY], fr[:, RX] + fr[:, RW], fr[:, RY] + fr[:, RH]], 1)
