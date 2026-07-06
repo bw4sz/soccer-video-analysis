@@ -133,6 +133,15 @@ def main() -> int:
     ap.add_argument("--nms", type=int, default=15)
     ap.add_argument("--clip-length", type=int, default=50)
     ap.add_argument("--max-keyframes", type=int, default=8)
+    ap.add_argument("--ball-gate", choices=["soft", "off"], default="soft",
+                    help="soft: tag events by ball distance and drop only far+weak ones "
+                         "(keeps strong off-ball actions); off: no gating")
+    ap.add_argument("--ball-radius", type=float, default=0.18,
+                    help="event is 'near ball' if within this fraction of frame width")
+    ap.add_argument("--ball-far", type=float, default=0.32,
+                    help="soft gate only considers events beyond this fraction of width")
+    ap.add_argument("--ball-weak", type=float, default=0.45,
+                    help="soft gate only drops far events below this score (strong ones survive)")
     args = ap.parse_args()
 
     out = Path(args.out_dir)
@@ -142,6 +151,8 @@ def main() -> int:
     video = manifest["video"]
     fps = manifest.get("fps", 29.97)
     tname = manifest.get("team_names", {})
+    Wm = manifest.get("width", 1920)
+    ball_xy = {int(bt[0]): (float(bt[1]), float(bt[2])) for bt in (manifest.get("ball_track") or [])}
 
     with h5py.File(args.h5, "r") as f:
         arr = f[args.game_key][:].astype(np.float64)
@@ -179,13 +190,37 @@ def main() -> int:
     events = nms_decode(all_logits, args.conf, args.nms, minf)
     events.sort(key=lambda e: -e[3])
 
-    # map events -> per-(track,frame) label dict for the overlay
+    # ball-distance for each event's acting player (px foot-point -> ball), normalised by width
+    foot_at = {(int(r[PID]), int(r[FRAME])): (r[RX] + r[RW] / 2.0, r[RY] + r[RH]) for r in work}
+
+    def ball_dist(fr, tid):
+        b = ball_xy.get(fr)
+        p = foot_at.get((tid, fr))
+        if b is None or p is None:
+            return None
+        return float(np.hypot(p[0] - b[0], p[1] - b[1]) / Wm)
+
+    # Gentle gate: tag near/off-ball, drop ONLY far + weak events (strong off-ball survive).
+    kept, meta, n_near, n_gated = [], {}, 0, 0
+    for fr, m, c, sc in events:
+        tid = slot_to_track.get(m)
+        d = ball_dist(fr, tid) if tid is not None else None
+        near = d is not None and d <= args.ball_radius
+        if args.ball_gate == "soft" and d is not None and d > args.ball_far and sc < args.ball_weak:
+            n_gated += 1
+            continue
+        kept.append((fr, m, c, sc))
+        meta[(fr, m)] = (d, near)
+        n_near += int(near)
+    events = kept
+
+    # map events -> per-(track,frame) overlay dict, carrying the near-ball flag
     ev_by_frame = {}
     for fr, m, c, sc in events:
         tid = slot_to_track.get(m)
         if tid is None:
             continue
-        ev_by_frame.setdefault(fr, []).append((tid, c, sc))
+        ev_by_frame.setdefault(fr, []).append((tid, c, sc, meta[(fr, m)][1]))
 
     counts = {NAMES[c]: 0 for c in range(1, 9)}
     for _, _, c, _ in events:
@@ -193,19 +228,25 @@ def main() -> int:
     summary = {
         "game_key": args.game_key, "video": video, "window_frames": [minf, maxf],
         "window_s": [round(minf / fps, 1), round(maxf / fps, 1)], "fps": fps,
-        "n_events": len(events), "events_per_class": counts, "team_names": tname,
+        "ball_detected_frames": manifest.get("ball_detected_frames", len(ball_xy)),
+        "ball_gate": args.ball_gate, "events_gated_far_weak": n_gated,
+        "n_events": len(events), "events_near_ball": n_near, "events_per_class": counts,
+        "team_names": tname,
         "top_events": [{"frame": fr, "t_s": round(fr / fps, 1), "track": slot_to_track.get(m),
                         "team": ("team_a" if m < 13 else "team_b"), "class": NAMES[c],
-                        "score": round(sc, 3)} for fr, m, c, sc in events[:20]],
+                        "score": round(sc, 3),
+                        "ball_dist": round(meta[(fr, m)][0], 3) if meta[(fr, m)][0] is not None else None,
+                        "near_ball": meta[(fr, m)][1]} for fr, m, c, sc in events[:20]],
     }
     (out / "predictions.json").write_text(json.dumps(summary, indent=2))
-    print(f"[infer] {len(events)} events  {counts}")
+    print(f"[infer] {len(events)} events ({n_near} near-ball, {n_gated} gated far+weak)  {counts}")
 
-    _render(video, work, ev_by_frame, events, minf, maxf, fps, out, args.max_keyframes, tname)
+    _render(video, work, ev_by_frame, events, minf, maxf, fps, out, args.max_keyframes, tname, ball_xy)
     return 0
 
 
-def _render(video, work, ev_by_frame, events, minf, maxf, fps, out, max_kf, tname):
+def _render(video, work, ev_by_frame, events, minf, maxf, fps, out, max_kf, tname, ball_xy=None):
+    ball_xy = ball_xy or {}
     cap = cv2.VideoCapture(video)
     W = int(cap.get(3)); H = int(cap.get(4))
     cap.set(cv2.CAP_PROP_POS_FRAMES, minf)
@@ -219,11 +260,11 @@ def _render(video, work, ev_by_frame, events, minf, maxf, fps, out, max_kf, tnam
         if not ok:
             break
         rows = work[(work[:, FRAME] == t) & (~np.isnan(work[:, RX]))]
-        # active labels within hold window
+        # active labels within hold window (carry near-ball flag)
         active = {}
         for f2 in range(max(minf, t - hold), t + 1):
-            for tid, c, sc in ev_by_frame.get(f2, []):
-                active[tid] = (c, sc)
+            for tid, c, sc, near in ev_by_frame.get(f2, []):
+                active[tid] = (c, sc, near)
         for r in rows:
             x1, y1 = int(r[RX]), int(r[RY])
             x2, y2 = int(r[RX] + r[RW]), int(r[RY] + r[RH])
@@ -231,14 +272,18 @@ def _render(video, work, ev_by_frame, events, minf, maxf, fps, out, max_kf, tnam
             col = team_col.get(lr, (200, 200, 200))
             lab = f"t{tid}"
             if tid in active:
-                c, sc = active[tid]
+                c, sc, near = active[tid]
                 col = ACT_COLOR.get(c, col)
-                lab = f"{NAMES[c].upper()} {sc:.2f}"
+                lab = f"{NAMES[c].upper()} {sc:.2f}" + ("" if near else " off-ball")
                 cv2.rectangle(frame, (x1, y1), (x2, y2), col, 4)
             else:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), col, 2)
             cv2.putText(frame, lab, (x1, max(12, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX,
                         0.5, col, 2, cv2.LINE_AA)
+        if t in ball_xy:
+            bx, by = int(ball_xy[t][0]), int(ball_xy[t][1])
+            cv2.circle(frame, (bx, by), 9, (0, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(frame, (bx, by), 9, (0, 0, 0), 2, cv2.LINE_AA)
         cv2.rectangle(frame, (0, 0), (W, 30), (0, 0, 0), -1)
         cv2.putText(frame, f"TAAD on OUR footage  f{t}  {t/fps:.1f}s  teams:{tname}",
                     (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1, cv2.LINE_AA)

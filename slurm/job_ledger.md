@@ -16,6 +16,54 @@ Result: <outcome once known>
 Next: <follow-up action>
 ```
 
+## 36468175 — 2026-07-06 — slurm/submit_footpass_ours_ball.sh (branch compare-taad-predictions)
+Why: Add ball detection + tracking, referee removal, and a gentle ball-proximity gate to the
+  pipeline, then re-run the live window. Extractor now does ONE RF-DETR pass/frame split into
+  ball/players/referees (predict()), tracks the best on-field ball, and drops player boxes that
+  overlap a referee box (IoU>0.45). Inference tags each event by ball distance and drops only
+  far+weak ones (soft gate) so off-ball actions survive.
+Result: COMPLETED (exit 0, 8m21s). Ball detected in 559/600 frames (93%, matches trim-empty's
+  92.5%). Referee removal dropped 206 player boxes overlapping refs (RF-DETR does emit the ref
+  class here). Teams black/orange, 108 tracks. TAAD: 36 events, 18 near-ball / 18 off-ball, only
+  1 gated (far+weak) — gate is appropriately gentle. Class skew still block 19 / shot 8 (domain
+  shift unchanged — the gate doesn't touch the classifier, by design). Ball/off-ball tags in
+  predictions.json; ball drawn in annotated.mp4; new reel saved_live_overlay_ball.mp4.
+Next: ref removal is intermittent (RF-DETR flips ref<->player frame to frame) — could smooth by
+  voting over a track's lifetime. Real blocker remains TAAD domain shift (needs fine-tune/adapt).
+
+## 36460253 — 2026-07-06 — slurm/submit_footpass_ours_maskoff.sh (branch compare-taad-predictions)
+Why: Mask-OFF counterpart of 36450376 (same live window, --field-mask none) to compare TAAD
+  predictions with vs without the turf gate on identical frames.
+Result: COMPLETED (exit 0, 5m18s). Predictions BYTE-IDENTICAL to mask-on: all 33 events match
+  frame/class/team (block 18, shot 8, ...). Reason: TAAD scores only the top-13 longest tracks
+  per team; the 248 off-field detections are short spectator tracks that never make the cut. So
+  the field mask is upstream hygiene (viz + team split in hard windows), ORTHOGONAL to the action
+  head. Teams also split black/orange even without the mask here (live window has distinct kits +
+  enough on-field players). Built a comparison artifact: mask on/off null result + prediction-vs-
+  reality on 3 sample frames showing TAAD fires shot/block on any tight player cluster near the
+  ball (false on midfield scrums, topically-right only on a real goalmouth). Work on branch
+  compare-taad-predictions (off master; scripts already merged via PR #2).
+Next: TAAD domain shift is the real blocker (gates can't fix it) — fine-tune/adapt on our footage,
+  or gate its output on ball-proximity + goal-zone before trusting it.
+
+## 36450376 — 2026-07-06 — slurm/submit_footpass_ours_smoke.sh (live window + field mask)
+Why: Re-run the TAAD smoke on a genuine LIVE window (1150-1170s, frame 34466, inside the
+  989-1269s trim keep-segment) with the new turf field-mask gate on, to fairly judge the
+  model and prove the two upstream gates (spatial field mask + temporal trim) kill the
+  edge cases from 36352646.
+Result: COMPLETED (exit 0, 6m30s, no OOM — the decord-release fix worked). Field mask
+  dropped 248 off-field detections (polygon 56% of frame). Team split FIXED as predicted:
+  both-'black' -> 'black' vs 'orange' (masking sideline adults cleaned the colour
+  clusters). TAAD: 33 events but a NEW collapse — block 18, shot 8, pass 3, then 1 each
+  drive/cross/throw-in/header, tackle 0 (vs the dead window's throw-in collapse). So
+  detection+teams are fixed but the action head still doesn't transfer to youth/Veo
+  overhead footage — domain shift, not a bug (model is fine on its own val domain).
+  Residual: far-touchline people still leak through the polygon's top edge; refs boxed as
+  players. Built a status dashboard artifact + embedded key frames.
+Next: (a) tighten field polygon top edge / per-frame mask; (b) ref/keeper as non-player;
+  (c) wire trim keep-segments directly into the extractor loop; (d) the real open problem
+  is TAAD domain shift — fine-tune on our footage or adapt to overhead view.
+
 ## 36352646 — 2026-07-04 — slurm/submit_footpass_ours_smoke.sh
 Why: Smoke test of the completed TAAD model (36305311 best_model.pt, epoch 18) on OUR
   Veo footage (match-saints). Extract tracklets on a ~20s window (frame 38361, 600
