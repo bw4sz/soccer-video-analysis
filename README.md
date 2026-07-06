@@ -4,19 +4,11 @@ Open-source soccer video analysis toolkit. Replicates the useful parts of subscr
 
 **For:** coaches, analysts, and developers working with single-camera match video (any fixed/overhead/wide-angle source). Python 3.12+, CPU-viable, no cloud dependency.
 
-Built on [supervision](https://github.com/roboflow/supervision) and the [OSL JSON](https://opensportslab.github.io/opensportslib/data/osl-json-format/) interchange format. Uses transformers-based detection (RF-DETR) — **no Ultralytics/YOLO**.
-
-| Commercial feature | soccer-vision equivalent | Status |
-|---|---|---|
-| Trace — per-player highlight reels | player tracking + action→player attribution + reels | ✅ track-id based, ⏳ named roster |
-| Veo Editor — AI events, team stats | action detector + possession/distance/shot metrics | ✅ rules engine, ⏳ learned engine (training) |
-| LongoMatch — manual tagging, playlists | OSL event store + clip DB + contact-sheet review | ✅ CLI, ⏳ desktop GUI |
-
----
+Built on [supervision](https://github.com/roboflow/supervision) and the [OSL JSON](https://opensportslab.github.io/opensportslib/data/osl-json-format/) interchange format. Uses transformers-based detection (RF-DETR)
 
 ## What's here now
 
-The canonical pipeline runs end to end on CPU. One command turns a raw match into a proxy video, an event stream, team stats, and cut clips:
+The pipeline runs end to end on CPU. One command turns a raw match into a proxy video, an event stream, team stats, and cut clips:
 
 ```bash
 soccer-vision process match.mp4
@@ -53,8 +45,6 @@ runs/soccer_vision.db      # SQLite across all matches
 ## Two clip workflows: per-player vs team-action
 
 Both share the same `process` run. They only diverge at the **selection** step, where actions (already tagged with `track_id` + `team` by the attributor in step 6) are filtered before cutting.
-
-Every stage below is named for **what it does**. The engine that implements it (RF-DETR, ByteTrack, the trained action model) is a swappable detail — the action detector in particular is a registry of engines you pick by plain name (`--action-engine rules|learned|vlm`), never by model name.
 
 ```mermaid
 flowchart TD
