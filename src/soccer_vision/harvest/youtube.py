@@ -14,6 +14,7 @@ lazily so the rest of the package works without them.
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
@@ -54,6 +55,27 @@ def is_creative_commons(info: dict) -> bool:
     """True if the video's licence is a Creative Commons one (reuse allowed)."""
     lic = (info.get("license") or "").lower()
     return _CC_MARKER in lic
+
+
+# American-football signals. "football" alone is ambiguous (soccer in most of the
+# world), so we only reject on terms that are specific to the US game — this
+# catches gridiron uploads that slipped through soccer-worded queries without
+# nuking legitimate British/Australian "football" (= soccer) content.
+_AMERICAN_FOOTBALL = re.compile(
+    r"\b(nfl|american football|flag football|gridiron|quarterback|touchdown|"
+    r"pop ?warner|tackle football|friday night lights|varsity football|"
+    r"7v7 football|madden|end ?zone|wide receiver|running back)\b",
+    re.IGNORECASE,
+)
+# The gridiron-ball emoji is an unambiguous American-football marker that youth
+# US-football channels use heavily (and soccer channels essentially never).
+_GRIDIRON_EMOJI = "\U0001f3c8"  # 🏈
+
+
+def is_american_football(info: dict) -> bool:
+    """True if the title/description look like American football, not soccer."""
+    text = f"{info.get('title', '')} {(info.get('description') or '')[:400]}"
+    return _GRIDIRON_EMOJI in text or bool(_AMERICAN_FOOTBALL.search(text))
 
 
 def midpoint_window(
@@ -133,8 +155,18 @@ def download_section(
 ) -> None:
     """Download only ``[start_s, start_s+length_s]`` to ``out_path`` (mp4).
 
-    ``force_keyframes_at_cuts`` makes the boundaries frame-accurate (needs
-    ffmpeg). Never downloads the full match.
+    We deliberately do **not** force keyframes at the cut points. Forcing them
+    makes ffmpeg re-encode the boundary, which is slow and — fetching byte
+    ranges from googlevideo — fails often (~half our attempts hit "ffmpeg exited
+    with code 1"). That re-encode was the whole reliability problem. Without it,
+    yt-dlp stream-copies from the nearest keyframe, so boundaries drift a few
+    seconds; irrelevant for a ~10s live-play clip. Retries ride out transient
+    googlevideo read errors.
+
+    Format prefers merged ``bestvideo+bestaudio`` up to ``max_height`` (720p by
+    default): YouTube's single progressive streams top out at 360p, so a
+    progressive-first selector would silently cap resolution. Never downloads the
+    full match.
     """
     YoutubeDL, download_range_func = _import_yt_dlp()
     out_path = Path(out_path)
@@ -144,11 +176,20 @@ def download_section(
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
-        "format": f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best",
+        "format": (
+            f"bestvideo[height<={max_height}]+bestaudio/"
+            f"best[height<={max_height}]/best"
+        ),
         "merge_output_format": "mp4",
         "outtmpl": stem + ".%(ext)s",
         "download_ranges": download_range_func(None, [(start_s, start_s + length_s)]),
-        "force_keyframes_at_cuts": True,
+        "force_keyframes_at_cuts": False,
+        "retries": 5,
+        "fragment_retries": 5,
+        "file_access_retries": 3,
+        # Always re-fetch: yt-dlp skips a download when the target file already
+        # exists, which silently keeps a stale/low-res clip on a re-run.
+        "overwrites": True,
     }
     with YoutubeDL(opts) as ydl:
         ydl.download([url])
@@ -165,6 +206,7 @@ class HarvestResult:
     skipped_license: int
     skipped_channel_cap: int
     skipped_duration: int
+    skipped_football: int
     manifest_path: Path
 
 
@@ -196,7 +238,7 @@ def harvest(
 
     res = HarvestResult(
         downloaded=0, scanned=0, skipped_seen=0, skipped_license=0,
-        skipped_channel_cap=0, skipped_duration=0,
+        skipped_channel_cap=0, skipped_duration=0, skipped_football=0,
         manifest_path=manifest.path,
     )
     # In-memory bookkeeping seeded from prior runs. Kept separate from disk
@@ -232,6 +274,10 @@ def harvest(
 
             if not is_creative_commons(info):
                 res.skipped_license += 1
+                continue
+
+            if is_american_football(info):
+                res.skipped_football += 1
                 continue
 
             duration = float(info.get("duration") or 0.0)

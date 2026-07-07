@@ -15,6 +15,7 @@ from soccer_vision.harvest.manifest import ClipRecord, Manifest
 from soccer_vision.harvest.youtube import (
     HarvestResult,
     harvest,
+    is_american_football,
     is_creative_commons,
     midpoint_window,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "Manifest",
     "HarvestResult",
     "harvest",
+    "is_american_football",
     "is_creative_commons",
     "midpoint_window",
 ]

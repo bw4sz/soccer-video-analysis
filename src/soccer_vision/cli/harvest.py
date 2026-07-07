@@ -53,6 +53,7 @@ def run_harvest(args):
         f"(scanned {result.scanned} videos).\n"
         f"  skipped — already have: {result.skipped_seen}, "
         f"not CC-BY: {result.skipped_license}, "
+        f"american football: {result.skipped_football}, "
         f"too short: {result.skipped_duration}, "
         f"channel cap: {result.skipped_channel_cap}\n"
         f"  manifest: {result.manifest_path}"

@@ -6,7 +6,12 @@ import pytest
 
 from soccer_vision.harvest import youtube
 from soccer_vision.harvest.manifest import ClipRecord, Manifest
-from soccer_vision.harvest.youtube import harvest, is_creative_commons, midpoint_window
+from soccer_vision.harvest.youtube import (
+    harvest,
+    is_american_football,
+    is_creative_commons,
+    midpoint_window,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -21,6 +26,26 @@ def test_is_creative_commons_accepts_cc_by():
 @pytest.mark.parametrize("lic", ["Standard YouTube License", "", None])
 def test_is_creative_commons_rejects_everything_else(lic):
     assert not is_creative_commons({"license": lic})
+
+
+@pytest.mark.parametrize("title", [
+    "U12 Flag Football Championship",
+    "Best NFL youth touchdown highlights",
+    "Pop Warner tackle football full game",
+    "Varsity Football Friday Night Lights",
+])
+def test_is_american_football_rejects_gridiron(title):
+    assert is_american_football({"title": title})
+
+
+@pytest.mark.parametrize("title", [
+    "U12 soccer full match",
+    "Grassroots football full match (UK)",  # British football = soccer
+    "sub 13 futbol partido completo",
+    "AFC Bolton Yellows | Full Match | Veo",
+])
+def test_is_american_football_keeps_soccer(title):
+    assert not is_american_football({"title": title})
 
 
 def test_midpoint_window_defaults_past_halftime_kickoff():
@@ -147,6 +172,19 @@ def test_harvest_filters_license_and_respects_target(tmp_path, mock_yt):
     # Manifest + attribution written.
     assert (tmp_path / "manifest.jsonl").exists()
     assert (tmp_path / "ATTRIBUTION.md").exists()
+
+
+def test_harvest_skips_american_football(tmp_path, mock_yt):
+    infos, downloads = mock_yt
+    infos["cc-0"] = _fake_info("cc-0", channel_id="a")
+    infos["cc-1"] = _fake_info("cc-1", channel_id="b")
+    infos["cc-1"]["title"] = "U12 Flag Football Championship Full Game"
+
+    res = harvest(tmp_path, target=10, queries=["cc"])
+
+    assert res.downloaded == 1
+    assert res.skipped_football == 1
+    assert len(downloads) == 1
 
 
 def test_harvest_channel_cap(tmp_path, mock_yt):
