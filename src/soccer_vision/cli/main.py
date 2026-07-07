@@ -58,7 +58,7 @@ def main():
     p_extract.add_argument("--track", type=int, help="Filter by player track id")
     p_extract.add_argument("--player", help="Filter by player name (needs `identify` + profile)")
     p_extract.add_argument("--number", type=int, help="Filter by jersey number (needs `identify`)")
-    p_extract.add_argument("--profile", help="Project profile YAML (resolves --player name → jersey)")
+    p_extract.add_argument("--profile", help="Project profile YAML (resolves --player → jersey)")
     p_extract.add_argument("--pre", type=float, default=5.0)
     p_extract.add_argument("--post", type=float, default=30.0)
     p_extract.add_argument(
