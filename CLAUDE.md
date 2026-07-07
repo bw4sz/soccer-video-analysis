@@ -207,7 +207,132 @@ until it lands). Defined in `soccer_vision.events.deadball`:
 ```
 
 Key options: `--min-dead 5` (dead-span threshold), `--stationary-px 40` (max
-drift to count as "not moving"), `--pad 0.5` (context kept around each cut).
+drift to count as "not moving"), `--pad 0.5` (context kept around each cut),
+`--no-smooth` (skip Kalman smoothing — see below).
+
+**Kalman smoothing (auto-built tracks).** There is only one ball and it moves
+smoothly, but the RF-DETR detector *flickers* — it latches onto a jersey number
+or sponsor logo for a frame or two, so the reported position teleports and snaps
+back. When `trim-empty` builds a track itself it runs the detections through a
+constant-velocity Kalman filter (`soccer_vision.tracking.ball_kalman`) that
+smooths jitter and gates out those jumps: a detection is rejected when its
+Mahalanobis distance from the predicted position exceeds a χ² threshold, and the
+ball coasts on the prediction instead. Several rejects in a row, or a long
+offscreen gap, re-lock the filter onto the latest detection (so a genuine
+relocation isn't fought forever). Smoothed samples keep the original detection
+under `raw_pixel_x`/`raw_pixel_y` and gain `smoothed: true` (rejected jumps also
+get `outlier: true`); offscreen samples pass through untouched so real
+out-of-play gaps still read as dead time. Pass `--no-smooth` to keep raw
+detections, or call `smooth_ball_track(track)` directly on a precomputed track.
+
+Auto-built tracks default to `--sample-fps 15` because this detector is flickery
+enough that the filter needs a dense track to lock on: on the saints validation
+clip the raw ball teleports with a p95 frame-to-frame jump of ~850px, and at 5
+fps the ball moves too far between samples for the gate to tell real motion from
+a false positive (it over-rejects, ~39% of frames). At 15 fps rejection drops to
+~32% and mean jump is more than halved; 30 fps (the FOOTPASS h5 export rate) is
+better still.
+
+---
+
+## Identify — read jersey numbers for the individual-player pathway
+
+There are two ways to slice a processed match into clips:
+
+- **Team-level** — *"all the throw-ins from the black team"*, *"the black team
+  building out of the back."* Uses jersey **colour** (already assigned by
+  `process`); filter with `--team black`. No OCR needed.
+- **Individual-player** — *"all the passing actions by number six"*,
+  *"highlights from number six."* Needs stable player identity, which comes from
+  **reading the jersey number** off each track. This is what `identify` adds.
+
+A ByteTrack id is an ephemeral lane, not a person — one player fragments into
+many lanes across a match, and the lane number is unrelated to the jersey.
+`identify` reads the number so `--player <name>` / `--number <n>` can select the
+*person*.
+
+```bash
+pip install 'soccer-vision[identify]'   # PARSeq recognizer via torch.hub
+
+# Read jersey numbers on an already-processed run (writes jerseys.json):
+soccer-vision identify --run runs/<match_id> --profile team.yaml
+
+# Then cut clips for a player by name (needs the profile roster) or number:
+soccer-vision reel --run runs/<match_id> --player Simon --profile team.yaml --halo
+soccer-vision extract --run runs/<match_id> --events pass --number 6
+```
+
+**How it works.** Per-frame OCR flickers (motion blur, players facing away,
+angled digits), but a jersey number is constant across a track. So `identify`
+reads the number on every legible frame of each track, then takes a
+**confidence-weighted majority vote** per track (`soccer_vision.identify.vote`),
+writing `unknown` when support is weak or the vote is split — better to abstain
+than mislabel a clip. It's a separate opt-in step (not part of `process`) so it
+stays re-runnable and doesn't slow every run.
+
+`jerseys.json` records, per track id: the voted `jersey` (or `null`),
+`confidence` (winner's share of vote weight), `n_obs` (legible reads),
+`legible_frac`, and the roster `name` when a `--profile` is given. `--player` /
+`--number` union *all* lanes voting that number, so a player fragmented across
+several ByteTrack lanes is still fully selected (and each lane halos correctly).
+
+Key options: `--max-samples 40` (frames sampled per track), `--min-votes 3`
+(legible reads required to name a track), `--min-share 0.5` / `--min-margin 0.15`
+(vote-confidence guards), `--model <hf-id>` (override the recognizer checkpoint —
+e.g. a jersey-fine-tuned PARSeq).
+
+**Caveat (Veo / overhead cameras).** Players are small and often seen from
+behind, so many crops carry no legible number; expect a meaningful fraction of
+tracks to come back `unknown`. Validate yield on a sample before relying on
+per-player selection — where OCR can't read a number, fall back to `--team` or a
+raw `--track <id>`.
+
+---
+
+## Harvest — build a diverse annotation set from YouTube
+
+`harvest` pulls short, openly-licensed youth-soccer clips off YouTube to seed an
+annotation set that's *broad* (many cameras, countries, kit colours) rather than
+deep on any one team or camera. For each match it keeps a single ~10s clip of
+live open play — sampled at 60% of the match by default (`--position-frac`),
+*not* the exact centre, because a video's midpoint lands on the halftime /
+second-half kickoff. Only videos the uploader released under **Creative Commons
+Attribution (CC BY)** — the one reusable YouTube licence — are kept, and every
+clip's provenance is logged for attribution (a CC BY duty).
+
+The default query list (`soccer_vision.harvest.queries`) leads with elevated
+auto-tracking cameras (Veo / XbotGo Falcon+Chameleon / Trace / Pixellot) because
+they give the high vantage point wanted for analysis and skew youth/amateur;
+general youth queries follow. English queries say "soccer" (never "football") and
+an American-football filter (`is_american_football`, incl. the 🏈 emoji) rejects
+gridiron uploads that slip through — "football" is soccer in most of the world,
+so only US-specific terms trigger it.
+
+```bash
+pip install 'soccer-vision[harvest]'   # yt-dlp; needs ffmpeg (module load ffmpeg)
+
+# Preview yield without downloading:
+soccer-vision harvest --dry-run -n 200
+
+# Harvest 200 clips into data/youth_clips/ (resumable — re-run to top up):
+soccer-vision harvest --out-dir data/youth_clips -n 200
+```
+
+Outputs `clips/<video_id>.mp4`, `manifest.jsonl` (one provenance line per clip:
+id, url, title, channel, licence, duration, clip window, query), and
+`ATTRIBUTION.md`. Re-running skips video-ids already in the manifest, so a
+200-clip set can be built over several sessions. Clips feed straight into the
+`annotate` (Label Studio) flow for player / team / field-position labelling.
+
+Key options: `-n 200` (target games), `--clip-len 10`, `--position-frac 0.6`
+(where in the match to clip; 0.5 = true centre, 0.35 = mid-first-half),
+`--max-per-channel 2` (diversity cap so one uploader can't dominate),
+`--min-duration 300` (skip highlights/shorts), `--queries`/`--queries-file`
+(override the default multi-lingual query list in `soccer_vision.harvest.queries`).
+
+**Note:** downloading from YouTube is contrary to its ToS even for CC-BY content;
+CC BY covers content *reuse*, not retrieval method. This mirrors how academic
+vision datasets are built — keep the attribution manifest with any release.
 
 ---
 
@@ -238,3 +363,39 @@ If ball detection is poor (bad lighting, camera angle), fall back to Pipeline A.
   most of these, but Claude's verify step catches the rest.
 - **YOLO misses**: if the ball is partially occluded or very small, detections
   drop. Increase `--fps` to 5 or fall back to Pipeline A for that half.
+
+---
+
+## Community — file issues for open problems, don't just fix and move on
+
+This project grows through outside contributors, and the issue tracker is how
+they find in. When we hit a real, scoped, unsolved problem — a known
+limitation, a "here's the direction, someone should build this" — **file a
+GitHub issue documenting it**, even if we route around it ourselves for now.
+Do this proactively, not just when asked.
+
+A good community issue is short and self-contained:
+- **What's broken or missing**, with concrete evidence (numbers, a frame, a
+  small chart) rather than a vague description.
+- **What we already ruled out and why**, so nobody re-treads it.
+- **The direction we think is promising**, stated as a lead not a mandate —
+  leave room for a contributor to disagree with the approach.
+- **Where to look**: exact file paths to the relevant module(s).
+- One illustrative image when it makes the problem obvious at a glance (a
+  real chart/frame from our own data beats a mockup — see the `dataviz`
+  skill for how to build one cleanly).
+
+Tag with `help wanted` and, where the fix is genuinely approachable without
+deep repo context, `good first issue`. File with `gh issue create` (see below
+for setup).
+
+### GitHub CLI
+
+`gh` is installed at `~/.local/bin/gh` (not via a module — HiPerGator has no
+`gh` module, so it's a direct binary download from
+`github.com/cli/cli/releases`). Auth lives in `~/.config/gh/hosts.yml`
+(personal access token); if `gh auth status` reports an invalid/expired
+token, ask the user for a fresh fine-grained PAT (Issues: Read/write,
+Contents: Read at minimum) rather than trying to run the interactive
+`gh auth login` browser flow, which doesn't work in this non-interactive
+environment.

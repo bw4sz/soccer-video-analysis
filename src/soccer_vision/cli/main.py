@@ -33,14 +33,38 @@ def main():
     p_broadcast.add_argument("--out", help="Output directory")
     p_broadcast.add_argument("--config", help="Broadcast config YAML")
 
+    # identify
+    p_identify = subparsers.add_parser(
+        "identify", help="Read jersey numbers per track (individual-player pathway)"
+    )
+    p_identify.add_argument("--run", required=True, help="Run directory path")
+    p_identify.add_argument("--profile", help="Project profile YAML (maps jersey → name)")
+    p_identify.add_argument("--model", help="Recognizer checkpoint id (default: parseq)")
+    p_identify.add_argument("--device", default=None, help="PyTorch device: cpu / cuda")
+    p_identify.add_argument("--max-samples", type=int, default=40,
+                            help="Max frames sampled per track (default: 40)")
+    p_identify.add_argument("--min-votes", type=int, default=3,
+                            help="Min legible reads to name a track (default: 3)")
+    p_identify.add_argument("--min-share", type=float, default=0.5,
+                            help="Winning number's min share of vote weight (default: 0.5)")
+    p_identify.add_argument("--min-margin", type=float, default=0.15,
+                            help="Min weight-share lead over runner-up (default: 0.15)")
+
     # extract
     p_extract = subparsers.add_parser("extract", help="Extract clips from a processed run")
     p_extract.add_argument("--run", required=True, help="Run directory path")
     p_extract.add_argument("--events", nargs="+", help="Event labels to extract")
     p_extract.add_argument("--team", help="Filter by team colour (e.g. blue)")
     p_extract.add_argument("--track", type=int, help="Filter by player track id")
+    p_extract.add_argument("--player", help="Filter by player name (needs `identify` + profile)")
+    p_extract.add_argument("--number", type=int, help="Filter by jersey number (needs `identify`)")
+    p_extract.add_argument("--profile", help="Project profile YAML (resolves --player → jersey)")
     p_extract.add_argument("--pre", type=float, default=5.0)
     p_extract.add_argument("--post", type=float, default=30.0)
+    p_extract.add_argument(
+        "--halo", nargs="?", const="ellipse", choices=["ellipse", "circle"],
+        help="Draw a gentle spotlight on each clip's player track "
+             "(needs tracks.json from `process`). Default style: ellipse.")
 
     # reel
     p_reel = subparsers.add_parser("reel", help="Build highlight reel")
@@ -48,8 +72,13 @@ def main():
     p_reel.add_argument("--event", help="Filter by event label")
     p_reel.add_argument("--team", help="Filter by team colour (e.g. blue)")
     p_reel.add_argument("--track", type=int, help="Filter by player track id")
-    p_reel.add_argument("--player", help="Filter by player name (needs roster jersey mapping)")
+    p_reel.add_argument("--player", help="Filter by player name (needs `identify` + profile)")
+    p_reel.add_argument("--number", type=int, help="Filter by jersey number (needs `identify`)")
+    p_reel.add_argument("--profile", help="Project profile YAML (resolves --player name → jersey)")
     p_reel.add_argument("--out", default="highlight_reel.mp4")
+    p_reel.add_argument(
+        "--halo", nargs="?", const="ellipse", choices=["ellipse", "circle"],
+        help="Spotlight each clip's player track (needs tracks.json from `process`).")
 
     # trim-empty
     p_trim = subparsers.add_parser(
@@ -61,14 +90,20 @@ def main():
     p_trim.add_argument("--out", help="Output video path (default: <video>.trimmed.mp4)")
     p_trim.add_argument("--edl", help="Edit-decision-list JSON path (default: <video>.trim.json)")
     p_trim.add_argument("--save-track", help="Where to save an auto-built ball track")
-    p_trim.add_argument("--sample-fps", type=float, default=5.0,
-                        help="Sample rate when building a track (default: 5)")
+    p_trim.add_argument("--sample-fps", type=float, default=15.0,
+                        help="Sample rate when building a track (default: 15; the "
+                             "flickery ball detector needs a dense track for Kalman "
+                             "smoothing to lock on — lower rates over-reject)")
     p_trim.add_argument("--min-dead", type=float, default=5.0,
                         help="Min seconds of dead time before a span is cut (default: 5)")
     p_trim.add_argument("--stationary-px", type=float, default=40.0,
                         help="Max pixel drift to count as 'not moving' (default: 40)")
     p_trim.add_argument("--pad", type=float, default=0.5,
                         help="Seconds of context kept around each cut (default: 0.5)")
+    p_trim.add_argument("--no-smooth", dest="smooth", action="store_false",
+                        help="Skip Kalman smoothing of an auto-built ball track "
+                             "(keep the raw, flickery detections)")
+    p_trim.set_defaults(smooth=True)
     p_trim.add_argument("--copy", action="store_true",
                         help="Stream-copy segments instead of re-encoding (faster, less precise)")
     p_trim.add_argument("--dry-run", action="store_true",
@@ -103,6 +138,38 @@ def main():
     p_describe.add_argument("--no-caption", action="store_true",
                             help="Classify only; skip natural-language captions")
 
+    # harvest (pull CC-BY youth-soccer clips from YouTube)
+    p_harvest = subparsers.add_parser(
+        "harvest",
+        help="Download short CC-BY youth-soccer clips from YouTube for annotation",
+    )
+    p_harvest.add_argument("--out-dir", default="data/youth_clips",
+                           help="Output directory for clips + manifest")
+    p_harvest.add_argument("-n", type=int, default=200,
+                           help="Target number of clips/games (default: 200)")
+    p_harvest.add_argument("--clip-len", type=float, default=10.0,
+                           help="Clip length in seconds (default: 10)")
+    p_harvest.add_argument("--position", choices=["middle", "random"], default="middle",
+                           help="Where in the match to clip (default: middle)")
+    p_harvest.add_argument("--position-frac", type=float, default=0.6,
+                           help="Fraction of the match to centre the clip on with "
+                                "--position middle (default: 0.6 = mid-second-half, "
+                                "past the halftime kickoff; use 0.5 for true centre)")
+    p_harvest.add_argument("--max-per-channel", type=int, default=2,
+                           help="Cap clips per channel for diversity (default: 2)")
+    p_harvest.add_argument("--per-query", type=int, default=50,
+                           help="YouTube results fetched per search query (default: 50)")
+    p_harvest.add_argument("--min-duration", type=float, default=300.0,
+                           help="Skip videos shorter than this many seconds (default: 300)")
+    p_harvest.add_argument("--max-height", type=int, default=720,
+                           help="Cap clip resolution height (default: 720)")
+    p_harvest.add_argument("--queries", nargs="+",
+                           help="Override the default search queries")
+    p_harvest.add_argument("--queries-file",
+                           help="Read search queries from a file (one per line)")
+    p_harvest.add_argument("--dry-run", action="store_true",
+                           help="Search + licence-filter only; download nothing")
+
     # annotate (Label Studio project build / fine-tune export)
     p_annotate = subparsers.add_parser(
         "annotate", help="Build a Label Studio review project or export fine-tune data"
@@ -133,6 +200,9 @@ def main():
     elif args.command == "broadcast":
         from soccer_vision.cli.process import run_broadcast_only
         run_broadcast_only(args)
+    elif args.command == "identify":
+        from soccer_vision.cli.identify import run_identify
+        run_identify(args)
     elif args.command == "extract":
         from soccer_vision.cli.extract import run_extract
         run_extract(args)
@@ -148,6 +218,9 @@ def main():
     elif args.command == "ask":
         from soccer_vision.cli.ask import run_ask
         run_ask(args)
+    elif args.command == "harvest":
+        from soccer_vision.cli.harvest import run_harvest
+        run_harvest(args)
     elif args.command == "describe":
         from soccer_vision.cli.describe import run_describe
         run_describe(args)

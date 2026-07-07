@@ -153,6 +153,7 @@ def run_pipeline(args):
                     "pixel_y": float(foot_y),
                     "field_x": fx,
                     "field_y": fy,
+                    "bbox": [float(x1), float(y1), float(x2), float(y2)],
                 }
                 team_clf.add_sample(tid, frame, (x1, y1, x2, y2))
 
@@ -160,6 +161,21 @@ def run_pipeline(args):
             print(f"  Processing frame {fn}/{proxy_reader.total_frames}")
 
     proxy_reader.close()
+
+    # Persist per-frame track boxes (transposed to per-track lists) so
+    # `extract --halo` can draw a player spotlight across each clip window.
+    tracks_by_id: dict[int, list[dict]] = {}
+    for fn in sorted(frame_players):
+        for tid, p in frame_players[fn].items():
+            if p.get("bbox") is not None:
+                tracks_by_id.setdefault(tid, []).append({"frame": fn, "bbox": p["bbox"]})
+    with open(run_dir.tracks, "w") as f:
+        json.dump(
+            {"video": run_dir.broadcast_proxy.name, "fps": proxy_fps,
+             "sample_interval": detect_interval,
+             "tracks": {str(k): v for k, v in tracks_by_id.items()}},
+            f,
+        )
 
     # Assign players to teams by jersey colour, then run all available action
     # detectors (the rules engine today; the learned engine once a checkpoint ships).

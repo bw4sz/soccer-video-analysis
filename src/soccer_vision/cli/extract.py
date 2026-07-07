@@ -31,7 +31,68 @@ def _describe(args) -> str:
         parts.append(f"team={args.team}")
     if getattr(args, "track", None) is not None:
         parts.append(f"track={args.track}")
+    if getattr(args, "player", None):
+        parts.append(f"player={args.player}")
+    if getattr(args, "number", None) is not None:
+        parts.append(f"number={args.number}")
     return ", ".join(parts) or "all events"
+
+
+def _resolve_player_tracks(args, run_dir: Path) -> set[int] | None:
+    """Resolve ``--player`` / ``--number`` to a set of track ids, or ``None``.
+
+    ``None`` means no player filter was requested. An empty set means a filter
+    was requested but nothing matched (caller should report no clips). Reads
+    ``jerseys.json`` from the run (written by `soccer-vision identify`) and, for
+    a name, the profile roster.
+    """
+    import json
+
+    player = getattr(args, "player", None)
+    number = getattr(args, "number", None)
+    if not player and number is None:
+        return None
+
+    jerseys_path = run_dir / "jerseys.json"
+    if not jerseys_path.exists():
+        print(f"--player/--number needs jersey numbers: run "
+              f"`soccer-vision identify --run {run_dir}` first.")
+        return set()
+
+    from soccer_vision.identify.resolve import tracks_for
+    from soccer_vision.profiles.loader import load_profile
+
+    jerseys_doc = json.loads(jerseys_path.read_text())
+    profile = load_profile(args.profile) if getattr(args, "profile", None) else None
+    tids = tracks_for(jerseys_doc, number=number, name=player, profile=profile)
+    if not tids:
+        who = player or f"#{number}"
+        print(f"No track resolved to {who} in {jerseys_path.name}.")
+    return tids
+
+
+def _load_halo(run_dir: Path, style: str | None):
+    """Resolve a ``--halo`` request to ``(track_boxes, style, max_gap_frames)``.
+
+    Returns ``(None, None, 0)`` when halos aren't requested or ``tracks.json`` is
+    missing (in which case a warning is printed and extraction proceeds plainly).
+    """
+    if not style:
+        return None, None, 0
+
+    import json
+
+    from soccer_vision.clips.halo import load_track_boxes
+
+    tracks_path = run_dir / "tracks.json"
+    if not tracks_path.exists():
+        print(f"--halo requested but {tracks_path} is missing "
+              "(re-run `process` to generate it). Extracting plain clips.")
+        return None, None, 0
+
+    meta = json.loads(tracks_path.read_text())
+    max_gap = int(meta.get("sample_interval", 5)) * 4
+    return load_track_boxes(tracks_path), style, max_gap
 
 
 def run_extract(args):
@@ -40,22 +101,33 @@ def run_extract(args):
     proxy_path = run_dir / "broadcast_proxy.mp4"
     clips_dir = run_dir / "clips"
 
+    player_tracks = _resolve_player_tracks(args, run_dir)
+    if player_tracks == set():
+        return  # a player filter was asked for but resolved to nothing
+
     events = _load_events(run_dir)
 
-    # --events takes one or more labels; --team / --track narrow further.
+    # --events takes one or more labels; --team / --track / --player narrow further.
     if args.events:
         events = [e for e in events if e.get("label") in args.events]
-    events = filter_events(events, team=args.team, track_id=args.track)
+    events = filter_events(
+        events, team=args.team, track_id=args.track, track_ids=player_tracks
+    )
 
     if not events:
         print(f"No matching events found ({_describe(args)}).")
         return
 
+    halo_tracks, halo_style, halo_max_gap = _load_halo(run_dir, getattr(args, "halo", None))
+
     clip_paths = extract_event_clips(
         proxy_path, events, clips_dir,
         pre_s=args.pre, post_s=args.post,
+        **({"halo_tracks": halo_tracks, "halo_style": halo_style,
+            "halo_max_gap_frames": halo_max_gap} if halo_tracks is not None else {}),
     )
-    print(f"\n{len(clip_paths)} clip(s) extracted to {clips_dir}/ ({_describe(args)})")
+    haloed = " with halo" if halo_tracks is not None else ""
+    print(f"\n{len(clip_paths)} clip(s) extracted{haloed} to {clips_dir}/ ({_describe(args)})")
 
 
 def run_reel(args):
@@ -65,18 +137,21 @@ def run_reel(args):
     run_dir = Path(args.run)
     proxy_path = run_dir / "broadcast_proxy.mp4"
 
-    if args.player:
-        print("Note: --player (roster name) needs jersey mapping (future phase); "
-              "use --track <id> to select a specific player for now.")
+    player_tracks = _resolve_player_tracks(args, run_dir)
+    if player_tracks == set():
+        return  # a player filter was asked for but resolved to nothing
 
     events = _load_events(run_dir)
     events = filter_events(
-        events, label=args.event, team=args.team, track_id=args.track
+        events, label=args.event, team=args.team, track_id=args.track,
+        track_ids=player_tracks,
     )
 
     if not events:
         print(f"No matching events found ({_describe(args)}).")
         return
+
+    halo_tracks, halo_style, halo_max_gap = _load_halo(run_dir, getattr(args, "halo", None))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         clip_paths = []
@@ -84,7 +159,16 @@ def run_reel(args):
             ts = event.get("timestamp_s", event.get("position_ms", 0) / 1000)
             start = max(0.0, ts - 5.0)
             tmp_path = Path(tmpdir) / f"tmp_{i:03d}.mp4"
-            ffmpeg_extract_clip(proxy_path, start, 20.0, tmp_path)
+            tid = event.get("track_id")
+            samples = halo_tracks.get(int(tid)) if halo_tracks and tid is not None else None
+            if samples:
+                from soccer_vision.clips.halo import render_halo_clip
+
+                render_halo_clip(proxy_path, tmp_path, start_s=start, duration_s=20.0,
+                                 track_samples=samples, style=halo_style,
+                                 max_gap_frames=halo_max_gap)
+            else:
+                ffmpeg_extract_clip(proxy_path, start, 20.0, tmp_path)
             clip_paths.append(tmp_path)
         out_path = build_reel(clip_paths, args.out)
     print(f"Reel saved: {out_path} ({len(events)} clips — {_describe(args)})")

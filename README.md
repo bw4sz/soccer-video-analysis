@@ -127,9 +127,14 @@ flowchart TD
 | `learned` | 8 player-attributed actions (pass, drive, cross, shot, header, throw-in, tackle, block) | ⏳ model training; inference not wired |
 | `vlm` | SoccerNet classes via sliding-window video-LM | ⏳ opt-in, weak on youth footage |
 
-> **Player identity is track-id based (v1).** A `track_id` is a ByteTrack lane,
-> not yet a named jersey number, so `--track 6` selects a lane and `--player <name>`
-> is stubbed until jersey OCR / sn-gamestate / SAM3 lands. `--team` works today.
+> **Two selection pathways.** *Team-level* filtering works off jersey **colour**
+> (`--team black`). *Individual-player* filtering (`--player Simon` / `--number 6`)
+> works once you run `soccer-vision identify`, which reads each track's jersey
+> number (dedicated recognizer → per-track confidence-weighted vote) into
+> `jerseys.json`. A raw `--track 6` still selects a single ByteTrack lane; jersey
+> identity unions all lanes carrying that number, so a fragmented player is fully
+> selected. On overhead footage some tracks read back `unknown` — fall back to
+> `--team` / `--track` there.
 
 ---
 
@@ -196,8 +201,10 @@ Roughly in priority order:
   and found unreliable as a structured classifier on youth footage
   ([training/FOOTPASS_vs_soccerchat.md](training/FOOTPASS_vs_soccerchat.md)); kept
   only as a caption aid.
-- **Stable player identity** — jersey OCR / sn-gamestate / SAM3 so `--player <name>`
-  resolves to a roster number, not a track id.
+- **Stable player identity across illegible stretches** — `soccer-vision identify`
+  reads jersey numbers today (per-track vote → `--player`/`--number`); adding
+  re-ID / sn-gamestate / SAM3 would carry identity through frames where the number
+  can't be read, so overhead-camera tracks resolve more reliably.
 - **Better field mapper** — neural calibration for weak field lines.
 - **Desktop reviewer** — PySide6 timeline / clip bin / stats tabs.
 - **More action labels** — free kicks, kickoff, substitutions, each a new engine.

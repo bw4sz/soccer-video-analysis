@@ -76,10 +76,11 @@ def track_duration_s(track: dict) -> float:
 def build_ball_track(
     video_path: str | Path,
     *,
-    sample_fps: float = 5.0,
+    sample_fps: float = 15.0,
     detector=None,
     conf_threshold: float = 0.2,
     device: str | None = None,
+    smooth: bool = True,
 ) -> dict:
     """Produce a ball track from a video using the RF-DETR ball detector.
 
@@ -90,6 +91,11 @@ def build_ball_track(
 
     Every sampled frame becomes a sample: visible with a position when the ball
     is found, or ``visible: false`` when it is offscreen/undetected.
+
+    With ``smooth`` (the default) the raw detections are run through a
+    constant-velocity Kalman filter that smooths jitter and drops flicker jumps
+    (see :mod:`soccer_vision.tracking.ball_kalman`); pass ``smooth=False`` to
+    keep the raw detections.
     """
     from soccer_vision.detection.ball import detect_ball_position
 
@@ -123,7 +129,7 @@ def build_ball_track(
                     "pixel_y": round(cy, 1),
                     "confidence": round(conf, 3),
                 })
-        return {
+        track = {
             "video": str(video_path),
             "fps": native_fps,
             "sample_fps": sample_fps,
@@ -132,6 +138,11 @@ def build_ball_track(
             "total_frames": reader.total_frames,
             "samples": samples,
         }
+
+    if smooth:
+        from soccer_vision.tracking.ball_kalman import smooth_ball_track
+        track = smooth_ball_track(track)
+    return track
 
 
 # ---------------------------------------------------------------------------

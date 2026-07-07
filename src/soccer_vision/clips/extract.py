@@ -21,8 +21,18 @@ def extract_event_clips(
     post_s: float = 30.0,
     prefix: str = "clip",
     reencode: bool = True,
+    halo_tracks: dict[int, list] | None = None,
+    halo_color: tuple[int, int, int] = (0, 215, 255),
+    halo_style: str = "ellipse",
+    halo_max_gap_frames: int = 20,
 ) -> list[Path]:
-    """Extract a clip for each event, return list of output paths."""
+    """Extract a clip for each event, return list of output paths.
+
+    When ``halo_tracks`` is given (``{track_id: [(frame, bbox), ...]}`` from
+    :func:`soccer_vision.clips.halo.load_track_boxes`), any event carrying a
+    matching ``track_id`` is re-rendered with a soft team-coloured spotlight on
+    that player; other events fall back to a plain ffmpeg cut.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     clip_paths = []
@@ -34,8 +44,25 @@ def extract_event_clips(
         duration = pre_s + post_s
         out_path = out_dir / f"{prefix}_{i:03d}_{label}_{ts:.0f}s.mp4"
 
-        print(f"  [{i}/{len(events)}] {label} at {ts:.1f}s → {out_path.name}")
-        ffmpeg_extract_clip(video_path, start, duration, out_path, reencode=reencode)
+        tid = event.get("track_id")
+        samples = halo_tracks.get(int(tid)) if halo_tracks and tid is not None else None
+        if samples:
+            from soccer_vision.clips.halo import render_halo_clip
+
+            print(f"  [{i}/{len(events)}] {label} at {ts:.1f}s → "
+                  f"{out_path.name} (halo track {tid})")
+            render_halo_clip(
+                video_path, out_path, start_s=start, duration_s=duration,
+                track_samples=samples, color=halo_color, style=halo_style,
+                max_gap_frames=halo_max_gap_frames,
+            )
+        else:
+            if halo_tracks is not None:
+                print(f"  [{i}/{len(events)}] {label} at {ts:.1f}s → "
+                      f"{out_path.name} (no track — plain cut)")
+            else:
+                print(f"  [{i}/{len(events)}] {label} at {ts:.1f}s → {out_path.name}")
+            ffmpeg_extract_clip(video_path, start, duration, out_path, reencode=reencode)
         clip_paths.append(out_path)
 
     return clip_paths

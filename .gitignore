@@ -24,3 +24,6 @@ vendor/
 
 # SLURM job logs / per-run output dirs
 slurm/logs/
+
+# Local datasets / harvest downloads (large, regenerable — keep out of git)
+data/
