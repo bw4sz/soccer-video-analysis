@@ -16,6 +16,19 @@ Result: <outcome once known>
 Next: <follow-up action>
 ```
 
+## 36500443 — 2026-07-06 — slurm/submit_footpass_ours_ball.sh (branch footpass-track-continuity)
+Why: Verify the new track-continuity filter end-to-end (not just logic-checked on an existing h5).
+  Drops tracks present in <50% of frames within their lifespan or seen in <10 frames total —
+  the flicker signature of supporters and ref<->player flip-flopping.
+Result: COMPLETED (exit 0, 6m04s). In-pipeline [continuity] dropped 45/108 flickery tracks (200
+  detections), matching the offline validation exactly. Everything else held: field-mask 221,
+  referee 206, ball 559/600 (93%), teams black/orange, 12233 player-detections (200 fewer).
+  TAAD events unchanged (36, 18 near-ball, 1 gated) — the junk tracks were short and never made
+  TAAD's top-13 slots, so the win is a cleaner overlay (fewer flickering boxes in motion), not
+  different predictions. Regenerated saints_live_overlay_ball.mp4. Filter committed as 4b05ecf.
+Next: TAAD domain shift remains the real blocker (fine-tune/adapt). Optional: smooth referee
+  removal further by voting a track's ref-vs-player class over its lifetime.
+
 ## 36468175 — 2026-07-06 — slurm/submit_footpass_ours_ball.sh (branch compare-taad-predictions)
 Why: Add ball detection + tracking, referee removal, and a gentle ball-proximity gate to the
   pipeline, then re-run the live window. Extractor now does ONE RF-DETR pass/frame split into
