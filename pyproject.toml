@@ -40,6 +40,8 @@ soccerchat = [
 ]
 # Label Studio annotation UI + Python SDK for pushing pre-filled review projects.
 annotate = ["label-studio>=1.13", "label-studio-sdk>=1.0"]
+# Harvest CC-BY youth-soccer clips from YouTube (needs ffmpeg on PATH too).
+harvest = ["yt-dlp>=2024.8"]
 dev = ["pytest", "ruff", "sphinx"]
 
 [project.scripts]

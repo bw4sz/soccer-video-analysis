@@ -29,6 +29,11 @@ class RunDir:
         return self.root / "stats.json"
 
     @property
+    def tracks(self) -> Path:
+        """Per-frame player track boxes, used to draw player halos on clips."""
+        return self.root / "tracks.json"
+
+    @property
     def clips_dir(self) -> Path:
         d = self.root / "clips"
         d.mkdir(exist_ok=True)

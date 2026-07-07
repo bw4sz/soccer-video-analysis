@@ -207,7 +207,70 @@ until it lands). Defined in `soccer_vision.events.deadball`:
 ```
 
 Key options: `--min-dead 5` (dead-span threshold), `--stationary-px 40` (max
-drift to count as "not moving"), `--pad 0.5` (context kept around each cut).
+drift to count as "not moving"), `--pad 0.5` (context kept around each cut),
+`--no-smooth` (skip Kalman smoothing — see below).
+
+**Kalman smoothing (auto-built tracks).** There is only one ball and it moves
+smoothly, but the RF-DETR detector *flickers* — it latches onto a jersey number
+or sponsor logo for a frame or two, so the reported position teleports and snaps
+back. When `trim-empty` builds a track itself it runs the detections through a
+constant-velocity Kalman filter (`soccer_vision.tracking.ball_kalman`) that
+smooths jitter and gates out those jumps: a detection is rejected when its
+Mahalanobis distance from the predicted position exceeds a χ² threshold, and the
+ball coasts on the prediction instead. Several rejects in a row, or a long
+offscreen gap, re-lock the filter onto the latest detection (so a genuine
+relocation isn't fought forever). Smoothed samples keep the original detection
+under `raw_pixel_x`/`raw_pixel_y` and gain `smoothed: true` (rejected jumps also
+get `outlier: true`); offscreen samples pass through untouched so real
+out-of-play gaps still read as dead time. Pass `--no-smooth` to keep raw
+detections, or call `smooth_ball_track(track)` directly on a precomputed track.
+
+Auto-built tracks default to `--sample-fps 15` because this detector is flickery
+enough that the filter needs a dense track to lock on: on the saints validation
+clip the raw ball teleports with a p95 frame-to-frame jump of ~850px, and at 5
+fps the ball moves too far between samples for the gate to tell real motion from
+a false positive (it over-rejects, ~39% of frames). At 15 fps rejection drops to
+~32% and mean jump is more than halved; 30 fps (the FOOTPASS h5 export rate) is
+better still.
+
+---
+
+## Harvest — build a diverse annotation set from YouTube
+
+`harvest` pulls short, openly-licensed youth-soccer clips off YouTube to seed an
+annotation set that's *broad* (many cameras, countries, kit colours) rather than
+deep on any one team or camera. For each match it keeps a single ~10s clip of
+live open play — sampled at 60% of the match by default (`--position-frac`),
+*not* the exact centre, because a video's midpoint lands on the halftime /
+second-half kickoff. Only videos the uploader released under **Creative Commons
+Attribution (CC BY)** — the one reusable YouTube licence — are kept, and every
+clip's provenance is logged for attribution (a CC BY duty).
+
+```bash
+pip install 'soccer-vision[harvest]'   # yt-dlp; needs ffmpeg (module load ffmpeg)
+
+# Preview yield without downloading:
+soccer-vision harvest --dry-run -n 200
+
+# Harvest 200 clips into data/youth_clips/ (resumable — re-run to top up):
+soccer-vision harvest --out-dir data/youth_clips -n 200
+```
+
+Outputs `clips/<video_id>.mp4`, `manifest.jsonl` (one provenance line per clip:
+id, url, title, channel, licence, duration, clip window, query), and
+`ATTRIBUTION.md`. Re-running skips video-ids already in the manifest, so a
+200-clip set can be built over several sessions. Clips feed straight into the
+`annotate` (Label Studio) flow for player / team / field-position labelling.
+
+Key options: `-n 200` (target games), `--clip-len 10`, `--position-frac 0.6`
+(where in the match to clip; 0.5 = true centre, 0.35 = mid-first-half),
+`--max-per-channel 2` (diversity cap so one uploader can't dominate),
+`--min-duration 300` (skip highlights/shorts), `--queries`/`--queries-file`
+(override the default multi-lingual query list in `soccer_vision.harvest.queries`).
+
+**Note:** downloading from YouTube is contrary to its ToS even for CC-BY content;
+CC BY covers content *reuse*, not retrieval method. This mirrors how academic
+vision datasets are built — keep the attribution manifest with any release.
 
 ---
 

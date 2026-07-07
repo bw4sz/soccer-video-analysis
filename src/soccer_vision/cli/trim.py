@@ -34,7 +34,12 @@ def run_trim_empty(args):
             "   Schema: see soccer_vision.events.deadball.)"
         )
         try:
-            track = build_ball_track(video, sample_fps=args.sample_fps, device=args.device)
+            track = build_ball_track(
+                video,
+                sample_fps=args.sample_fps,
+                device=args.device,
+                smooth=args.smooth,
+            )
         except Exception as e:  # detector/weights missing → actionable message
             print(f"\nCould not build a ball track automatically: {e}")
             print(
