@@ -23,3 +23,13 @@ def get_player(profile: dict, jersey: int) -> dict | None:
         if p.get("jersey") == jersey:
             return p
     return None
+
+
+def get_jersey_by_name(profile: dict, name: str) -> int | None:
+    """Return the roster jersey number for ``name`` (case-insensitive)."""
+    key = name.strip().lower()
+    for p in get_roster(profile):
+        if (p.get("name") or "").strip().lower() == key:
+            j = p.get("jersey")
+            return int(j) if j is not None else None
+    return None

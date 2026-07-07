@@ -34,6 +34,11 @@ class RunDir:
         return self.root / "tracks.json"
 
     @property
+    def jerseys(self) -> Path:
+        """Per-track voted jersey numbers, written by `soccer-vision identify`."""
+        return self.root / "jerseys.json"
+
+    @property
     def clips_dir(self) -> Path:
         d = self.root / "clips"
         d.mkdir(exist_ok=True)

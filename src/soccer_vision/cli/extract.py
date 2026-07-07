@@ -31,7 +31,44 @@ def _describe(args) -> str:
         parts.append(f"team={args.team}")
     if getattr(args, "track", None) is not None:
         parts.append(f"track={args.track}")
+    if getattr(args, "player", None):
+        parts.append(f"player={args.player}")
+    if getattr(args, "number", None) is not None:
+        parts.append(f"number={args.number}")
     return ", ".join(parts) or "all events"
+
+
+def _resolve_player_tracks(args, run_dir: Path) -> set[int] | None:
+    """Resolve ``--player`` / ``--number`` to a set of track ids, or ``None``.
+
+    ``None`` means no player filter was requested. An empty set means a filter
+    was requested but nothing matched (caller should report no clips). Reads
+    ``jerseys.json`` from the run (written by `soccer-vision identify`) and, for
+    a name, the profile roster.
+    """
+    import json
+
+    player = getattr(args, "player", None)
+    number = getattr(args, "number", None)
+    if not player and number is None:
+        return None
+
+    jerseys_path = run_dir / "jerseys.json"
+    if not jerseys_path.exists():
+        print(f"--player/--number needs jersey numbers: run "
+              f"`soccer-vision identify --run {run_dir}` first.")
+        return set()
+
+    from soccer_vision.identify.resolve import tracks_for
+    from soccer_vision.profiles.loader import load_profile
+
+    jerseys_doc = json.loads(jerseys_path.read_text())
+    profile = load_profile(args.profile) if getattr(args, "profile", None) else None
+    tids = tracks_for(jerseys_doc, number=number, name=player, profile=profile)
+    if not tids:
+        who = player or f"#{number}"
+        print(f"No track resolved to {who} in {jerseys_path.name}.")
+    return tids
 
 
 def _load_halo(run_dir: Path, style: str | None):
@@ -64,12 +101,18 @@ def run_extract(args):
     proxy_path = run_dir / "broadcast_proxy.mp4"
     clips_dir = run_dir / "clips"
 
+    player_tracks = _resolve_player_tracks(args, run_dir)
+    if player_tracks == set():
+        return  # a player filter was asked for but resolved to nothing
+
     events = _load_events(run_dir)
 
-    # --events takes one or more labels; --team / --track narrow further.
+    # --events takes one or more labels; --team / --track / --player narrow further.
     if args.events:
         events = [e for e in events if e.get("label") in args.events]
-    events = filter_events(events, team=args.team, track_id=args.track)
+    events = filter_events(
+        events, team=args.team, track_id=args.track, track_ids=player_tracks
+    )
 
     if not events:
         print(f"No matching events found ({_describe(args)}).")
@@ -94,13 +137,14 @@ def run_reel(args):
     run_dir = Path(args.run)
     proxy_path = run_dir / "broadcast_proxy.mp4"
 
-    if args.player:
-        print("Note: --player (roster name) needs jersey mapping (future phase); "
-              "use --track <id> to select a specific player for now.")
+    player_tracks = _resolve_player_tracks(args, run_dir)
+    if player_tracks == set():
+        return  # a player filter was asked for but resolved to nothing
 
     events = _load_events(run_dir)
     events = filter_events(
-        events, label=args.event, team=args.team, track_id=args.track
+        events, label=args.event, team=args.team, track_id=args.track,
+        track_ids=player_tracks,
     )
 
     if not events:

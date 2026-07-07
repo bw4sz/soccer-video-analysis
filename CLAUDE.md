@@ -235,6 +235,60 @@ better still.
 
 ---
 
+## Identify — read jersey numbers for the individual-player pathway
+
+There are two ways to slice a processed match into clips:
+
+- **Team-level** — *"all the throw-ins from the black team"*, *"the black team
+  building out of the back."* Uses jersey **colour** (already assigned by
+  `process`); filter with `--team black`. No OCR needed.
+- **Individual-player** — *"all the passing actions by number six"*,
+  *"highlights from number six."* Needs stable player identity, which comes from
+  **reading the jersey number** off each track. This is what `identify` adds.
+
+A ByteTrack id is an ephemeral lane, not a person — one player fragments into
+many lanes across a match, and the lane number is unrelated to the jersey.
+`identify` reads the number so `--player <name>` / `--number <n>` can select the
+*person*.
+
+```bash
+pip install 'soccer-vision[identify]'   # PARSeq recognizer via torch.hub
+
+# Read jersey numbers on an already-processed run (writes jerseys.json):
+soccer-vision identify --run runs/<match_id> --profile team.yaml
+
+# Then cut clips for a player by name (needs the profile roster) or number:
+soccer-vision reel --run runs/<match_id> --player Simon --profile team.yaml --halo
+soccer-vision extract --run runs/<match_id> --events pass --number 6
+```
+
+**How it works.** Per-frame OCR flickers (motion blur, players facing away,
+angled digits), but a jersey number is constant across a track. So `identify`
+reads the number on every legible frame of each track, then takes a
+**confidence-weighted majority vote** per track (`soccer_vision.identify.vote`),
+writing `unknown` when support is weak or the vote is split — better to abstain
+than mislabel a clip. It's a separate opt-in step (not part of `process`) so it
+stays re-runnable and doesn't slow every run.
+
+`jerseys.json` records, per track id: the voted `jersey` (or `null`),
+`confidence` (winner's share of vote weight), `n_obs` (legible reads),
+`legible_frac`, and the roster `name` when a `--profile` is given. `--player` /
+`--number` union *all* lanes voting that number, so a player fragmented across
+several ByteTrack lanes is still fully selected (and each lane halos correctly).
+
+Key options: `--max-samples 40` (frames sampled per track), `--min-votes 3`
+(legible reads required to name a track), `--min-share 0.5` / `--min-margin 0.15`
+(vote-confidence guards), `--model <hf-id>` (override the recognizer checkpoint —
+e.g. a jersey-fine-tuned PARSeq).
+
+**Caveat (Veo / overhead cameras).** Players are small and often seen from
+behind, so many crops carry no legible number; expect a meaningful fraction of
+tracks to come back `unknown`. Validate yield on a sample before relying on
+per-player selection — where OCR can't read a number, fall back to `--team` or a
+raw `--track <id>`.
+
+---
+
 ## Harvest — build a diverse annotation set from YouTube
 
 `harvest` pulls short, openly-licensed youth-soccer clips off YouTube to seed an
@@ -245,6 +299,14 @@ live open play — sampled at 60% of the match by default (`--position-frac`),
 second-half kickoff. Only videos the uploader released under **Creative Commons
 Attribution (CC BY)** — the one reusable YouTube licence — are kept, and every
 clip's provenance is logged for attribution (a CC BY duty).
+
+The default query list (`soccer_vision.harvest.queries`) leads with elevated
+auto-tracking cameras (Veo / XbotGo Falcon+Chameleon / Trace / Pixellot) because
+they give the high vantage point wanted for analysis and skew youth/amateur;
+general youth queries follow. English queries say "soccer" (never "football") and
+an American-football filter (`is_american_football`, incl. the 🏈 emoji) rejects
+gridiron uploads that slip through — "football" is soccer in most of the world,
+so only US-specific terms trigger it.
 
 ```bash
 pip install 'soccer-vision[harvest]'   # yt-dlp; needs ffmpeg (module load ffmpeg)
@@ -301,3 +363,39 @@ If ball detection is poor (bad lighting, camera angle), fall back to Pipeline A.
   most of these, but Claude's verify step catches the rest.
 - **YOLO misses**: if the ball is partially occluded or very small, detections
   drop. Increase `--fps` to 5 or fall back to Pipeline A for that half.
+
+---
+
+## Community — file issues for open problems, don't just fix and move on
+
+This project grows through outside contributors, and the issue tracker is how
+they find in. When we hit a real, scoped, unsolved problem — a known
+limitation, a "here's the direction, someone should build this" — **file a
+GitHub issue documenting it**, even if we route around it ourselves for now.
+Do this proactively, not just when asked.
+
+A good community issue is short and self-contained:
+- **What's broken or missing**, with concrete evidence (numbers, a frame, a
+  small chart) rather than a vague description.
+- **What we already ruled out and why**, so nobody re-treads it.
+- **The direction we think is promising**, stated as a lead not a mandate —
+  leave room for a contributor to disagree with the approach.
+- **Where to look**: exact file paths to the relevant module(s).
+- One illustrative image when it makes the problem obvious at a glance (a
+  real chart/frame from our own data beats a mockup — see the `dataviz`
+  skill for how to build one cleanly).
+
+Tag with `help wanted` and, where the fix is genuinely approachable without
+deep repo context, `good first issue`. File with `gh issue create` (see below
+for setup).
+
+### GitHub CLI
+
+`gh` is installed at `~/.local/bin/gh` (not via a module — HiPerGator has no
+`gh` module, so it's a direct binary download from
+`github.com/cli/cli/releases`). Auth lives in `~/.config/gh/hosts.yml`
+(personal access token); if `gh auth status` reports an invalid/expired
+token, ask the user for a fresh fine-grained PAT (Issues: Read/write,
+Contents: Read at minimum) rather than trying to run the interactive
+`gh auth login` browser flow, which doesn't work in this non-interactive
+environment.

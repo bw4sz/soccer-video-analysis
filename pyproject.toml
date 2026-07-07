@@ -42,6 +42,9 @@ soccerchat = [
 annotate = ["label-studio>=1.13", "label-studio-sdk>=1.0"]
 # Harvest CC-BY youth-soccer clips from YouTube (needs ffmpeg on PATH too).
 harvest = ["yt-dlp>=2024.8"]
+# Jersey-number recognition (individual-player pathway). PARSeq scene-text
+# recognizer loaded via torch.hub; a jersey-fine-tuned checkpoint can override it.
+identify = ["timm>=0.9", "pytorch-lightning>=2.0", "nltk", "pillow"]
 dev = ["pytest", "ruff", "sphinx"]
 
 [project.scripts]

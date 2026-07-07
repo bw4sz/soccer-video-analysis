@@ -33,12 +33,32 @@ def main():
     p_broadcast.add_argument("--out", help="Output directory")
     p_broadcast.add_argument("--config", help="Broadcast config YAML")
 
+    # identify
+    p_identify = subparsers.add_parser(
+        "identify", help="Read jersey numbers per track (individual-player pathway)"
+    )
+    p_identify.add_argument("--run", required=True, help="Run directory path")
+    p_identify.add_argument("--profile", help="Project profile YAML (maps jersey → name)")
+    p_identify.add_argument("--model", help="Recognizer checkpoint id (default: parseq)")
+    p_identify.add_argument("--device", default=None, help="PyTorch device: cpu / cuda")
+    p_identify.add_argument("--max-samples", type=int, default=40,
+                            help="Max frames sampled per track (default: 40)")
+    p_identify.add_argument("--min-votes", type=int, default=3,
+                            help="Min legible reads to name a track (default: 3)")
+    p_identify.add_argument("--min-share", type=float, default=0.5,
+                            help="Winning number's min share of vote weight (default: 0.5)")
+    p_identify.add_argument("--min-margin", type=float, default=0.15,
+                            help="Min weight-share lead over runner-up (default: 0.15)")
+
     # extract
     p_extract = subparsers.add_parser("extract", help="Extract clips from a processed run")
     p_extract.add_argument("--run", required=True, help="Run directory path")
     p_extract.add_argument("--events", nargs="+", help="Event labels to extract")
     p_extract.add_argument("--team", help="Filter by team colour (e.g. blue)")
     p_extract.add_argument("--track", type=int, help="Filter by player track id")
+    p_extract.add_argument("--player", help="Filter by player name (needs `identify` + profile)")
+    p_extract.add_argument("--number", type=int, help="Filter by jersey number (needs `identify`)")
+    p_extract.add_argument("--profile", help="Project profile YAML (resolves --player name → jersey)")
     p_extract.add_argument("--pre", type=float, default=5.0)
     p_extract.add_argument("--post", type=float, default=30.0)
     p_extract.add_argument(
@@ -52,7 +72,9 @@ def main():
     p_reel.add_argument("--event", help="Filter by event label")
     p_reel.add_argument("--team", help="Filter by team colour (e.g. blue)")
     p_reel.add_argument("--track", type=int, help="Filter by player track id")
-    p_reel.add_argument("--player", help="Filter by player name (needs roster jersey mapping)")
+    p_reel.add_argument("--player", help="Filter by player name (needs `identify` + profile)")
+    p_reel.add_argument("--number", type=int, help="Filter by jersey number (needs `identify`)")
+    p_reel.add_argument("--profile", help="Project profile YAML (resolves --player name → jersey)")
     p_reel.add_argument("--out", default="highlight_reel.mp4")
     p_reel.add_argument(
         "--halo", nargs="?", const="ellipse", choices=["ellipse", "circle"],
@@ -178,6 +200,9 @@ def main():
     elif args.command == "broadcast":
         from soccer_vision.cli.process import run_broadcast_only
         run_broadcast_only(args)
+    elif args.command == "identify":
+        from soccer_vision.cli.identify import run_identify
+        run_identify(args)
     elif args.command == "extract":
         from soccer_vision.cli.extract import run_extract
         run_extract(args)

@@ -29,8 +29,11 @@ without touching downstream code:
   event-type-agnostic (``tackle``, ``goal``, ``goal_kick``, ...).
 - **Team assignment** (:mod:`soccer_vision.tracking.teams`): v1 clusters tracked
   players into two teams by jersey colour and names each cluster (blue / white /
-  ...), so events can be filtered by ``--team blue``. Jersey OCR → named roster
-  and SAM3 masklet identity are later phases behind the same seam.
+  ...), so events can be filtered by ``--team blue``. Individual-player identity
+  comes from ``soccer-vision identify`` (:mod:`soccer_vision.identify`), which
+  reads jersey numbers per track (dedicated recognizer → confidence-weighted
+  vote) so events filter by ``--player`` / ``--number``; SAM3 masklet identity is
+  a later phase behind the same seam.
 - **Association** (:mod:`soccer_vision.events.associate`): each event is tagged
   with the nearest player's ``track_id`` and their ``team``.
 
