@@ -28,9 +28,11 @@ interchange format.
 
 The perception stack runs end-to-end on our own Veo match footage (CPU-only).
 
-**Detection — RF-DETR labels players, goalkeeper, referee, and ball per frame:**
+**Detection + tracking on a live shot on goal — RF-DETR labels players, keeper,
+referee, and ball; ByteTrack keeps a persistent id on each and traces the run
+([full-res clip](docs/images/perception_clip.mp4)):**
 
-![RF-DETR detection on youth Veo footage](docs/images/detection_rfdetr.jpg)
+[![Detection and tracking on a youth Veo shot on goal](docs/images/perception_clip.gif)](docs/images/perception_clip.mp4)
 
 **Tracking — ByteTrack gives every player a persistent id (the basis for "number 6"):**
 
