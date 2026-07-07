@@ -121,6 +121,11 @@ def main() -> int:
                     help="confidence threshold for the ball (kept lower than players — it's small)")
     ap.add_argument("--drop-referees", action="store_true", default=True,
                     help="drop player boxes that overlap a detected referee (default on)")
+    ap.add_argument("--min-track-coverage", type=float, default=0.5,
+                    help="drop a track present in fewer than this fraction of frames within its "
+                         "own lifespan — flickery tracks are usually supporters/referees")
+    ap.add_argument("--min-track-frames", type=int, default=10,
+                    help="drop tracks seen in fewer than this many frames total")
     args = ap.parse_args()
 
     det = RFDETRSoccerDetector.from_pretrained(device=args.device)
@@ -212,6 +217,25 @@ def main() -> int:
     print(f"[referee] dropped {n_ref} player boxes overlapping a referee")
     n_sampled = max(1, (f1 - f0) // args.stride)
     print(f"[ball] detected in {n_ball}/{n_sampled} frames ({n_ball/n_sampled:.0%})")
+
+    # Track-continuity filter: an on-field player is present in most frames of its
+    # lifespan; supporters and referees (RF-DETR flipping ref<->player) blink in and
+    # out, so their identity is vacant for long stretches. Drop low-coverage / very
+    # short tracks — this also keeps the top-13 TAAD slots and team clusters clean.
+    per_track = {}
+    for r in rows:
+        per_track.setdefault(r[1], []).append(r[0])
+    flicker = set()
+    for tid, fs in per_track.items():
+        fs = sorted(set(fs))
+        span = (fs[-1] - fs[0]) / args.stride + 1
+        coverage = len(fs) / span
+        if coverage < args.min_track_coverage or len(fs) < args.min_track_frames:
+            flicker.add(tid)
+    n_before = len(rows)
+    rows = [r for r in rows if r[1] not in flicker]
+    print(f"[continuity] dropped {len(flicker)}/{len(per_track)} flickery tracks "
+          f"({n_before - len(rows)} detections)")
     teams.fit()
 
     # Map team colour-name -> LEFT_TO_RIGHT 0/1 (stable: first-seen team = 0).
@@ -248,6 +272,7 @@ def main() -> int:
         "field_mask": args.field_mask, "off_field_dropped": int(n_off),
         "field_polygon": field_poly.reshape(-1, 2).tolist() if field_poly is not None else None,
         "referees_dropped": int(n_ref),
+        "tracks_dropped_flicker": int(len(flicker)),
         "ball_detected_frames": int(n_ball),
         "ball_track": [[int(t), round(px, 1), round(py, 1), round(c, 3)] for (t, px, py, c) in ball_rows],
     }

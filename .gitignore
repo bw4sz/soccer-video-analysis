@@ -9,6 +9,7 @@ build/
 runs/
 *.mp4
 !tests/fixtures/clip_10s_*.mp4
+!docs/images/*.mp4
 *.avi
 *.mov
 .ruff_cache/
