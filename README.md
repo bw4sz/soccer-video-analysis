@@ -34,14 +34,6 @@ referee, and ball; ByteTrack keeps a persistent id on each and traces the run
 
 [![Detection and tracking on a youth Veo shot on goal](docs/images/perception_clip.gif)](docs/images/perception_clip.mp4)
 
-**Tracking — ByteTrack gives every player a persistent id (the basis for "number 6"):**
-
-![ByteTrack player tracks](docs/images/tracking_bytetrack.jpg)
-
-**Action understanding — evaluating models that name the action (set-piece / pass / shot):**
-
-![Action captions on sampled clips](docs/images/vlm_action_captions.jpg)
-
 Detection and tracking are solid; per-action attribution is the current focus
 (see [What's left](#whats-left)).
 
