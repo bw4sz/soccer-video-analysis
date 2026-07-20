@@ -33,3 +33,12 @@ def get_jersey_by_name(profile: dict, name: str) -> int | None:
             j = p.get("jersey")
             return int(j) if j is not None else None
     return None
+
+
+def get_kits(profile: dict) -> list[str]:
+    """Declared kit colour names for the two teams, e.g. ``["black", "white"]``.
+
+    Returns an empty list when the profile does not declare kits.
+    """
+    kits = profile.get("kits", [])
+    return [str(k).strip().lower() for k in kits if str(k).strip()]

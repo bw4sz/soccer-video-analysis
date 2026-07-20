@@ -27,6 +27,7 @@ def run_pipeline(args):
     from soccer_vision.io.video import VideoReader
     from soccer_vision.metrics.distance import distance_per_player
     from soccer_vision.registration.hough import compute_homography, pixel_to_field
+    from soccer_vision.profiles.loader import get_kits, load_profile
     from soccer_vision.store.db import MatchDB
     from soccer_vision.tracking.bytetrack import create_tracker, track_detections
     from soccer_vision.tracking.teams import TeamClassifier
@@ -92,7 +93,15 @@ def run_pipeline(args):
     # Per-frame player positions for event→player association, and jersey-colour
     # samples for team assignment.
     frame_players: dict[int, dict] = {}
-    team_clf = TeamClassifier()
+    # Kits declared in the project profile make team naming authoritative
+    # instead of guessing colour names from pixels (camera white balance can
+    # render a black kit as navy). See tracking/teams.py.
+    kits: list[str] = []
+    if getattr(args, "profile", None):
+        kits = get_kits(load_profile(args.profile))
+        if kits:
+            print(f"Profile kits: {', '.join(kits)}")
+    team_clf = TeamClassifier(kits=kits)
 
     for fn, frame in proxy_reader.sample_frames(detect_interval):
         # Detect all objects
@@ -182,7 +191,18 @@ def run_pipeline(args):
     team_clf.fit()
     team_names = team_clf.team_names()
     if team_names:
-        print(f"  Teams (by jersey colour): {', '.join(sorted(team_names.values()))}")
+        source = "profile kits" if kits else "jersey colour"
+        print(f"  Teams (by {source}): {', '.join(sorted(team_names.values()))}")
+
+    # Emit a per-team torso montage so a headless run can be sanity-checked
+    # at a glance (and re-labelled later without re-processing).
+    preview = team_clf.render_preview()
+    if preview is not None:
+        preview_path = run_dir.root / "teams_preview.png"
+        import cv2 as _cv2
+
+        _cv2.imwrite(str(preview_path), preview)
+        print(f"  Teams preview: {preview_path}")
 
     # Step 6: Action detection (pluggable engines, attribution-agnostic)
     print("\n[Step 6] Action detection...")
