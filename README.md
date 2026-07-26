@@ -67,7 +67,7 @@ runs/{match_id}/
 runs/soccer_vision.db      # match records across all your videos
 ```
 
-**168 unit tests pass**; CI checks every change automatically.
+**172 unit tests pass**; CI checks every change automatically.
 
 ---
 
@@ -128,7 +128,7 @@ soccer-vision ask "which team had more corners?" --run runs/match_001/
 src/soccer_vision/     the pipeline itself — capture, track, label, and cut clips
 training/              scripts for improving the action-recognition models
 docs/                  full documentation
-tests/                 168 tests + video fixtures
+tests/                 172 tests + video fixtures
 ```
 
 The full technical architecture — which models, which libraries, what's done
