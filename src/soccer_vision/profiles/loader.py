@@ -18,6 +18,20 @@ def get_roster(profile: dict) -> list[dict]:
     return profile.get("roster", [])
 
 
+def get_kits(profile: dict) -> list[str]:
+    """Return the declared kit-colour names (e.g. ``["black", "white"]``).
+
+    Accepts either bare strings or ``{name: ...}`` mappings under ``kits``.
+    Empty list when none are declared.
+    """
+    kits: list[str] = []
+    for k in profile.get("kits", []) or []:
+        name = k.get("name") if isinstance(k, dict) else k
+        if name:
+            kits.append(str(name).strip().lower())
+    return kits
+
+
 def get_player(profile: dict, jersey: int) -> dict | None:
     for p in get_roster(profile):
         if p.get("jersey") == jersey:

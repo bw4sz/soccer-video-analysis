@@ -74,9 +74,21 @@ def filter_spectators(
     field_w: float = FIELD_W_M,
     field_h: float = FIELD_H_M,
 ) -> sv.Detections:
-    """Filter spectator detections using homography if available, else hull fallback."""
+    """Filter spectator detections using homography if available, else hull fallback.
+
+    A homography that rejects essentially *everyone* is wrong about the field,
+    not about the players: Hough line registration is unreliable on overhead /
+    Veo footage and happily returns ok=True with a degenerate matrix. Measured
+    in job 37877533 on this match — the frame H was first computed, surviving
+    detections went 20 -> 0 and stayed at 0, leaving 52 track-frames where ~6000
+    were expected. So we sanity-check the result and fall back to the geometric
+    hull rather than trusting a bad registration.
+    """
     if H is not None:
-        return filter_by_homography(detections, H, field_w, field_h)
+        kept = filter_by_homography(detections, H, field_w, field_h)
+        if len(detections) >= 4 and len(kept) <= 0.1 * len(detections):
+            return filter_by_field_hull(detections, frame_shape)
+        return kept
     return filter_by_field_hull(detections, frame_shape)
 
 

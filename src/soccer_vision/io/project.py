@@ -34,6 +34,16 @@ class RunDir:
         return self.root / "tracks.json"
 
     @property
+    def ball_track(self) -> Path:
+        """Sampled ball positions, in the `events.deadball` ball-track schema.
+
+        `process` computes these anyway; persisting them makes the ball
+        trajectory inspectable and lets `trim-empty --track` reuse the run
+        instead of re-detecting.
+        """
+        return self.root / "ball_track.json"
+
+    @property
     def jerseys(self) -> Path:
         """Per-track voted jersey numbers, written by `soccer-vision identify`."""
         return self.root / "jerseys.json"

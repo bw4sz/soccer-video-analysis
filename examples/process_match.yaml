@@ -1,3 +1,5 @@
+# Only applied when `soccer-vision process` is run with --broadcast (off by
+# default — most footage doesn't need the crop).
 broadcast:
   output_resolution: [1920, 1080]
   smooth_window_s: 0.4

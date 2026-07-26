@@ -26,6 +26,14 @@ def main():
         help="Action-detection engine(s) to run: rules (default) / learned / vlm. "
              "Overrides the config; engines without a runtime/checkpoint are skipped.",
     )
+    p_process.add_argument(
+        "--broadcast", action="store_true",
+        help="Crop wide/zoomed-out footage into a steadied, followed 16:9 view "
+             "before processing. Off by default; most footage doesn't need it, "
+             "and it's a pan-only crop (no zoom) that hasn't been validated on "
+             "real matches end-to-end. Use `soccer-vision broadcast` to preview "
+             "it on a clip before turning it on here.",
+    )
 
     # broadcast
     p_broadcast = subparsers.add_parser("broadcast", help="Generate broadcast proxy only")

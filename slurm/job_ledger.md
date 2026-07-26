@@ -16,6 +16,49 @@ Result: <outcome once known>
 Next: <follow-up action>
 ```
 
+## 37591635 — 2026-07-19 18:30 — slurm/submit_process_saints_u11.sh
+Why: Full individual-player pathway on the new Saints U11 vs OVF match
+  (data/SaintsU11_OVF_Jul192026.MP4, 3.1 GB). process → identify → summary →
+  extract, to answer: how many action clips can we cut for the BLACK team's #6,
+  and what event labels do they carry? Black is Saints' away kit (us), #6 = Simon
+  Weinstein. Selected by number (--number 6 --team black); clips are correct even
+  though the job ran identify without the roster profile.
+  Run dir runs/saints-u11-ovf-2026-07-19.
+Result: PARTIAL — process (stage 1) COMPLETED: 199 events, 182 tracks, 199 clips,
+  34 sheets in ~49min wall (compute ~29.5min + clip/ffmpeg ~19min). But identify
+  (stage 2) CRASHED at rc=1 on `ModuleNotFoundError: nltk` (PARSeq import chain),
+  so jerseys.json was never written and stages 3-4 (#6 summary + #6/black halo
+  clips) never ran. Event output is also degenerate: 198/199 labeled throw_in,
+  mean conf 0.39; team colours came back blue/white (profile expects black/white)
+  with 96% unknown. nltk was declared in the [identify] extra but the deployed env
+  wasn't synced with it. Resumed by job 37614025.
+Next: (a) fix in place — installed nltk into env, submitted resume job 37614025
+  (stages 2-4 only, reuses process output). (b) Still open: degenerate event
+  detector + wrong team clustering may leave #6/black selection near-empty even
+  after identify succeeds; investigate separately.
+
+## 37614025 — 2026-07-20 09:xx — slurm/submit_resume_saints_u11.sh
+Why: Resume 37591635 after its stage-2 crash without recomputing process. Installed
+  nltk (was missing from the deployed env though declared in [identify]); this job
+  runs only identify -> summary -> extract against the existing run dir
+  runs/saints-u11-ovf-2026-07-19 (tracks.json + broadcast_proxy.mp4 already on disk).
+Result: COMPLETED (exit=0, 2:39). nltk fix worked — identify ran clean, wrote
+  jerseys.json. OCR yield low: 15/182 tracks legible (8%), 167 unknown. Exactly one
+  track voted #6 (track 165, conf 0.73, 3 obs). BUT extract produced ZERO #6/black
+  clips ("No matching events found"). Root cause is upstream in process, not the
+  crash we fixed: events in annotations.json aren't associated with players/teams —
+  of 199 events only 9 carry a track_id and 8 carry a team (5 blue/3 white, zero
+  black). So `--team black` matches 0 events and `--number 6`→track165 can't join
+  (191/199 events have no track_id). The individual-player pathway can't work on
+  this run's data regardless of invocation. (Also note: my edited step-3 summary
+  didn't run — SLURM snapshots the script at submit time, so the old buggy summary
+  ran and threw a harmless traceback; extract still ran.)
+Next: The event↔track/team association gap is the real blocker for player-level
+  slicing — candidate GitHub issue (with the degenerate throw_in detector). #6 IS
+  identifiable (track 165); to get *something*, could cut around track 165's frames
+  directly rather than via events. Team clustering also returns blue/white not
+  black/white — separate process-stage bug.
+
 ## 36500443 — 2026-07-06 — slurm/submit_footpass_ours_ball.sh (branch footpass-track-continuity)
 Why: Verify the new track-continuity filter end-to-end (not just logic-checked on an existing h5).
   Drops tracks present in <50% of frames within their lifespan or seen in <10 frames total —
@@ -178,3 +221,117 @@ Next: none — resolved by the follow-up fix and confirmed working in 36183406.
 Why: First GPU smoke test of the SoccerChat integration (commit 2ab9d72).
 Result: FAILED (exit=1) — ms-swift not installed / venv path mismatch on the compute node.
 Next: none — abandoned ms-swift in favor of transformers+peft (commit be6cfcc); see 36181836.
+
+### Job 37631798 — RF-DETR threshold test (conf=0.15)
+**Date:** 2026-07-20  
+**Purpose:** Validate hypothesis that RF-DETR under-detection is due to conf_threshold=0.3 being too high for overhead footage. Test if lowering to 0.15 recovers all 15 visible players in frame 17376.  
+**Command:** `sbatch slurm/test_threshold_0.15.sh`  
+**Status:** Running  
+**ETA:** ~20 min  
+**Next:** Compare diagnostics frame between original (conf=0.3) and new run (conf=0.15)
+
+
+### Job 37635195 — RF-DETR threshold=0.15 via config
+**Date:** 2026-07-20  
+**Purpose:** Test conf_threshold=0.15 on full pipeline using config file. Frame-level test showed +6 players (19→25). Expecting team classification to jump from 8/199 to near-complete.  
+**Command:** `sbatch slurm/test_threshold_config.sh`  
+**Config:** `examples/saints-u11-0.15-threshold.yaml` (detector.conf_threshold: 0.15)  
+**Status:** Running  
+**ETA:** ~25 min  
+
+
+### Job 37659579 — SAM Player Detector (Full Pipeline)
+**Date:** 2026-07-20  
+**Purpose:** Test SAM (Segment Anything Model) for player detection. SAM uses clean segmentation masks → expect better team classification than RF-DETR.  
+**Config:** `examples/saints-u11-sam.yaml` (detector.type: sam)  
+**Approach:** SAM for players + RF-DETR for ball  
+**Status:** Running  
+**ETA:** ~45 min (model download + slower inference)  
+**Expected:** Team classification 8/199 → 100+/199 if SAM works  
+
+### Job 37721589 — SAM Player Detector (Full Pipeline, 4h limit)
+**Date:** 2026-07-21 15:41
+**Purpose:** Full SAM validation run; success = stats.json with >50% team classification.
+**Config:** `examples/saints-u11-sam.yaml` (detector.type: sam)
+**Result:** FAILED — TIMEOUT at 4h, reached frame 28500/55354 (~51%), no stats.json.
+  SamAutomaticMaskGenerator @ points_per_side=32 ("segment everything") costs
+  ~3.0s per SAM call; full match ≈9226 calls ≈7.7h. Not a hardware limit — the
+  32x32 grid segments the whole frame (turf/lines/spectators) then discards ~98%
+  of masks to keep ~20 players.
+**Next:** Don't just raise wall time. Benchmark grid density first (job 37822023)
+  to pick a coarse-grid config that keeps all players; then batched-encoder path
+  if needed. Coarsening 32->16 + points_per_batch 64->256 alone should hit ~2h.
+
+### Job 37822023 — SAM speed benchmark (grid density sweep)
+**Date:** 2026-07-22
+**Purpose:** Measure s/frame + median player-count for points_per_side {32,16,12}
+  on 18 real mid-match frames, to size the full run empirically (user: "don't
+  think we should need that much GPU power"). Script: slurm/bench_sam_speed.py.
+**Status:** Running (30-min job).
+**Next:** Pick the coarsest grid that still finds all ~20 players; apply to
+  sam2.py + resubmit full run at the extrapolated wall time. If even grid12 is
+  too slow, move to turf-mask + connected-components proposals (SAM prompted, not
+  automatic) or drop SAM for team-color sampling entirely.
+
+
+### Job 37826241 — SAM3 text-prompt validation (the real pathway)
+**Date:** 2026-07-22
+**Purpose:** Cheap domain-shift gate for the user's actual proposal — prompt SAM3
+  with "soccer player" and let its VIDEO model detect + track players natively,
+  replacing the broken SAM-v1 hack (detection/sam2.py: no weights loaded -> 0
+  masks, confirmed by bench 37822023) AND ByteTrack. Findings that reframed this:
+  (a) `segment-anything 1.0` = SAM **v1**, cannot do text prompts; detection/sam2.py
+  was misnamed and ran with random weights. (b) The intended seam tracking/sam3.py
+  is an empty Phase-5 stub. (c) The real `facebook/sam3` (arch Sam3VideoModel,
+  text-prompt concept seg + masklet tracking) is ALREADY cached + past the HF gate,
+  and transformers 5.12.1 supports it. Script: slurm/validate_sam3.py (48
+  consecutive frames from 15000, offline load, reports players/frame + track-ID
+  stability + 3 annotated frames to runs/sam3_validation/).
+**Status:** Running (30-min job, loads offline so no token needed).
+**Next:** If max players/frame >=~12 and IDs are stable, implement tracking/sam3.py
+  properly (Sam3VideoModel), wire process.py to it, retire detection/sam2.py +
+  the v1 configs. If it under-detects, retry prompt "person" / lower threshold
+  before concluding domain shift.
+
+### Jobs 37864846 / 37872201 / 37883252 — SAM3 validation + ball head-to-head
+**Date:** 2026-07-23
+**Result:** SAM3 (facebook/sam3, Sam3VideoModel, text-prompt concept segmentation)
+  works on this footage and replaces RF-DETR + ByteTrack for players AND the ball.
+  - players "soccer player": 20-22/frame, 21/22 ids stable (RF-DETR: 5-6/frame)
+  - referee "referee": exactly 1 stable object -> refs are cleanly subtractable
+  - ball "soccer ball": 66% detected, median jump 24px, p95 208px
+    vs RF-DETR 71% detected, median 117px, **p95 1260px** (mostly false positives
+    in trees/sky). Lower detection rate is a WIN. "ball" alone is worse (47%).
+  Prior SAM work was broken: detection/sam2.py used SAM **v1** with NO checkpoint
+  (random weights -> 0 masks, 7.2h/match); tracking/sam3.py was an empty stub.
+**Gotchas found:** (1) session masklet memory grows ~0.12GB/frame and is never
+  released -> OOM at ~150 frames; fixed with chunked sessions + IoU id stitching.
+  Object pruning does NOT help (growth is per-frame, not per-object).
+  (2) object_ids retains non-visible objects. (3) BGR->RGB ::-1 view has negative
+  stride; torch.from_numpy rejects it.
+
+### Session fixes to the pipeline (2026-07-23)
+- **field_filter**: Hough homography returns ok=True with a degenerate matrix on
+  this footage and rejected 100% of players from the frame it was first computed
+  (job 37877533: 20 -> 0). Added a sanity guard -> falls back to the hull.
+  Track-frames 52 -> 4292.
+- **teams**: jersey colour was sampled over a rectangular torso patch = mostly
+  turf on overhead footage, collapsing both clusters to one colour ("blue, blue").
+  Now samples inside the SAM3 mask -> "black, blue" (black = correct Saints kit).
+- **process**: ball track was computed then discarded; now persisted to
+  run_dir.ball_track in the events.deadball schema (trim-empty can reuse it).
+- **associate**: events carry garbage field_x from the bad homography, so
+  field-space matching failed the 5m threshold for every event (0/8). Now falls
+  back to pixel space; stamp_event_positions anchors events on the ball.
+**Still open:** events remain ~100% throw_in — detect_throw_ins gates on
+  near_touchline(field_x, field_y) from the same degenerate homography, so a good
+  ball still goes through a bad transform. Homography is KEPT (user decision);
+  fixing/validating it is the next thread.
+
+### Job (pending submit) — slurm/submit_sam3_saints_full.sh
+Why: First FULL-MATCH SAM3 run (players + ball text prompts) + identify, to
+  produce real #6 data for the proximity/on-ball reel (events/on_ball.py). Chunked
+  sessions only validated on ~300-frame clips; 8h wall as a hedge. Config
+  saints-u11-sam3.yaml, profile saints-u11.yaml, match_id saints-u11-sam3-full.
+Next: if it holds at length, build #6 on-ball reel from tracks/ball_track/jerseys;
+  watch (a) does the chunked session survive 9226 sampled frames, (b) #6 OCR yield.
