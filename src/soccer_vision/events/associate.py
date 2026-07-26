@@ -38,6 +38,11 @@ def _event_point_and_space(event: dict) -> tuple[tuple[float, float] | None, str
     return None, "field"
 
 
+def _point_in(event: dict, space: str) -> tuple[float, float] | None:
+    x, y = event.get(f"{space}_x"), event.get(f"{space}_y")
+    return None if x is None or y is None else (x, y)
+
+
 def _players_at(
     frame_players: dict[int, dict],
     frame: int,
@@ -82,18 +87,28 @@ def associate_events(
     :class:`soccer_vision.tracking.teams.TeamClassifier` (optional).
     """
     for event in events:
-        point, space = _event_point_and_space(event)
         event.setdefault("track_id", None)
         event.setdefault("team", None)
-        if point is None or "frame" not in event:
+        if "frame" not in event:
             continue
 
-        players = _players_at(frame_players, event["frame"], space, search_frames)
-        if not players:
-            continue
+        # Field space first — correct when registration is good. Then pixel,
+        # because the Hough homography is unreliable on overhead footage and
+        # its garbage metres fail the 5m threshold for every player, leaving
+        # every event unassociated (0/8 in job 37879440). Pixels always work.
+        tid = None
+        for space in ("field", "pixel"):
+            point = _point_in(event, space)
+            if point is None:
+                continue
+            players = _players_at(frame_players, event["frame"], space, search_frames)
+            if not players:
+                continue
+            max_d = max_distance_field_m if space == "field" else max_distance_pixel
+            tid = _nearest_track(point, players, max_d)
+            if tid is not None:
+                break
 
-        max_d = max_distance_field_m if space == "field" else max_distance_pixel
-        tid = _nearest_track(point, players, max_d)
         if tid is None:
             continue
 
@@ -101,4 +116,54 @@ def associate_events(
         if team_clf is not None:
             event["team"] = team_clf.predict(tid)
 
+    return events
+
+
+def stamp_event_positions(
+    events: list[dict],
+    ball_positions: list[dict],
+    *,
+    search_frames: int = 15,
+) -> list[dict]:
+    """Give each event a spatial anchor so it can be associated to a player.
+
+    Rules-engine events carry only ``frame``/``label``/``confidence`` — no
+    coordinates — so :func:`_event_point_and_space` returned ``None`` and
+    :func:`associate_events` tagged nothing: 0/8 events had a ``track_id`` in
+    job 37878296, which is why no event could ever receive a team.
+
+    For ball-driven events (throw-in, goal kick, corner) the ball *is* the event
+    location, and the nearest player to it is the one performing the action, so
+    we stamp the ball's position at (or near) the event frame.
+
+    Only **pixel** coordinates are copied, deliberately. Field metres come from
+    the Hough homography, which is unreliable on overhead footage (see
+    ``detection.field_filter.filter_spectators``); pixel positions are always
+    valid, and ``associate_events`` falls back to pixel space cleanly.
+    """
+    if not ball_positions:
+        return events
+
+    by_frame = {int(b["frame"]): b for b in ball_positions if b.get("frame") is not None}
+    if not by_frame:
+        return events
+    frames = sorted(by_frame)
+
+    for event in events:
+        if event.get("pixel_x") is not None:
+            continue  # already anchored in pixel space
+        fn = event.get("frame")
+        if fn is None:
+            continue
+        fn = int(fn)
+        ball = by_frame.get(fn)
+        if ball is None:
+            near = [f for f in frames if abs(f - fn) <= search_frames]
+            if near:
+                ball = by_frame[min(near, key=lambda f: abs(f - fn))]
+        if ball is None:
+            continue
+        if ball.get("pixel_x") is not None and ball.get("pixel_y") is not None:
+            event["pixel_x"] = ball["pixel_x"]
+            event["pixel_y"] = ball["pixel_y"]
     return events

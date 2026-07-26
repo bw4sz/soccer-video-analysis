@@ -1,0 +1,15 @@
+team_name: "Saints U11"
+season: "2026"
+profile_id: "saints-u11"
+
+# Saints run two kits this season: black (away) and white (home).
+kits:
+  - black   # away
+  - white   # home
+
+roster:
+  - name: Simon Weinstein
+    jersey: 6
+
+claude:
+  enabled: true

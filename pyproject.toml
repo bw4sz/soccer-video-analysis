@@ -45,6 +45,8 @@ harvest = ["yt-dlp>=2024.8"]
 # Jersey-number recognition (individual-player pathway). PARSeq scene-text
 # recognizer loaded via torch.hub; a jersey-fine-tuned checkpoint can override it.
 identify = ["timm>=0.9", "pytorch-lightning>=2.0", "nltk", "pillow"]
+# SAM (Segment Anything Model) foundation model for player tracking (optional, alternative to RF-DETR).
+sam = ["segment-anything>=1.0"]
 dev = ["pytest", "ruff", "sphinx"]
 
 [project.scripts]

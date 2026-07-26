@@ -68,7 +68,13 @@ Every match video runs through this single workflow:
 
 **Why step 2 exists:** SoccerNet models (calibration, spotting, game-state) are trained on broadcast-style framing. Raw wide-angle single-camera footage gets normalized into a 16:9 follow-cam proxy so one model stack works for all footage. Reference: [AutoCam-AI](https://github.com/chele-s/AutoCam-AI) (RF-DETR + Kalman + virtual camera).
 
-There is **no dual-path** (raw vs broadcast). Always create broadcast proxy first; downstream steps read the proxy.
+**Opt-in, off by default (as of the `harvest-halo-ball-smoothing` branch):** the
+crop is pan-only (`min_zoom`/`max_zoom` are parsed but never applied —
+[#9](https://github.com/bw4sz/soccer-video-analysis/issues/9)), and hadn't
+been validated end-to-end on real match footage despite being wired as a
+mandatory step. `process` now skips it unless `--broadcast` is passed; when
+skipped, `run_dir.broadcast_proxy` is a symlink to the raw file so every
+downstream step still reads one consistent path.
 
 ---
 

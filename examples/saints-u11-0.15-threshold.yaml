@@ -1,0 +1,8 @@
+# Saints U11 vs OVF (2026-07-19) — XbotGo Falcon+ overhead camera
+#
+# Configuration for processing with lowered player detection confidence threshold.
+# Overhead footage has small players and high field-player contrast;
+# conf_threshold=0.15 recovers +6 additional players vs default 0.3 (19→25).
+
+detector:
+  conf_threshold: 0.15  # Lowered from default 0.3 for overhead footage

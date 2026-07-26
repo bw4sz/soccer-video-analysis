@@ -19,7 +19,7 @@ def run_pipeline(args):
     from soccer_vision.detection.ball import detect_ball_position
     from soccer_vision.detection.field_filter import filter_spectators
     from soccer_vision.detection.rfdetr import ALL_PERSON_CLASS_IDS, RFDETRSoccerDetector
-    from soccer_vision.events.associate import associate_events
+    from soccer_vision.events.associate import associate_events, stamp_event_positions
     from soccer_vision.events.phases import classify_phase
     from soccer_vision.events.sources import ActionContext, active_detectors, run_detectors
     from soccer_vision.io.osl import add_event, new_osl_document, write_osl
@@ -45,6 +45,16 @@ def run_pipeline(args):
     if getattr(args, "action_engine", None):
         config["action_engines"] = args.action_engine
 
+    # Declared kit colours from the team profile name the two clusters
+    # authoritatively (nearest-Lab match), instead of the camera-dependent HSV
+    # heuristic that mislabels navy-rendered black kits (GitHub issue #11).
+    kits: list[str] = []
+    if getattr(args, "profile", None):
+        from soccer_vision.profiles.loader import get_kits, load_profile
+        kits = get_kits(load_profile(args.profile))
+        if kits:
+            print(f"  Team kits from profile: {', '.join(kits)}")
+
     broadcast_config = BroadcastConfig()
     if "broadcast" in config:
         broadcast_config = BroadcastConfig.from_yaml(args.config)
@@ -62,17 +72,65 @@ def run_pipeline(args):
     print(f"  {total_frames} frames @ {native_fps:.2f} fps ({reader.duration_s / 60:.1f} min)")
     reader.close()
 
-    # Step 2: Virtual broadcast proxy
-    print("\n[Step 2] Generating broadcast proxy...")
+    # Step 2: Virtual broadcast proxy (opt-in — most footage doesn't need it)
     device = args.device
-    detector = RFDETRSoccerDetector.from_pretrained(device=device)
-    generate_broadcast_proxy(
-        video_path,
-        run_dir.broadcast_proxy,
-        config=broadcast_config,
-        detector=detector,
-        metadata_path=run_dir.crop_metadata,
-    )
+    detector_type = config.get("detector", {}).get("type", "rfdetr")
+
+    # RF-DETR is the fallback ball detector. It is very unreliable on overhead
+    # footage — on this match it "found" a ball in 71% of frames but with a p95
+    # frame-to-frame jump of 1260px on a 1920px-wide frame (job 37883252), i.e.
+    # mostly false positives in the trees and crowd. SAM3 prompted with
+    # "soccer ball" cuts that to 208px, so the sam3 path below overrides it.
+    ball_detector = RFDETRSoccerDetector.from_pretrained(device=device)
+
+    # Player detection: SAM3 (text-prompted detect+track) or RF-DETR
+    sam3_tracker = None
+    sam3_ball = None
+    if detector_type == "sam3":
+        # SAM3 replaces BOTH the detector and ByteTrack: its video model returns
+        # a persistent object id per player from a text prompt alone.
+        from soccer_vision.tracking.sam3 import SAM3PlayerTracker
+        prompt = config.get("detector", {}).get("prompt", "soccer player")
+        print(f"  Detector: SAM3 text-prompt {prompt!r} (detect+track)")
+        sam3_tracker = SAM3PlayerTracker(device=device, prompt=prompt)
+        sam3_tracker.start()
+        player_detector = None
+
+        # Same model, second prompt: SAM3 tracks the ball far more reliably
+        # than RF-DETR here (p95 jump 208px vs 1260px). Set
+        # detector.ball_prompt: null to keep RF-DETR for the ball.
+        ball_prompt = config.get("detector", {}).get("ball_prompt", "soccer ball")
+        if ball_prompt:
+            sam3_ball = SAM3PlayerTracker.sharing(sam3_tracker, prompt=ball_prompt)
+            sam3_ball.start()
+            print(f"  Ball: SAM3 text-prompt {ball_prompt!r} (shared weights)")
+    elif detector_type == "sam":
+        print("  Detector: SAM for players + RF-DETR for ball")
+        from soccer_vision.detection.sam2 import SAMPlayerDetector
+        player_detector = SAMPlayerDetector(device=device, model_type="base")
+    else:
+        # RF-DETR player confidence threshold (config: detector.conf_threshold,
+        # default 0.3). Overhead cameras may need lower (e.g. 0.15) to recover
+        # small players.
+        conf_threshold = config.get("detector", {}).get("conf_threshold", 0.3)
+        player_detector = ball_detector  # Use RF-DETR for both
+        player_detector.conf_threshold = conf_threshold
+        print(f"  Detector: RF-DETR (conf_threshold: {conf_threshold})")
+    if getattr(args, "broadcast", False):
+        print("\n[Step 2] Generating broadcast proxy...")
+        generate_broadcast_proxy(
+            video_path,
+            run_dir.broadcast_proxy,
+            config=broadcast_config,
+            detector=ball_detector,
+            metadata_path=run_dir.crop_metadata,
+        )
+    else:
+        print("\n[Step 2] Skipping broadcast crop (pass --broadcast to enable) — "
+              "using the source video as-is.")
+        if run_dir.broadcast_proxy.exists() or run_dir.broadcast_proxy.is_symlink():
+            run_dir.broadcast_proxy.unlink()
+        run_dir.broadcast_proxy.symlink_to(video_path.resolve())
 
     # Step 3: Ball detection on proxy
     print("\n[Step 3] Ball detection...")
@@ -81,6 +139,7 @@ def run_pipeline(args):
     detect_interval = max(1, int(round(proxy_fps / 5)))  # 5 fps detection
 
     ball_positions = []
+    ball_samples: list[dict] = []
     H_cache = None
     h_recompute_interval = int(proxy_fps * 60 * 5)  # every 5 min
     last_h_frame = -h_recompute_interval
@@ -95,22 +154,57 @@ def run_pipeline(args):
     team_clf = TeamClassifier()
 
     for fn, frame in proxy_reader.sample_frames(detect_interval):
-        # Detect all objects
-        detections = detector.predict(frame)
+        if sam3_tracker is not None:
+            # SAM3 detects AND tracks in one pass — the returned detections
+            # already carry persistent tracker_ids, so ByteTrack is skipped.
+            # Spectators are filtered after tracking (the prompt finds people
+            # anywhere, including coaches/subs beyond the touchline).
+            tracked = sam3_tracker.track(frame)
+            tracked = filter_spectators(tracked, H_cache, frame.shape)
+        else:
+            # Detect players and ball
+            person_dets = player_detector.predict(frame)
 
-        # Filter spectators: keep ball detections, filter people by field position
-        ball_mask = ~np.isin(detections.class_id, list(ALL_PERSON_CLASS_IDS))
-        person_mask = np.isin(detections.class_id, list(ALL_PERSON_CLASS_IDS))
-        ball_dets = detections[ball_mask]
-        person_dets = filter_spectators(
-            detections[person_mask], H_cache, frame.shape,
-        )
-        detections = sv.Detections.merge([ball_dets, person_dets])
+            # For RF-DETR, separate ball from people; for SAM, we only get people
+            if detector_type == "sam":
+                # SAM returns only player detections
+                ball_dets = sv.Detections.empty()
+            else:
+                # RF-DETR returns mixed detections; separate by class_id
+                person_mask = np.isin(person_dets.class_id, list(ALL_PERSON_CLASS_IDS))
+                ball_dets = person_dets[~person_mask]
+                person_dets = person_dets[person_mask]
 
-        tracked = track_detections(tracker, detections)
+            # Filter spectators: keep only field players
+            person_dets = filter_spectators(
+                person_dets, H_cache, frame.shape,
+            )
+            detections = sv.Detections.merge([ball_dets, person_dets])
+
+            tracked = track_detections(tracker, detections)
 
         # Ball
-        ball = detect_ball_position(frame, detector)
+        if sam3_ball is not None:
+            bdets = sam3_ball.track(frame)
+            if len(bdets):
+                k = int(np.argmax(bdets.confidence))
+                bx1, by1, bx2, by2 = bdets.xyxy[k]
+                ball = ((bx1 + bx2) / 2, (by1 + by2) / 2, float(bdets.confidence[k]))
+            else:
+                ball = None
+        else:
+            ball = detect_ball_position(frame, ball_detector)
+        # Record every sampled frame (visible or not) for the persisted ball
+        # track. Kept separate from `ball_positions`, which the action engines
+        # consume and which only carries frames where the ball was found.
+        ball_samples.append({
+            "frame": fn,
+            "timestamp_s": round(fn / proxy_fps, 2),
+            "visible": ball is not None,
+            "pixel_x": float(ball[0]) if ball is not None else None,
+            "pixel_y": float(ball[1]) if ball is not None else None,
+            "confidence": float(ball[2]) if ball is not None else 0.0,
+        })
         if ball is not None:
             bx, by, bconf = ball
 
@@ -155,7 +249,11 @@ def run_pipeline(args):
                     "field_y": fy,
                     "bbox": [float(x1), float(y1), float(x2), float(y2)],
                 }
-                team_clf.add_sample(tid, frame, (x1, y1, x2, y2))
+                # SAM3 supplies a per-player mask; sampling jersey colour inside
+                # it excludes turf, which otherwise collapses both teams to one
+                # colour on overhead footage.
+                pmask = tracked.mask[i] if tracked.mask is not None else None
+                team_clf.add_sample(tid, frame, (x1, y1, x2, y2), pmask)
 
         if fn % 500 == 0:
             print(f"  Processing frame {fn}/{proxy_reader.total_frames}")
@@ -169,6 +267,25 @@ def run_pipeline(args):
         for tid, p in frame_players[fn].items():
             if p.get("bbox") is not None:
                 tracks_by_id.setdefault(tid, []).append({"frame": fn, "bbox": p["bbox"]})
+    # Persist the ball trajectory (previously computed then discarded).
+    n_vis = sum(1 for s_ in ball_samples if s_["visible"])
+    with open(run_dir.ball_track, "w") as f:
+        json.dump(
+            {
+                "video": run_dir.broadcast_proxy.name,
+                "fps": proxy_fps,
+                "sample_fps": proxy_fps / detect_interval,
+                "width": int(proxy_reader.width),
+                "height": int(proxy_reader.height),
+                "total_frames": int(proxy_reader.total_frames),
+                "samples": ball_samples,
+            },
+            f,
+        )
+    if ball_samples:
+        print(f"  Ball track: {n_vis}/{len(ball_samples)} samples visible "
+              f"({100 * n_vis / len(ball_samples):.1f}%) -> {run_dir.ball_track}")
+
     with open(run_dir.tracks, "w") as f:
         json.dump(
             {"video": run_dir.broadcast_proxy.name, "fps": proxy_fps,
@@ -179,10 +296,14 @@ def run_pipeline(args):
 
     # Assign players to teams by jersey colour, then run all available action
     # detectors (the rules engine today; the learned engine once a checkpoint ships).
-    team_clf.fit()
+    team_clf.fit(kits=kits)
     team_names = team_clf.team_names()
     if team_names:
-        print(f"  Teams (by jersey colour): {', '.join(sorted(team_names.values()))}")
+        src = "profile kits" if kits else "colour heuristic"
+        print(f"  Teams ({src}): {', '.join(sorted(team_names.values()))}")
+    preview_path = run_dir.root / "teams_preview.png"
+    if team_clf.build_team_preview(preview_path):
+        print(f"  Team preview: {preview_path}")
 
     # Step 6: Action detection (pluggable engines, attribution-agnostic)
     print("\n[Step 6] Action detection...")
@@ -197,7 +318,10 @@ def run_pipeline(args):
     print(f"  Active action engines: {', '.join(d.name for d in detectors) or 'none'}")
     events = run_detectors(detectors, ctx)
     events = classify_phase(events)
-    # Associate each event with the nearest player track and their team.
+    # Associate each event with the nearest player track and their team. Events
+    # arrive with no coordinates, so anchor them on the ball first — without a
+    # point to search from, association silently tags nothing.
+    events = stamp_event_positions(events, ball_positions)
     events = associate_events(events, frame_players, team_clf)
     print(f"  Found {len(events)} events")
 
