@@ -50,3 +50,30 @@ def test_filter_events_by_track_id_set():
     ]
     got = filter_events(events, track_ids={3, 11})
     assert [e["track_id"] for e in got] == [3, 11]
+
+
+# Rosters carry full names; people ask by first name.
+FULL_PROFILE = {"roster": [
+    {"name": "Simon Weinstein", "jersey": 6},
+    {"name": "Noah Adams", "jersey": 7},
+    {"name": "Noah Brooks", "jersey": 12},
+]}
+
+
+def test_first_name_resolves_against_a_full_name_roster():
+    assert get_jersey_by_name(FULL_PROFILE, "Simon") == 6
+    assert get_jersey_by_name(FULL_PROFILE, "simon") == 6
+
+
+def test_full_name_still_wins_exactly():
+    assert get_jersey_by_name(FULL_PROFILE, "Simon Weinstein") == 6
+    assert get_jersey_by_name(FULL_PROFILE, "Noah Brooks") == 12
+
+
+def test_ambiguous_first_name_resolves_to_nothing():
+    """Two Noahs — pick neither rather than whoever is listed first."""
+    assert get_jersey_by_name(FULL_PROFILE, "Noah") is None
+
+
+def test_unknown_name_is_still_none():
+    assert get_jersey_by_name(FULL_PROFILE, "Nobody") is None

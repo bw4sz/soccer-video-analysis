@@ -40,10 +40,24 @@ def get_player(profile: dict, jersey: int) -> dict | None:
 
 
 def get_jersey_by_name(profile: dict, name: str) -> int | None:
-    """Return the roster jersey number for ``name`` (case-insensitive)."""
+    """Return the roster jersey number for ``name`` (case-insensitive).
+
+    Rosters carry full names ("Simon Weinstein") but people ask for players by
+    first name, so an exact match is tried first and then a first-name match.
+    A first name shared by two players on the roster is ambiguous and resolves
+    to nothing rather than to whichever happens to be listed first — the caller
+    reports no match and the user can disambiguate with ``--number``.
+    """
     key = name.strip().lower()
-    for p in get_roster(profile):
+
+    def jersey_of(p: dict) -> int | None:
+        j = p.get("jersey")
+        return int(j) if j is not None else None
+
+    roster = get_roster(profile)
+    for p in roster:
         if (p.get("name") or "").strip().lower() == key:
-            j = p.get("jersey")
-            return int(j) if j is not None else None
-    return None
+            return jersey_of(p)
+
+    first = [p for p in roster if (p.get("name") or "").strip().lower().split(" ")[0] == key]
+    return jersey_of(first[0]) if len(first) == 1 else None

@@ -6,6 +6,33 @@ import argparse
 import sys
 
 
+def _add_on_ball_args(parser: argparse.ArgumentParser) -> None:
+    """Shared on-ball fallback options for `extract` and `reel`.
+
+    Asking for one player's clips usually returns nothing from the event stream
+    alone — the set-piece detector fires a handful of times a match. So when a
+    player selection matches no events, both commands fall back to the spans
+    where that player was the ball's nearest player.
+    """
+    parser.add_argument(
+        "--no-on-ball", dest="on_ball", action="store_false",
+        help="Don't fall back to ball-proximity spans when a --player/--number/"
+             "--track selection matches no detected events (report nothing instead).")
+    parser.set_defaults(on_ball=True)
+    parser.add_argument(
+        "--on-ball", dest="on_ball_force", action="store_true",
+        help="Always cut ball-proximity spans for the selected player, even when "
+             "an explicit event label was requested (which normally suppresses "
+             "the fallback so --events pass can't silently return touches).")
+    parser.add_argument(
+        "--on-ball-dist", type=float, default=200.0, metavar="PX",
+        help="Max pixel distance from ball to player's feet to count as on the "
+             "ball (default: 200)")
+    parser.add_argument(
+        "--on-ball-min-span", type=float, default=0.4, metavar="SEC",
+        help="Drop on-ball spans shorter than this as incidental (default: 0.4)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="soccer-vision",
@@ -73,6 +100,7 @@ def main():
         "--halo", nargs="?", const="ellipse", choices=["ellipse", "circle"],
         help="Draw a gentle spotlight on each clip's player track "
              "(needs tracks.json from `process`). Default style: ellipse.")
+    _add_on_ball_args(p_extract)
 
     # reel
     p_reel = subparsers.add_parser("reel", help="Build highlight reel")
@@ -87,6 +115,7 @@ def main():
     p_reel.add_argument(
         "--halo", nargs="?", const="ellipse", choices=["ellipse", "circle"],
         help="Spotlight each clip's player track (needs tracks.json from `process`).")
+    _add_on_ball_args(p_reel)
 
     # trim-empty
     p_trim = subparsers.add_parser(

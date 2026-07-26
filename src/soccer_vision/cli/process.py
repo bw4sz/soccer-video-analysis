@@ -260,6 +260,19 @@ def run_pipeline(args):
 
     proxy_reader.close()
 
+    # Assign players to teams by jersey colour. Fitted before tracks.json is
+    # written so each track can be stamped with its team there — that is what
+    # lets `--team` filter the on-ball spans, which are derived from tracks.json
+    # rather than from the event stream.
+    team_clf.fit(kits=kits)
+    team_names = team_clf.team_names()
+    if team_names:
+        src = "profile kits" if kits else "colour heuristic"
+        print(f"  Teams ({src}): {', '.join(sorted(team_names.values()))}")
+    preview_path = run_dir.root / "teams_preview.png"
+    if team_clf.build_team_preview(preview_path):
+        print(f"  Team preview: {preview_path}")
+
     # Persist per-frame track boxes (transposed to per-track lists) so
     # `extract --halo` can draw a player spotlight across each clip window.
     tracks_by_id: dict[int, list[dict]] = {}
@@ -286,24 +299,17 @@ def run_pipeline(args):
         print(f"  Ball track: {n_vis}/{len(ball_samples)} samples visible "
               f"({100 * n_vis / len(ball_samples):.1f}%) -> {run_dir.ball_track}")
 
+    # track id -> kit colour, so on-ball spans (built from this file) can be
+    # filtered by --team without re-running the classifier.
+    track_teams = {str(tid): team_clf.predict(tid) for tid in tracks_by_id}
     with open(run_dir.tracks, "w") as f:
         json.dump(
             {"video": run_dir.broadcast_proxy.name, "fps": proxy_fps,
              "sample_interval": detect_interval,
+             "teams": {k: v for k, v in track_teams.items() if v},
              "tracks": {str(k): v for k, v in tracks_by_id.items()}},
             f,
         )
-
-    # Assign players to teams by jersey colour, then run all available action
-    # detectors (the rules engine today; the learned engine once a checkpoint ships).
-    team_clf.fit(kits=kits)
-    team_names = team_clf.team_names()
-    if team_names:
-        src = "profile kits" if kits else "colour heuristic"
-        print(f"  Teams ({src}): {', '.join(sorted(team_names.values()))}")
-    preview_path = run_dir.root / "teams_preview.png"
-    if team_clf.build_team_preview(preview_path):
-        print(f"  Team preview: {preview_path}")
 
     # Step 6: Action detection (pluggable engines, attribution-agnostic)
     print("\n[Step 6] Action detection...")

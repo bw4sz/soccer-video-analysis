@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from soccer_vision.clips.extract import extract_event_clips
+from soccer_vision.clips.extract import extract_event_clips, halo_samples_for
 from soccer_vision.clips.reels import build_reel
 from soccer_vision.events.select import filter_events
 from soccer_vision.io.osl import read_osl
@@ -71,6 +71,70 @@ def _resolve_player_tracks(args, run_dir: Path) -> set[int] | None:
     return tids
 
 
+def _on_ball_events(args, run_dir: Path, target_ids: set[int]) -> list[dict]:
+    """On-ball spans for ``target_ids``, as events. Empty list if unavailable.
+
+    Reads ``ball_track.json`` + ``tracks.json`` from the run; both are written by
+    `process`. Prints why it came back empty rather than failing silently, since
+    this runs as a fallback and a silent empty result looks like "this player did
+    nothing" instead of "the run predates ball_track.json".
+    """
+    import json
+
+    from soccer_vision.events.on_ball import select_on_ball_spans, spans_to_events
+
+    ball_path, tracks_path = run_dir / "ball_track.json", run_dir / "tracks.json"
+    missing = [p.name for p in (ball_path, tracks_path) if not p.exists()]
+    if missing:
+        print(f"  on-ball fallback needs {' and '.join(missing)} — re-run `process` "
+              f"to generate them.")
+        return []
+
+    ball_track = json.loads(ball_path.read_text())
+    tracks = json.loads(tracks_path.read_text())
+    spans = select_on_ball_spans(
+        ball_track, tracks, target_ids,
+        max_ball_dist_px=getattr(args, "on_ball_dist", 200.0),
+        min_span_s=getattr(args, "on_ball_min_span", 0.4),
+    )
+    return spans_to_events(
+        spans, track_teams=tracks.get("teams"), team=getattr(args, "team", None)
+    )
+
+
+def _on_ball_fallback(
+    args, run_dir: Path, player_tracks: set[int] | None, labels: list[str] | None
+) -> list[dict]:
+    """On-ball events to use when a player selection matched no detector events.
+
+    The set-piece detector fires a handful of times per match, so "every clip of
+    number 6" almost always comes back empty from the event stream alone. When a
+    player was named and nothing matched, we fall back to the moments that player
+    was nearest the ball — a far denser and, for this question, more faithful
+    signal. Returns ``[]`` when the fallback shouldn't or can't run.
+
+    Deliberately *not* triggered when an explicit event label was requested:
+    ``--events pass`` returning on-ball touches instead would answer a different
+    question than the one asked. ``--on-ball`` forces it anyway; ``--no-on-ball``
+    disables it entirely.
+    """
+    if not getattr(args, "on_ball", True) and not getattr(args, "on_ball_force", False):
+        return []
+
+    targets = set(player_tracks or ())
+    if getattr(args, "track", None) is not None:
+        targets.add(args.track)
+    if not targets:
+        return []  # nothing to anchor on — a team-only query isn't a player query
+
+    if labels and not getattr(args, "on_ball_force", False):
+        print("  (no on-ball fallback: an explicit event label was requested. "
+              "Pass --on-ball to cut ball-proximity spans instead.)")
+        return []
+
+    return _on_ball_events(args, run_dir, targets)
+
+
 def _load_halo(run_dir: Path, style: str | None):
     """Resolve a ``--halo`` request to ``(track_boxes, style, max_gap_frames)``.
 
@@ -115,6 +179,11 @@ def run_extract(args):
     )
 
     if not events:
+        events = _on_ball_fallback(args, run_dir, player_tracks, args.events)
+        if events:
+            print(f"No detector events matched; cutting {len(events)} on-ball "
+                  f"span(s) instead ({_describe(args)}).")
+    if not events:
         print(f"No matching events found ({_describe(args)}).")
         return
 
@@ -128,6 +197,22 @@ def run_extract(args):
     )
     haloed = " with halo" if halo_tracks is not None else ""
     print(f"\n{len(clip_paths)} clip(s) extracted{haloed} to {clips_dir}/ ({_describe(args)})")
+
+
+def _reel_window(
+    event: dict, *, pre_s: float = 5.0, default_s: float = 20.0
+) -> tuple[float, float]:
+    """``(start_s, duration_s)`` for one reel clip.
+
+    A detector event is an instant, so it gets a fixed window. An on-ball span
+    has a real duration, so the window covers the touch plus the same lead-in —
+    otherwise a 1.2s touch and a 40s dribble would both become 20s of footage,
+    and consecutive touches would overlap into near-duplicate clips.
+    """
+    ts = event.get("timestamp_s", event.get("position_ms", 0) / 1000)
+    duration = event.get("duration_s")
+    span = default_s if not duration else pre_s + float(duration) + pre_s / 2
+    return max(0.0, ts - pre_s), span
 
 
 def run_reel(args):
@@ -148,6 +233,13 @@ def run_reel(args):
     )
 
     if not events:
+        events = _on_ball_fallback(
+            args, run_dir, player_tracks, [args.event] if args.event else None
+        )
+        if events:
+            print(f"No detector events matched; building a reel from "
+                  f"{len(events)} on-ball span(s) ({_describe(args)}).")
+    if not events:
         print(f"No matching events found ({_describe(args)}).")
         return
 
@@ -156,19 +248,17 @@ def run_reel(args):
     with tempfile.TemporaryDirectory() as tmpdir:
         clip_paths = []
         for i, event in enumerate(events):
-            ts = event.get("timestamp_s", event.get("position_ms", 0) / 1000)
-            start = max(0.0, ts - 5.0)
+            start, duration = _reel_window(event)
             tmp_path = Path(tmpdir) / f"tmp_{i:03d}.mp4"
-            tid = event.get("track_id")
-            samples = halo_tracks.get(int(tid)) if halo_tracks and tid is not None else None
+            samples = halo_samples_for(event, halo_tracks)
             if samples:
                 from soccer_vision.clips.halo import render_halo_clip
 
-                render_halo_clip(proxy_path, tmp_path, start_s=start, duration_s=20.0,
+                render_halo_clip(proxy_path, tmp_path, start_s=start, duration_s=duration,
                                  track_samples=samples, style=halo_style,
                                  max_gap_frames=halo_max_gap)
             else:
-                ffmpeg_extract_clip(proxy_path, start, 20.0, tmp_path)
+                ffmpeg_extract_clip(proxy_path, start, duration, tmp_path)
             clip_paths.append(tmp_path)
         out_path = build_reel(clip_paths, args.out)
     print(f"Reel saved: {out_path} ({len(events)} clips — {_describe(args)})")

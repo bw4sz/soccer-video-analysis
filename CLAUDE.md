@@ -289,6 +289,59 @@ raw `--track <id>`.
 
 ---
 
+## On-ball fallback — what `--player` does when nothing was detected
+
+The rules engine only fires on set pieces, so a player query almost always
+matches **nothing** in the event stream: a youth match has a handful of throw-ins
+and goal kicks, and any one player is nearest for only a few. "No matching
+events" is technically correct and useless.
+
+So when `--player` / `--number` / `--track` matches no detected events, `extract`
+and `reel` fall back to **on-ball spans** — the stretches where that player was
+the ball's nearest player (`soccer_vision.events.on_ball`). This is pixel-space
+geometry over `ball_track.json` + `tracks.json`, so it needs neither the event
+detector nor the field homography (both unreliable on overhead footage).
+
+```bash
+# No pass detector yet — this cuts Simon's touches, haloed
+soccer-vision reel --run runs/<match_id> --player Simon --profile team.yaml --halo
+
+soccer-vision extract --run runs/<match_id> --number 6 --team black
+soccer-vision extract --run runs/<match_id> --player Simon --events pass --on-ball
+soccer-vision extract --run runs/<match_id> --player Simon --no-on-ball
+```
+
+Spans become ordinary `on_ball` events, so `--team`, `--halo`, and clip naming
+all work unchanged. In `reel` the clip window follows the span's real duration
+instead of the fixed 20s, so a 1s touch and a 40s dribble don't produce the same
+footage.
+
+**Two things it deliberately won't do:**
+
+- **Won't fire when an explicit event label was given.** `--events pass` coming
+  back with ball-proximity touches would answer a different question than the one
+  asked, so it prints why and stops. `--on-ball` forces it; `--no-on-ball`
+  disables the fallback entirely.
+- **Won't fire without a player selection.** `--team blue` alone is a team query
+  with no lane to anchor spans on.
+
+**Lane handoffs.** A player fragments across ByteTrack lanes and one continuous
+touch can cross a handoff. Spans are *not* split there (that would cut one action
+into two clips) — each span carries every lane it covers in `track_ids` so the
+halo follows through the handoff, with `track_id` being the lane that got closest
+to the ball. `--team` filtering works because `process` now stamps each track's
+kit colour into the `teams` block of `tracks.json`.
+
+Key options: `--on-ball-dist 200` (max px from ball to the player's feet),
+`--on-ball-min-span 0.4` (drop shorter spans as incidental).
+
+**Caveat.** This is proximity, not action recognition — it says #6 was on the
+ball, not that #6 *passed*. It's the honest answer available today; once the
+learned action engine ships, real `pass` / `shot` events take over and the
+fallback stops firing for those queries.
+
+---
+
 ## Harvest — build a diverse annotation set from YouTube
 
 `harvest` pulls short, openly-licensed youth-soccer clips off YouTube to seed an

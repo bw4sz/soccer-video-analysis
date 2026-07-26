@@ -1,0 +1,250 @@
+"""On-ball span selection and the ``--player`` fallback that cuts them."""
+
+import json
+from types import SimpleNamespace
+
+from soccer_vision.cli.extract import _on_ball_fallback, _reel_window
+from soccer_vision.clips.extract import halo_samples_for
+from soccer_vision.events.on_ball import (
+    ON_BALL_LABEL,
+    OnBallSpan,
+    select_on_ball_spans,
+    spans_to_events,
+)
+
+FPS = 10.0
+
+
+def _ball(frames_xy):
+    """Ball track from ``{frame: (x, y) or None}``; None = offscreen."""
+    return {
+        "fps": FPS,
+        "samples": [
+            {"frame": f, "visible": xy is not None,
+             "pixel_x": xy[0] if xy else None, "pixel_y": xy[1] if xy else None}
+            for f, xy in sorted(frames_xy.items())
+        ],
+    }
+
+
+def _tracks(by_tid, teams=None):
+    """Tracks doc from ``{tid: {frame: (foot_x, foot_y)}}`` (bbox is 20px wide)."""
+    return {
+        "fps": FPS,
+        "teams": teams or {},
+        "tracks": {
+            str(tid): [
+                {"frame": f, "bbox": [x - 10, y - 40, x + 10, y]}
+                for f, (x, y) in sorted(frames.items())
+            ]
+            for tid, frames in by_tid.items()
+        },
+    }
+
+
+# --- span selection -------------------------------------------------------
+
+def test_nearest_player_within_range_makes_a_span():
+    # Track 3 shadows the ball for 6 frames; track 9 is far away throughout.
+    ball = _ball({f: (100.0 + f, 200.0) for f in range(6)})
+    tracks = _tracks({
+        3: {f: (105.0 + f, 210.0) for f in range(6)},
+        9: {f: (900.0, 800.0) for f in range(6)},
+    })
+    spans = select_on_ball_spans(ball, tracks, {3})
+    assert len(spans) == 1
+    assert spans[0].track_id == 3
+    assert spans[0].start_frame == 0 and spans[0].end_frame == 5
+    assert spans[0].n_samples == 6
+
+
+def test_second_nearest_player_is_not_on_the_ball():
+    """Proximity alone isn't enough — the target must be the *nearest* player."""
+    ball = _ball({f: (100.0, 200.0) for f in range(6)})
+    tracks = _tracks({
+        3: {f: (110.0, 205.0) for f in range(6)},   # nearest
+        9: {f: (160.0, 205.0) for f in range(6)},   # close, but not nearest
+    })
+    assert select_on_ball_spans(ball, tracks, {9}) == []
+    assert len(select_on_ball_spans(ball, tracks, {3})) == 1
+
+
+def test_distance_gate_excludes_a_lone_distant_player():
+    ball = _ball({f: (100.0, 200.0) for f in range(6)})
+    tracks = _tracks({3: {f: (900.0, 800.0) for f in range(6)}})
+    assert select_on_ball_spans(ball, tracks, {3}) == []
+    assert len(select_on_ball_spans(ball, tracks, {3}, max_ball_dist_px=2000)) == 1
+
+
+def test_offscreen_ball_frames_are_skipped():
+    ball = _ball({0: (100.0, 200.0), 1: None, 2: None, 3: (100.0, 200.0)})
+    tracks = _tracks({3: {f: (105.0, 205.0) for f in range(4)}})
+    spans = select_on_ball_spans(ball, tracks, {3})
+    # A 0.2s ball gap is under max_gap_s, so this stays one span of 2 samples.
+    assert len(spans) == 1 and spans[0].n_samples == 2
+
+
+def test_long_gap_splits_into_two_spans():
+    frames = list(range(4)) + list(range(40, 44))  # 3.6s apart at 10fps
+    ball = _ball({f: (100.0, 200.0) for f in frames})
+    tracks = _tracks({3: {f: (105.0, 205.0) for f in frames}})
+    assert len(select_on_ball_spans(ball, tracks, {3})) == 2
+
+
+def test_lane_handoff_stays_one_span_carrying_both_lanes():
+    """One continuous touch across a lane handoff must not split into two clips."""
+    ball = _ball({f: (100.0, 200.0) for f in range(8)})
+    tracks = _tracks({
+        3: {f: (105.0, 205.0) for f in range(4)},
+        11: {f: (105.0, 205.0) for f in range(4, 8)},
+    })
+    (span,) = select_on_ball_spans(ball, tracks, {3, 11})
+    assert span.start_frame == 0 and span.end_frame == 7
+    assert span.track_ids == (3, 11)
+
+
+def test_span_is_tagged_with_the_closest_lane():
+    ball = _ball({f: (100.0, 200.0) for f in range(8)})
+    tracks = _tracks({
+        3: {f: (160.0, 200.0) for f in range(4)},    # 60px away
+        11: {f: (110.0, 200.0) for f in range(4, 8)},  # 10px away — closer
+    })
+    (span,) = select_on_ball_spans(ball, tracks, {3, 11})
+    assert span.track_id == 11
+    assert span.min_dist_px == 10.0
+
+
+def test_incidental_single_sample_span_is_dropped():
+    ball = _ball({0: (100.0, 200.0), 60: (100.0, 200.0)})
+    tracks = _tracks({3: {0: (105.0, 205.0), 60: (105.0, 205.0)}})
+    assert select_on_ball_spans(ball, tracks, {3}) == []
+
+
+# --- spans -> events ------------------------------------------------------
+
+def _span(tid=3, start=10, end=25):
+    return OnBallSpan(track_id=tid, start_frame=start, end_frame=end,
+                      start_s=start / FPS, end_s=end / FPS,
+                      n_samples=end - start + 1, min_dist_px=12.0)
+
+
+def test_event_shape_matches_the_clip_pipeline():
+    (event,) = spans_to_events([_span()])
+    assert event["label"] == ON_BALL_LABEL
+    assert event["track_id"] == 3
+    assert event["timestamp_s"] == 1.0
+    assert event["duration_s"] == 1.5
+    assert event["team"] is None
+
+
+def test_team_is_stamped_from_the_tracks_teams_block():
+    (event,) = spans_to_events([_span()], track_teams={"3": "black"})
+    assert event["team"] == "black"
+
+
+def test_team_filter_drops_other_teams_and_unknown_lanes():
+    spans = [_span(tid=3), _span(tid=9), _span(tid=4)]
+    teams = {"3": "black", "9": "white"}  # lane 4 has no team
+    events = spans_to_events(spans, track_teams=teams, team="black")
+    assert [e["track_id"] for e in events] == [3]
+    # Case-insensitive, matching filter_events.
+    assert len(spans_to_events(spans, track_teams=teams, team="BLACK")) == 1
+
+
+# --- halo across a lane handoff -------------------------------------------
+
+def test_halo_follows_every_lane_in_a_span():
+    """The spotlight must not drop out when the player changes lane mid-clip."""
+    halo_tracks = {3: [(0, "a"), (1, "b")], 11: [(4, "c"), (5, "d")]}
+    event = {"track_id": 11, "track_ids": [3, 11]}
+    samples = halo_samples_for(event, halo_tracks)
+    assert [f for f, _ in samples] == [0, 1, 4, 5]
+
+
+def test_halo_falls_back_to_the_single_track_id():
+    halo_tracks = {3: [(0, "a")], 11: [(4, "c")]}
+    assert halo_samples_for({"track_id": 3}, halo_tracks) == [(0, "a")]
+
+
+def test_halo_is_none_when_no_lane_has_boxes():
+    assert halo_samples_for({"track_id": 99, "track_ids": [99]}, {3: [(0, "a")]}) is None
+    assert halo_samples_for({"track_id": 3}, None) is None
+
+
+# --- reel windows ---------------------------------------------------------
+
+def test_detector_event_gets_the_fixed_window():
+    start, duration = _reel_window({"timestamp_s": 100.0})
+    assert (start, duration) == (95.0, 20.0)
+
+
+def test_on_ball_span_window_tracks_its_duration():
+    """A short touch and a long dribble must not both become 20s of footage."""
+    _, short = _reel_window({"timestamp_s": 100.0, "duration_s": 1.0})
+    _, long_ = _reel_window({"timestamp_s": 100.0, "duration_s": 30.0})
+    assert short < long_
+    assert short == 5.0 + 1.0 + 2.5
+
+
+def test_window_start_is_clamped_at_zero():
+    start, _ = _reel_window({"timestamp_s": 1.0, "duration_s": 2.0})
+    assert start == 0.0
+
+
+# --- fallback gating ------------------------------------------------------
+
+def _run(tmp_path, *, ball=True, tracks=True):
+    if ball:
+        (tmp_path / "ball_track.json").write_text(
+            json.dumps(_ball({f: (100.0, 200.0) for f in range(6)})))
+    if tracks:
+        (tmp_path / "tracks.json").write_text(json.dumps(
+            _tracks({3: {f: (105.0, 205.0) for f in range(6)}}, teams={"3": "black"})))
+    return tmp_path
+
+
+def _args(**kw):
+    base = dict(on_ball=True, on_ball_force=False, track=None, team=None,
+                on_ball_dist=200.0, on_ball_min_span=0.4)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_fallback_fires_for_a_player_with_no_detector_events(tmp_path):
+    events = _on_ball_fallback(_args(), _run(tmp_path), {3}, None)
+    assert len(events) == 1 and events[0]["label"] == ON_BALL_LABEL
+
+
+def test_fallback_is_suppressed_by_an_explicit_event_label(tmp_path):
+    """--events pass must not silently return touches instead."""
+    assert _on_ball_fallback(_args(), _run(tmp_path), {3}, ["pass"]) == []
+
+
+def test_on_ball_force_overrides_the_label_suppression(tmp_path):
+    events = _on_ball_fallback(_args(on_ball_force=True), _run(tmp_path), {3}, ["pass"])
+    assert len(events) == 1
+
+
+def test_no_on_ball_disables_the_fallback(tmp_path):
+    assert _on_ball_fallback(_args(on_ball=False), _run(tmp_path), {3}, None) == []
+
+
+def test_no_player_selection_means_no_fallback(tmp_path):
+    """A team-only query isn't a player query — nothing to anchor spans on."""
+    assert _on_ball_fallback(_args(team="black"), _run(tmp_path), None, None) == []
+
+
+def test_raw_track_id_anchors_the_fallback(tmp_path):
+    events = _on_ball_fallback(_args(track=3), _run(tmp_path), None, None)
+    assert len(events) == 1
+
+
+def test_team_filter_applies_to_fallback_spans(tmp_path):
+    assert _on_ball_fallback(_args(team="white"), _run(tmp_path), {3}, None) == []
+    assert len(_on_ball_fallback(_args(team="black"), _run(tmp_path), {3}, None)) == 1
+
+
+def test_missing_ball_track_returns_nothing(tmp_path, capsys):
+    """Runs predating ball_track.json must say so, not read as 'player did nothing'."""
+    assert _on_ball_fallback(_args(), _run(tmp_path, ball=False), {3}, None) == []
+    assert "ball_track.json" in capsys.readouterr().out
