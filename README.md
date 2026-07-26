@@ -60,12 +60,14 @@ runs/{match_id}/
 ├── broadcast_proxy.mp4    # the video every step reads (the source itself,
 │                          #   unless --broadcast cropped a followed view)
 ├── annotations.json       # events: label, frame, team, player
+├── tracks.json            # where every player was, and which team
+├── ball_track.json        # where the ball was
 ├── stats.json             # team metrics
 ├── clips/ · sheets/       # extracted clips + review contact sheets
 runs/soccer_vision.db      # match records across all your videos
 ```
 
-**143 unit tests pass**; CI checks every change automatically.
+**168 unit tests pass**; CI checks every change automatically.
 
 ---
 
@@ -91,6 +93,14 @@ soccer-vision reel --run runs/match_001 --track 6 --event pass --out number6_pas
 > `soccer-vision identify`, which reads each player's jersey number off the
 > footage. On overhead footage some players are too far or too turned away to
 > read — fall back to `--team` / `--track` there.
+
+> **Asking for one player always gives you something.** Only set pieces are
+> detected as named actions today, so "every clip of number 6" would usually
+> match nothing. When it does, the clips fall back to the moments that player was
+> **on the ball** — nearest to it and close enough for it to be their touch —
+> which is a far denser signal than the event stream. That's proximity, not
+> action recognition: it finds when #6 had the ball, not that #6 *passed*. Pass
+> `--no-on-ball` to turn it off.
 
 ---
 
@@ -118,7 +128,7 @@ soccer-vision ask "which team had more corners?" --run runs/match_001/
 src/soccer_vision/     the pipeline itself — capture, track, label, and cut clips
 training/              scripts for improving the action-recognition models
 docs/                  full documentation
-tests/                 143 tests + video fixtures
+tests/                 168 tests + video fixtures
 ```
 
 The full technical architecture — which models, which libraries, what's done

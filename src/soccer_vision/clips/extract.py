@@ -12,6 +12,31 @@ from soccer_vision.io.video import ffmpeg_extract_clip
 _CLIP_NAME_RE = re.compile(r"^(?P<prefix>.+?)_(?P<index>\d+)_(?P<label>.+)_(?P<ts>\d+)s\.mp4$")
 
 
+def halo_samples_for(event: dict, halo_tracks: dict[int, list] | None) -> list | None:
+    """Track boxes to halo for one event, or ``None``.
+
+    Uses ``track_ids`` when the event carries one (on-ball spans do — a player
+    fragments across lanes mid-touch, and the spotlight has to follow through the
+    handoff or it drops out partway through the clip), else the single
+    ``track_id``. Samples from several lanes are merged in frame order; the lanes
+    are disjoint in time by construction, so they read as one continuous track.
+    """
+    if not halo_tracks:
+        return None
+
+    ids = event.get("track_ids")
+    if not ids:
+        tid = event.get("track_id")
+        ids = [tid] if tid is not None else []
+
+    merged: list = []
+    for tid in ids:
+        merged.extend(halo_tracks.get(int(tid)) or [])
+    if not merged:
+        return None
+    return sorted(merged, key=lambda s: s[0])
+
+
 def extract_event_clips(
     video_path: str | Path,
     events: list[dict],
@@ -45,7 +70,7 @@ def extract_event_clips(
         out_path = out_dir / f"{prefix}_{i:03d}_{label}_{ts:.0f}s.mp4"
 
         tid = event.get("track_id")
-        samples = halo_tracks.get(int(tid)) if halo_tracks and tid is not None else None
+        samples = halo_samples_for(event, halo_tracks)
         if samples:
             from soccer_vision.clips.halo import render_halo_clip
 
