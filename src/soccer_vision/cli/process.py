@@ -313,12 +313,24 @@ def run_pipeline(args):
 
     # Step 6: Action detection (pluggable engines, attribution-agnostic)
     print("\n[Step 6] Action detection...")
+    # Goal mouths, when a previous `soccer-vision goals` run left them behind.
+    # They describe the camera setup rather than this match's play, so a re-run
+    # over the same footage picks them up and gets `goal` events for free; a run
+    # without them just doesn't emit that label.
+    goal_regions = None
+    if run_dir.goals.exists():
+        with open(run_dir.goals) as f:
+            goal_regions = json.load(f)
+        print(f"  Goal mouths: {len(goal_regions.get('goals', []))} from {run_dir.goals}")
+
     ctx = ActionContext(
         fps=proxy_fps,
         ball_positions=ball_positions,
         frame_players=frame_players,
         proxy_path=str(run_dir.broadcast_proxy),
         config=config,
+        goal_regions=goal_regions,
+        ball_track={"fps": proxy_fps, "samples": ball_samples},
     )
     detectors = active_detectors(config)
     print(f"  Active action engines: {', '.join(d.name for d in detectors) or 'none'}")

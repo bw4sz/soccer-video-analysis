@@ -96,6 +96,49 @@ def main():
     p_identify.add_argument("--min-reid-margin", type=float, default=None,
                             help="Min similarity lead over the runner-up player (default: 0.05)")
 
+    # goals
+    p_goals = subparsers.add_parser(
+        "goals", help="Detect the goal mouths, then the goals (ball dwelling inside one)"
+    )
+    p_goals.add_argument("--run", required=True, help="Run directory path")
+    p_goals.add_argument("--prompt", default="soccer goal net",
+                         help="SAM3 text prompt for the goal mouth "
+                              "(default: 'soccer goal net')")
+    p_goals.add_argument("--redetect", action="store_true",
+                         help="Re-run mouth detection instead of reusing goals.json "
+                              "(the mouths barely change; the event stage is free)")
+    p_goals.add_argument("--sample-fps", type=float, default=0.2,
+                         help="Frames per second sampled for mouth detection "
+                              "(default: 0.2 — a goal doesn't move)")
+    p_goals.add_argument("--max-samples", type=int, default=60,
+                         help="Cap on frames sampled, spread over the match (default: 60)")
+    p_goals.add_argument("--min-obs", type=int, default=3,
+                         help="Min detections before a goal mouth is trusted (default: 3)")
+    p_goals.add_argument("--min-dwell", type=float, default=0.6, metavar="SEC",
+                         help="How long the ball must stay inside the mouth to count "
+                              "(default: 0.6) — the lag that discards a ball merely "
+                              "passing in front of the net")
+    p_goals.add_argument("--max-dwell", type=float, default=10.0, metavar="SEC",
+                         help="Reject dwells longer than this: a ball parked in "
+                              "the mouth is out of play, not scored (default: 10; "
+                              "0 disables the upper bound)")
+    p_goals.add_argument("--max-gap", type=float, default=0.7, metavar="SEC",
+                         help="Ball may go undetected this long mid-dwell without "
+                              "ending it — vanishing into the netting is evidence "
+                              "for a goal, not against (default: 0.7)")
+    p_goals.add_argument("--inset", type=float, default=0.12, metavar="FRAC",
+                         help="Shrink the mouth box by this fraction per side, so a "
+                              "shot level with a post doesn't count (default: 0.12)")
+    p_goals.add_argument("--no-entry-check", action="store_true",
+                         help="Don't require the ball to arrive from the field side "
+                              "(by default a ball wandering in from behind is ignored)")
+    p_goals.add_argument("--dedup-window", type=float, default=15.0, metavar="SEC",
+                         help="Collapse dwells within this window into one goal "
+                              "(default: 15) — the ball rattling in the net re-enters")
+    p_goals.add_argument("--dry-run", action="store_true",
+                         help="Print the goals without merging them into annotations.json")
+    p_goals.add_argument("--device", default=None, help="PyTorch device: cpu / cuda")
+
     # enroll
     p_enroll = subparsers.add_parser(
         "enroll", help="Bank a team's appearances into a re-id gallery (carried between matches)"
@@ -291,6 +334,10 @@ def main():
     elif args.command == "identify":
         from soccer_vision.cli.identify import run_identify
         run_identify(args)
+    elif args.command == "goals":
+        from soccer_vision.cli.goals import run_goals
+
+        run_goals(args)
     elif args.command == "enroll":
         from soccer_vision.cli.enroll import run_enroll
         run_enroll(args)

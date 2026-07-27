@@ -156,7 +156,10 @@ Roughly in priority order:
 - **A better way to map the field** when the lines on the pitch are faint or
   partly hidden.
 - **A desktop app** for reviewing clips without the command line.
-- **More action labels** — free kicks, kickoffs, substitutions.
+- **More action labels** — free kicks, kickoffs, substitutions. Goals now have a
+  first pass (`soccer-vision goals`, ball dwelling in a detected goal mouth),
+  but it can't tell the front of the net from the back of it — that needs a
+  second cue, like the kickoff that follows every goal.
 - **Easier install** — hosted docs, a PyPI release, example notebooks.
 
 ---
