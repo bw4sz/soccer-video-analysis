@@ -44,6 +44,16 @@ class RunDir:
         return self.root / "ball_track.json"
 
     @property
+    def goals(self) -> Path:
+        """Detected goal-mouth regions, written by `soccer-vision goals`.
+
+        Separate from the run's events because the mouths are a property of the
+        *camera setup*, not of play: detect once, then re-derive goal events as
+        the ball track or thresholds change without touching the GPU again.
+        """
+        return self.root / "goals.json"
+
+    @property
     def jerseys(self) -> Path:
         """Per-track voted jersey numbers, written by `soccer-vision identify`."""
         return self.root / "jerseys.json"

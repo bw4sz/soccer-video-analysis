@@ -32,6 +32,13 @@ class ActionContext:
     frame_players: dict[int, dict] = field(default_factory=dict)
     proxy_path: str | None = None
     config: dict = field(default_factory=dict)
+    # Parsed ``goals.json`` when `soccer-vision goals` has run on this match.
+    # Absent on a plain run, in which case the goal heuristic simply sits out.
+    goal_regions: dict | None = None
+    # Parsed ``ball_track.json``. The goal heuristic needs the sampled pixel
+    # trajectory (including the *invisible* samples, which are evidence the ball
+    # is in the netting) rather than the field-space ``ball_positions``.
+    ball_track: dict | None = None
 
 
 @runtime_checkable
@@ -54,6 +61,11 @@ class RulesActionDetector:
 
     Wraps the existing ``detect_all_set_pieces`` — always available (classical CV),
     the default engine on a plain ``soccer-vision process`` run.
+
+    Also emits ``goal`` when the run carries goal-mouth regions (``goals.json``,
+    written by ``soccer-vision goals``): the ball dwelling inside a detected
+    mouth is another ball-position heuristic, so it belongs here rather than in
+    an engine of its own. Without that sidecar the check is skipped silently.
     """
 
     name = "rules"
@@ -66,9 +78,22 @@ class RulesActionDetector:
         # ``set_piece`` key for existing configs.
         kwargs = ctx.config.get("rules") or ctx.config.get("set_piece") or {}
         events = detect_all_set_pieces(ctx.ball_positions, **kwargs)
+        events.extend(self._detect_goals(ctx))
         for e in events:
             e.setdefault("source", self.name)
+        events.sort(key=lambda e: e.get("timestamp_s", 0.0))
         return events
+
+    def _detect_goals(self, ctx: ActionContext) -> list[dict]:
+        if not ctx.goal_regions or not ctx.ball_track:
+            return []
+        from soccer_vision.events.goal import detect_goals, load_goal_regions
+
+        regions = load_goal_regions(ctx.goal_regions)
+        if not regions:
+            return []
+        cfg = ctx.config.get("goal") or {}
+        return detect_goals(ctx.ball_track, regions, **cfg)
 
 
 class LearnedActionDetector:

@@ -460,6 +460,63 @@ fallback stops firing for those queries.
 
 ---
 
+## Goals — the ball dwelling inside a detected goal mouth
+
+`goal` has been in the canonical taxonomy (`events/labels.py`) from the start,
+but nothing ever emitted one — the `rules` engine only fires on set pieces.
+`soccer-vision goals` is the first producer, and it needs no new model: SAM3 is
+driven by *text*, so the goal is just another prompt (`"soccer goal net"`)
+alongside `"soccer player"` and `"soccer ball"`.
+
+```bash
+# Stage 1 (GPU) detects the mouths and caches goals.json; stage 2 (CPU, instant)
+# replays ball_track.json through them. One command runs both.
+soccer-vision goals --run runs/<match_id>
+
+# Re-tune without touching the GPU — the mouths are cached:
+soccer-vision goals --run runs/<match_id> --min-dwell 1.0 --dry-run
+
+soccer-vision extract --run runs/<match_id> --events goal
+```
+
+**Dwell, not crossing.** A ball inside the goal-mouth box for one sample means
+almost nothing: from an elevated camera the net sits *behind* a large slice of
+the penalty area, so every shot and half the goal-kick setups put the ball
+"inside" that box in 2D for a frame or two. What separates a goal is that the
+ball **stays** — the net holds it and play stops. So a span only becomes a
+`goal` after `--min-dwell` (0.6s); that is the lag that discards the fly-by.
+`--max-dwell` (10s) bounds the other end: a ball *parked* there is out of play,
+not scored. On the saints ball track an unbounded dwell surfaced a 16.2s span,
+which is dead time by any reading.
+
+Two further discriminators, both cheap:
+
+- **Entry side** — the ball must arrive from the field side of the mouth, so a
+  ball wandering in from behind the goal (retrieved out of play) is ignored.
+  `--no-entry-check` disables it.
+- **Losing the ball counts as staying** — a ball that disappears into the
+  netting stops being detected, so an *invisible* sample does not break a dwell
+  (up to `--max-gap`), while a visible sample outside the mouth does.
+
+**Why the mouths are cached separately.** A goal doesn't move, so `goals.json`
+describes the *camera setup*, not the match: detect once, then re-derive events
+as the ball track or thresholds change. Detection samples sparsely
+(`--sample-fps 0.2`, capped at `--max-samples 60` spread across the match) and
+takes a **per-side median** of the boxes that survive a shape filter — robust to
+the frames where the prompt latches onto a sideline banner in a way no
+single-frame confidence threshold is. A side whose boxes disagree wildly is
+dropped rather than averaged into a fiction. `process` picks up an existing
+`goals.json` automatically and emits `goal` events inline.
+
+**Caveat — it cannot see depth.** A ball struck against the *face* of the net,
+or a keeper standing in the mouth holding the ball, are the same 2D shape as a
+goal, and no dwell threshold fixes that from one box. Treat the output as
+candidates worth a look. The honest fix needs a second cue (the restart from the
+centre circle that follows every goal, or players' collective movement back
+upfield) — see the tracking issue.
+
+---
+
 ## Harvest — build a diverse annotation set from YouTube
 
 `harvest` pulls short, openly-licensed youth-soccer clips off YouTube to seed an
