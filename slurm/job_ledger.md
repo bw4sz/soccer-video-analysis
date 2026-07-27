@@ -342,3 +342,18 @@ Why: First FULL-MATCH SAM3 run (players + ball text prompts) + identify, to
   saints-u11-sam3.yaml, profile saints-u11.yaml, match_id saints-u11-sam3-full.
 Next: if it holds at length, build #6 on-ball reel from tracks/ball_track/jerseys;
   watch (a) does the chunked session survive 9226 sampled frames, (b) #6 OCR yield.
+
+## 38127264 — 2026-07-27 10:27 — slurm/downscale_clips.sh runs/saints-u11-sam3-full
+Why: Prepare the event-annotation set for labelling on a laptop. The run's 236
+  event clips are 1920x1080/20s/~25MB each = 6.1GB, too much to rsync down and
+  far more than Label Studio needs to scrub. Re-encodes to 720p/CRF30/no-audio
+  into runs/saints-u11-sam3-full/clips_720p (originals untouched), 8-way xargs.
+  Companion to the `enroll --dump-crops` pass for the re-id gallery, both feeding
+  the annotation walkthrough in label_studio/README.md.
+Result: COMPLETED in 5:03, no errors. 236/236 clips re-encoded 1920x1080 -> 1280x720,
+  6.1GB -> 351MB (17x smaller), 20s duration preserved. 8-way xargs on one node;
+  the 1-core login shell would have taken ~an hour.
+Next: rsync clips_720p + label_studio_tasks.json + labeling_config.xml to the
+  laptop under runs/<match_id>/clips/, then Label Studio. Expect to correct
+  nearly every label — all 236 events came back `throw_in` off the degenerate
+  homography, so the pre-fill is a candidate window, not a prior.
