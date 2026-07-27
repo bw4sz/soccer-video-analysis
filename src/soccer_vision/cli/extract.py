@@ -94,7 +94,7 @@ def _on_ball_events(args, run_dir: Path, target_ids: set[int]) -> list[dict]:
     tracks = json.loads(tracks_path.read_text())
     spans = select_on_ball_spans(
         ball_track, tracks, target_ids,
-        max_ball_dist_px=getattr(args, "on_ball_dist", 200.0),
+        max_ball_dist_px=getattr(args, "on_ball_dist", 90.0),
         min_span_s=getattr(args, "on_ball_min_span", 0.4),
     )
     return spans_to_events(

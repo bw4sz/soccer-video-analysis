@@ -298,9 +298,17 @@ events" is technically correct and useless.
 
 So when `--player` / `--number` / `--track` matches no detected events, `extract`
 and `reel` fall back to **on-ball spans** — the stretches where that player was
-the ball's nearest player (`soccer_vision.events.on_ball`). This is pixel-space
+close to the ball (`soccer_vision.events.on_ball`). This is pixel-space
 geometry over `ball_track.json` + `tracks.json`, so it needs neither the event
 detector nor the field homography (both unreliable on overhead footage).
+
+**Proximity, not "nearest".** A span opens whenever the selected player is within
+`--on-ball-dist` of the ball, *not* only when they are the closest player on the
+pitch. Requiring nearest-player silently dropped every contested moment — a
+tackle, a challenge, pressing an opponent — because the opponent was fractionally
+closer, which is exactly the footage a parent or coach wants. The radius is tight
+to pay for that: 200px let in fly-bys where the player was merely in frame, so
+the default is 90px, close enough to read as a real touch or challenge.
 
 ```bash
 # No pass detector yet — this cuts Simon's touches, haloed
@@ -332,7 +340,7 @@ halo follows through the handoff, with `track_id` being the lane that got closes
 to the ball. `--team` filtering works because `process` now stamps each track's
 kit colour into the `teams` block of `tracks.json`.
 
-Key options: `--on-ball-dist 200` (max px from ball to the player's feet),
+Key options: `--on-ball-dist 90` (max px from ball to the player's feet),
 `--on-ball-min-span 0.4` (drop shorter spans as incidental).
 
 **Caveat.** This is proximity, not action recognition — it says #6 was on the

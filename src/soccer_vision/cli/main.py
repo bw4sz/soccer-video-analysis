@@ -25,9 +25,9 @@ def _add_on_ball_args(parser: argparse.ArgumentParser) -> None:
              "an explicit event label was requested (which normally suppresses "
              "the fallback so --events pass can't silently return touches).")
     parser.add_argument(
-        "--on-ball-dist", type=float, default=200.0, metavar="PX",
+        "--on-ball-dist", type=float, default=90.0, metavar="PX",
         help="Max pixel distance from ball to player's feet to count as on the "
-             "ball (default: 200)")
+             "ball (default: 90)")
     parser.add_argument(
         "--on-ball-min-span", type=float, default=0.4, metavar="SEC",
         help="Drop on-ball spans shorter than this as incidental (default: 0.4)")
