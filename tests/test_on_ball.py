@@ -58,15 +58,33 @@ def test_nearest_player_within_range_makes_a_span():
     assert spans[0].n_samples == 6
 
 
-def test_second_nearest_player_is_not_on_the_ball():
-    """Proximity alone isn't enough — the target must be the *nearest* player."""
+def test_contested_ball_counts_for_both_players():
+    """Being near the ball is enough — the target needn't be the *nearest* player.
+
+    Requiring nearest-player dropped every contested moment (a tackle, a
+    challenge, pressing an opponent) whenever the opponent was fractionally
+    closer, which is exactly the footage worth cutting. Both lanes here are
+    inside the radius, so both are on the ball.
+    """
     ball = _ball({f: (100.0, 200.0) for f in range(6)})
     tracks = _tracks({
         3: {f: (110.0, 205.0) for f in range(6)},   # nearest
-        9: {f: (160.0, 205.0) for f in range(6)},   # close, but not nearest
+        9: {f: (160.0, 205.0) for f in range(6)},   # contesting, 60px away
+    })
+    assert len(select_on_ball_spans(ball, tracks, {9})) == 1
+    assert len(select_on_ball_spans(ball, tracks, {3})) == 1
+
+
+def test_radius_still_gates_a_player_merely_in_frame():
+    """The relaxed rule is paid for by a tight radius: a fly-by doesn't count."""
+    ball = _ball({f: (100.0, 200.0) for f in range(6)})
+    tracks = _tracks({
+        3: {f: (110.0, 205.0) for f in range(6)},   # on the ball
+        9: {f: (260.0, 205.0) for f in range(6)},   # 160px — in play, not in it
     })
     assert select_on_ball_spans(ball, tracks, {9}) == []
-    assert len(select_on_ball_spans(ball, tracks, {3})) == 1
+    # The old 200px default would have let that fly-by through.
+    assert len(select_on_ball_spans(ball, tracks, {9}, max_ball_dist_px=200)) == 1
 
 
 def test_distance_gate_excludes_a_lone_distant_player():

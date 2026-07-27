@@ -51,29 +51,35 @@ def select_on_ball_spans(
     tracks: dict,
     target_ids: set[int],
     *,
-    max_ball_dist_px: float = 200.0,
+    max_ball_dist_px: float = 90.0,
     max_gap_s: float = 0.8,
     min_span_s: float = 0.4,
 ) -> list[OnBallSpan]:
-    """Frames where a ``target_ids`` lane is the ball's nearest player.
+    """Frames where a ``target_ids`` lane is near the ball.
 
     ``ball_track`` / ``tracks`` are the parsed ``ball_track.json`` /
-    ``tracks.json`` from a run. For each frame the ball is visible, the nearest
-    player (by foot point) is found; if it belongs to ``target_ids`` and is
-    within ``max_ball_dist_px``, that frame is an on-ball sample. Consecutive
-    samples (bridging gaps up to ``max_gap_s``) merge into spans; spans shorter
-    than ``min_span_s`` are dropped as incidental.
+    ``tracks.json`` from a run. For each frame the ball is visible, a frame
+    counts when a ``target_ids`` lane's foot point is within
+    ``max_ball_dist_px`` of the ball — the target is *involved* near the ball,
+    which captures both possession and defending/pressing that no event label
+    covers. The distance is deliberately tight: on this footage 200px let in
+    fly-bys where the player wasn't really in the play, so the default is close
+    enough to read as an actual touch/challenge. Consecutive samples (bridging
+    gaps up to ``max_gap_s``) merge into spans; spans shorter than ``min_span_s``
+    are dropped as incidental.
     """
     fps = ball_track.get("fps") or tracks.get("fps") or 30.0
 
-    # index every track's bbox by frame, once
+    # index every target lane's bbox by frame, once
     boxes_by_frame: dict[int, list[tuple[int, list]]] = {}
     for tid_s, samples in tracks.get("tracks", {}).items():
         tid = int(tid_s)
+        if tid not in target_ids:
+            continue
         for s in samples:
             boxes_by_frame.setdefault(int(s["frame"]), []).append((tid, s["bbox"]))
 
-    # per-frame: is a target lane the nearest player, and how close?
+    # per-frame: the target lane closest to the ball, if within range
     hits: list[tuple[int, int, float]] = []  # (frame, target_tid, dist)
     for bs in ball_track.get("samples", []):
         if not bs.get("visible"):
@@ -82,14 +88,14 @@ def select_on_ball_spans(
         players = boxes_by_frame.get(int(bs["frame"]))
         if not players:
             continue
-        nearest_tid, nearest_d = None, float("inf")
+        best_tid, best_d = None, float("inf")
         for tid, bbox in players:
             fx, fy = _foot_point(bbox)
             d = ((fx - bx) ** 2 + (fy - by) ** 2) ** 0.5
-            if d < nearest_d:
-                nearest_tid, nearest_d = tid, d
-        if nearest_tid in target_ids and nearest_d <= max_ball_dist_px:
-            hits.append((int(bs["frame"]), nearest_tid, nearest_d))
+            if d < best_d:
+                best_tid, best_d = tid, d
+        if best_tid is not None and best_d <= max_ball_dist_px:
+            hits.append((int(bs["frame"]), best_tid, best_d))
 
     if not hits:
         return []
