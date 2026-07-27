@@ -32,6 +32,20 @@ def get_kits(profile: dict) -> list[str]:
     return kits
 
 
+def get_reid(profile: dict) -> dict:
+    """Return the ``reid:`` block — gallery path and matching thresholds.
+
+    A long-running team keeps its appearance gallery in the profile alongside the
+    roster, so `identify` needs no flags after the first enrolment::
+
+        reid:
+          gallery: galleries/saints-u11.npz
+          min_similarity: 0.5
+          min_margin: 0.05
+    """
+    return profile.get("reid", {}) or {}
+
+
 def get_player(profile: dict, jersey: int) -> dict | None:
     for p in get_roster(profile):
         if p.get("jersey") == jersey:

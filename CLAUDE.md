@@ -285,7 +285,117 @@ e.g. a jersey-fine-tuned PARSeq).
 behind, so many crops carry no legible number; expect a meaningful fraction of
 tracks to come back `unknown`. Validate yield on a sample before relying on
 per-player selection — where OCR can't read a number, fall back to `--team` or a
-raw `--track <id>`.
+raw `--track <id>`. Better still, enrol the squad once and skip OCR — see below.
+
+---
+
+## Enroll — carry a team's appearances instead of re-reading jerseys
+
+For a team you film every week, jersey OCR is the wrong tool to lean on: it
+re-derives identity from scratch each match, and on Veo footage it can only read
+a number on ~34% of crops. `enroll` banks each player's **appearance** once into
+a gallery you carry between matches, and `identify --method reid` then names a
+track by nearest-neighbour lookup in that gallery — no legible number required,
+so it still works on backs, blurs and distant figures.
+
+**Weights.** Crops are embedded by
+[sportsreid](https://github.com/shallowlearn/sportsreid)'s `OSNet_x1_0` (MIT;
+2nd place, SoccerNet 2022 re-ID challenge; 83.4 mAP / 78.0 rank-1), fetched from
+its Google Drive on first use into `~/.cache/soccer_vision/reid/`. The published
+checkpoint is ~1 GB because it carries a 161k-identity classifier head; we strip
+that to a ~9 MB backbone and cache it, since those identities aren't our players
+— **our** identities live in the gallery, not the weights. No extra install: the
+`identify` extra isn't needed for the re-id path, only for the OCR fallback.
+
+```bash
+# Label a squad by hand: dump crops per track, rename the folders, enrol.
+soccer-vision enroll --run runs/<match> --dump-crops crops/
+#   → crops/track_0021__ocr20/*.jpg ; rename to crops/Simon Weinstein/, drop the rest
+soccer-vision enroll --run runs/<match> --from-crops crops/ \
+                     --out galleries/saints-u11.npz
+
+# Or cold start from OCR: read numbers once, enrol from the reads it got right.
+soccer-vision identify --run runs/<match> --method ocr --profile team.yaml
+soccer-vision enroll   --run runs/<match> --profile team.yaml \
+                       --out galleries/saints-u11.npz --exclude-jersey 1
+
+# Every match after: no OCR needed.
+soccer-vision identify --run runs/<next> --method reid \
+                       --gallery galleries/saints-u11.npz --profile team.yaml
+
+# Top up the gallery after each match (it improves all season):
+soccer-vision enroll --run runs/<next> --append --out galleries/saints-u11.npz
+```
+
+**Three enrolment sources.**
+
+1. **Dump and label folders** (`--dump-crops` → rename → `--from-crops`) — the
+   tracker does the cropping, you do the naming. Folders come out as
+   `track_0021__ocr20/`; rename the ones you recognise to the player, delete the
+   rest, re-run with `--from-crops`. Folders still carrying the `track_` prefix
+   are skipped, so a half-finished pass enrols only what you named. Merging
+   several lanes into one player's folder is encouraged — more poses, better
+   gallery entry. Only the `--max-tracks 60` longest lanes are dumped (a match
+   fragments into ~2,000), and `index_*.jpg` review sheets are written alongside:
+   an overhead camera renders a player in about 50×21 px, unlabellable in a file
+   browser, so the sheets upscale each track's crops into a captioned strip.
+2. **Bootstrap from OCR** (default) — reuse the high-confidence votes in
+   `jerseys.json` (`--min-confidence 0.8 --min-obs 5`). Free, but a
+   confident-wrong read enrols the wrong player, so pass `--exclude-jersey 1`
+   (PARSeq's hallucination class on this footage).
+3. **Label Studio** (`--from-label-studio export.json`) — `rectanglelabels`
+   named after players, for when you want boxes drawn on frames rather than
+   whole tracks accepted or rejected.
+
+**Config / fallback.** `identify --method` takes `auto` (default — `reid+ocr`
+when a gallery is present, else `ocr`), `ocr`, `reid`, or `reid+ocr`. `reid+ocr`
+matches on appearance first and sends only the tracks the gallery *abstained* on
+to OCR: the gallery can't name a player it never enrolled (an opponent, a
+referee), and abstaining is deliberate — mislabelling a clip is worse than
+leaving it unnamed. Thresholds are `--min-similarity` (0.5) and
+`--min-reid-margin` (0.05, the winner's lead over the runner-up). Settle them
+once in the profile and drop the flags:
+
+```yaml
+reid:
+  gallery: galleries/saints-u11.npz
+  min_similarity: 0.5
+  min_margin: 0.05
+```
+
+`jerseys.json` gains `source` (`"reid"` / `"ocr"` / `null`) and `similarity` per
+track, so which route named a clip is always auditable.
+
+**Validation.** `slurm/validate_reid.py` does leave-one-track-out on a processed
+run: hold out one ByteTrack lane, build the gallery from the others, and see if
+it's named correctly. That's the production case (enrol from past matches, name
+a fresh lane), not the trivial one of matching a track to itself. It also checks
+**stranger rejection** — numbers seen on exactly one track are held out of the
+gallery entirely, where the correct answer is to abstain.
+
+Measured on `runs/saints-u11-sam3-full` (47 lanes, 8 players, labels = the
+high-confidence OCR votes, so a proxy for ground truth rather than truth):
+
+| min_margin | named | correct when named | strangers rejected |
+|---|---|---|---|
+| 0.05 (default) | 83% | 39/39 | 5/6 |
+| 0.10 | 68% | 32/32 | 5/6 |
+| 0.15 | 34% | 16/16 | 5/6 |
+
+Two things to know. **`min_similarity` is nearly inert** — 0.0 and 0.7 give the
+same answer, because re-ID cosine similarities bunch high even between different
+people; the *margin* between first and second place is what actually decides.
+Tune `min_margin`, not `min_similarity`. And **the abstentions are not noise** —
+raising the margin costs recall fast without buying precision, because at 0.05
+precision is already 100%. Leave it at 0.05 and let OCR pick up the rest.
+
+Untested and worth knowing before trusting this: everything above is *within one
+match*, so same kit, light and camera position. Cross-match generalisation — the
+actual reason to carry a gallery — needs a second processed match to measure.
+
+**Caveat.** The gallery is kit- and season-specific. A team with two kits (Saints
+run black away / white home) needs both enrolled, or a home gallery will abstain
+on every away track — enrol from one match of each and `--append`.
 
 ---
 

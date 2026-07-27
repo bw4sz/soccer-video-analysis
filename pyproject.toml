@@ -73,6 +73,8 @@ packages = ["src/soccer_vision"]
 [tool.ruff]
 target-version = "py312"
 line-length = 99
+# Vendored third-party source, kept verbatim so it stays diffable upstream.
+extend-exclude = ["src/soccer_vision/identify/_osnet.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]

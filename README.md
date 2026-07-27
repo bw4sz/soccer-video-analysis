@@ -90,9 +90,13 @@ soccer-vision reel --run runs/match_001 --track 6 --event pass --out number6_pas
 > **Two ways to pick a player.** *Team-level* filtering works off jersey
 > **colour** (`--team black`) — no extra setup. *Individual-player* filtering
 > (`--player Simon` / `--number 6`) needs one extra step,
-> `soccer-vision identify`, which reads each player's jersey number off the
-> footage. On overhead footage some players are too far or too turned away to
-> read — fall back to `--team` / `--track` there.
+> `soccer-vision identify`, which puts a name on each player by one of two
+> routes. It can **recognise them by appearance**, looking each player up in a
+> gallery of your squad built once by `soccer-vision enroll` — the better route
+> for a team you film every week, since it works even when the number can't be
+> seen. Or it can **read the jersey number** off the footage, which needs no
+> setup but, on overhead footage, misses players who are too far away or turned
+> away. Anyone neither route can name falls back to `--team` / `--track`.
 
 > **Asking for one player always gives you something.** Only set pieces are
 > detected as named actions today, so "every clip of number 6" would usually
@@ -145,9 +149,10 @@ Roughly in priority order:
   headers, and more, attributed to the player who did them. This is the whole
   point of the current phase, and what makes *"#6's passes"* real. A model is
   training on our own footage now.
-- **Sturdier player identity** — carrying a player's identity through
-  stretches where their jersey number can't be read, so overhead-camera
-  footage resolves as reliably as broadcast footage.
+- **Sturdier player identity** — `soccer-vision enroll` now carries a squad's
+  appearances between matches, so players can be named where their number can't
+  be read. Still to do: following one player through the whole match as a single
+  thread, rather than naming each stretch of tracking on its own.
 - **A better way to map the field** when the lines on the pitch are faint or
   partly hidden.
 - **A desktop app** for reviewing clips without the command line.

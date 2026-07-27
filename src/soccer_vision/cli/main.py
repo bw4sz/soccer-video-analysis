@@ -84,6 +84,57 @@ def main():
                             help="Winning number's min share of vote weight (default: 0.5)")
     p_identify.add_argument("--min-margin", type=float, default=0.15,
                             help="Min weight-share lead over runner-up (default: 0.15)")
+    p_identify.add_argument("--method", default="auto",
+                            choices=["auto", "ocr", "reid", "reid+ocr"],
+                            help="How to name tracks: appearance re-id, jersey OCR, "
+                                 "or re-id with OCR filling the abstentions "
+                                 "(default: auto — reid+ocr if a gallery is available)")
+    p_identify.add_argument("--gallery", help="Player appearance gallery from `enroll` "
+                                              "(default: <run>/gallery.npz, or the profile's)")
+    p_identify.add_argument("--min-similarity", type=float, default=None,
+                            help="Min gallery cosine similarity to name a track (default: 0.5)")
+    p_identify.add_argument("--min-reid-margin", type=float, default=None,
+                            help="Min similarity lead over the runner-up player (default: 0.05)")
+
+    # enroll
+    p_enroll = subparsers.add_parser(
+        "enroll", help="Bank a team's appearances into a re-id gallery (carried between matches)"
+    )
+    p_enroll.add_argument("--run", required=True, help="Run directory path")
+    p_enroll.add_argument("--profile", help="Project profile YAML (maps jersey → name)")
+    p_enroll.add_argument("--out", help="Gallery path (default: <run>/gallery.npz)")
+    p_enroll.add_argument("--append", action="store_true",
+                          help="Merge into the existing gallery instead of replacing it")
+    p_enroll.add_argument("--dump-crops", metavar="DIR",
+                          help="Write a folder of crops per track for hand labelling, "
+                               "then exit (rename folders to players, re-run --from-crops)")
+    p_enroll.add_argument("--from-crops", metavar="DIR",
+                          help="Enrol from crop folders named after players")
+    p_enroll.add_argument("--from-label-studio",
+                          help="Enrol from a Label Studio rectanglelabels export "
+                               "(default: bootstrap from jerseys.json OCR votes)")
+    p_enroll.add_argument("--min-track-frames", type=int, default=20,
+                          help="Skip tracks shorter than this when dumping (default: 20)")
+    p_enroll.add_argument("--context-pad", type=float, default=3.0,
+                          help="Review-sheet view: box sizes of context around the "
+                               "player (default: 3.0). Does not affect enrolled crops")
+    p_enroll.add_argument("--context-min", type=int, default=384,
+                          help="Review-sheet view: minimum window in pixels (default: 384)")
+    p_enroll.add_argument("--max-tracks", type=int, default=60,
+                          help="Dump only the N longest tracks (default: 60) — a match "
+                               "fragments into hundreds of lanes, more than anyone labels")
+    p_enroll.add_argument("--weights", help="Re-id checkpoint (default: sportsreid OSNet_x1_0)")
+    p_enroll.add_argument("--device", default=None, help="PyTorch device: cpu / cuda")
+    p_enroll.add_argument("--max-samples", type=int, default=20,
+                          help="Max frames sampled per track (default: 20)")
+    p_enroll.add_argument("--max-per-player", type=int, default=64,
+                          help="Max exemplars kept per player (default: 64)")
+    p_enroll.add_argument("--min-confidence", type=float, default=0.8,
+                          help="Min OCR vote confidence to enrol a track (default: 0.8)")
+    p_enroll.add_argument("--min-obs", type=int, default=5,
+                          help="Min legible OCR reads to enrol a track (default: 5)")
+    p_enroll.add_argument("--exclude-jersey", nargs="+", type=int,
+                          help="Jersey numbers to never enrol (OCR hallucination classes)")
 
     # extract
     p_extract = subparsers.add_parser("extract", help="Extract clips from a processed run")
@@ -240,6 +291,9 @@ def main():
     elif args.command == "identify":
         from soccer_vision.cli.identify import run_identify
         run_identify(args)
+    elif args.command == "enroll":
+        from soccer_vision.cli.enroll import run_enroll
+        run_enroll(args)
     elif args.command == "extract":
         from soccer_vision.cli.extract import run_extract
         run_extract(args)
