@@ -4,13 +4,13 @@ Two annotation jobs feed the pipeline, and they are **not** the same task:
 
 | | What you label | Where | Feeds |
 |---|---|---|---|
-| **1. Player identity (re-id)** | which track is which player | a file browser + review sheets — no Label Studio needed | `gallery.npz` → `identify --method reid` → `--player` clips |
+| **1. Player identity (re-id)** | which player each detected box is | Label Studio | `gallery.npz` → `identify --method reid` → `--player` clips |
 | **2. Events** | what happened in a clip | Label Studio | corrected event labels → action-recognition training |
 
 Both follow the same split: **compute stays on HPC, labelling happens on your
-laptop.** The artifacts you actually annotate are small (a crops folder is
-~2 MB; clips downscale to a few hundred MB); the videos and models they come
-from are not (a run directory is ~10 GB). So every walkthrough below is
+laptop.** The artifacts you actually annotate are small (a 24-frame labelling
+export is ~1 MB; clips downscale from 6.1 GB to ~350 MB); the videos and models
+they come from are not (a run directory is ~10 GB). So every walkthrough below is
 *generate on HPC → sync down → label locally → sync back*.
 
 Paths on HPC are under `/orange/ewhite/b.weinstein/soccer-video-analysis/`;
@@ -57,12 +57,100 @@ The goal is a `gallery.npz` per squad: each player's appearance banked once, so
 (OCR only manages ~34% of crops on overhead footage). Full background:
 [Enroll](../CLAUDE.md#enroll--carry-a-teams-appearances-instead-of-re-reading-jerseys).
 
-### 1a. Dump crops (HPC)
+**Two ways to produce the labels.** Naming boxes on whole frames (1a-1c) is the
+recommended one; labelling folders of track crops is the older route, kept below
+for when you'd rather accept or reject a whole lane at a time.
+
+| | Frames in Label Studio | Track-crop folders |
+|---|---|---|
+| What you see | the **full frame**, zoomable, boxes pre-drawn | 4 wide views per lane on a contact sheet |
+| What you do | pick a name per box; delete the rest | rename / merge / delete folders |
+| Good for | recognising anyone, since you see the whole picture | bulk-accepting a lane you're sure of |
+| Yield | ~20 named boxes per frame | one lane per decision |
+
+### 1a. Export frames to label (HPC)
 
 ```bash
 soccer-vision enroll --run runs/<match_id> \
-  --dump-crops runs/<match_id>/enroll_crops \
-  --context-pad 1.0 --context-min 160
+  --dump-frames runs/<match_id>/label_frames \
+  --profile examples/profiles/<team>.yaml --n-frames 24 --min-players 8
+```
+
+Writes `frames/*.jpg` (full resolution), `labeling_config.xml` (one label per
+roster player plus `unknown`), and `label_studio_tasks.json` with **every
+detected player already boxed**. A 24-frame export is ~1 MB and carries ~530
+boxes.
+
+Frames are picked one per equal time bin, taking the **busiest** frame in each —
+even spacing alone lands on warm-ups and stoppages where three players stand in
+one corner. Boxes that balloon across the frame (a known tracker artifact) are
+dropped so they don't cover every real player in the UI.
+
+> **Why this beats labelling crops.** A player is ~29 px tall here, so a track
+> crop is 14×20 px — you cannot recognise a child from it at any zoom, and
+> that's *by design*: it's the size the re-id model trains on. Labelling on the
+> full frame separates the two. You identify a person using everything in the
+> picture; Label Studio stores the box as percentages, `enroll` converts it back
+> to exact pixels, and the model crops to whatever size it wants at enrolment
+> time. Covered by a round-trip test in
+> [`tests/test_enroll_team_filter.py`](../tests/test_enroll_team_filter.py).
+
+> **Leave `--team` off here.** Filtering to one kit hides lanes the colour
+> classifier got wrong, and a missing box is invisible to you — you'd never know
+> a player wasn't offered. Better to see every person and delete the ones that
+> aren't yours.
+
+### 1b. Sync down and label (laptop)
+
+```bash
+mkdir -p ~/soccer-annotation/runs/<match_id>
+rsync -avP b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/label_frames/ \
+  ~/soccer-annotation/runs/<match_id>/label_frames/
+
+export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+export LOCAL_FILES_DOCUMENT_ROOT=$HOME/soccer-annotation/runs
+label-studio start
+```
+
+Create the project from `labeling_config.xml`, import
+`label_studio_tasks.json`, then per frame: **name** each box that's one of your
+players, **delete** the boxes for opponents, referees and sideline figures.
+Anything left `unknown` is skipped at enrolment rather than guessed at. Zoom in
+(the control is enabled in the config) — the players are small.
+
+You don't need every box on every frame. A handful of confident names per player
+across a few frames is already a working gallery.
+
+### 1c. Enrol the export (HPC)
+
+Export → JSON from Label Studio, copy it back, then:
+
+```bash
+soccer-vision enroll --run runs/<match_id> --from-label-studio export.json \
+  --out galleries/<team>.npz          # add --append for later matches
+
+soccer-vision identify --run runs/<match_id> --method reid \
+  --gallery galleries/<team>.npz --profile examples/profiles/<team>.yaml
+```
+
+Both kits matter: a gallery built only from black-away frames will abstain on
+every white-home track, so label one match of each and `--append`.
+
+---
+
+### Alternative route — label whole tracks instead
+
+Faster per decision when you're confident about a lane, and it needs no Label
+Studio at all. The catch is the one that sent us to frames: you're judging a
+lane from wide contact-sheet views, not from the picture itself.
+
+#### Dump crops per track (HPC)
+
+```bash
+soccer-vision enroll --run runs/<match_id> \
+  --dump-crops runs/<match_id>/label_crops \
+  --team black --profile examples/profiles/<team>.yaml \
+  --context-pad 30 --context-min 1600 --sheet-tile-height 1080 --sheet-samples 4
 ```
 
 Writes one folder per ByteTrack lane (`track_0021__ocr20/` — the `__ocr20`
@@ -72,27 +160,41 @@ dumped; a full match fragments into ~2,000 lanes (1,663 over 20 frames on the
 Saints U11 match), which is far more than anyone will label and unnecessary for
 a gallery.
 
-> **Zoom the review sheets in.** The tight crop that feeds the model is
-> ~50×21 px — unidentifiable in a file browser. The sheets pull back and outline
-> the target so you can use position, teammates and direction of play to tell
-> who it is. The **defaults (`--context-pad 3.0 --context-min 384`) are too wide
-> to recognise a child**: you see a pitch with a small yellow box on it. At
-> `--context-pad 1.0 --context-min 160` the player fills the tile, kit and hair
-> colour read clearly, and a jersey number is occasionally legible. Use those
-> values. They change the *review sheets only* — the enrolled crops are
-> unaffected, so re-dumping to retune costs nothing but a couple of minutes.
+> **Dump one team.** You normally enrol your own squad, not both, so `--team
+> black` halves the pile. Kit colour comes from the `teams` block `process`
+> stamps into `tracks.json`; a run made before that landed gets classified on the
+> spot (300 sampled frames, turf-green pixels masked out so the median isn't
+> dragged toward grass) and cached to `track_teams.json`. **It's a coarse
+> pre-sort, not ground truth** — the referee's black shorts and dark-jacketed
+> spectators land in "black" too, and an opposing sky-blue kit gets named after
+> whichever colour your profile declares. You'll delete those off the sheet
+> anyway. For a trustworthy `teams` block, re-run `process` with SAM3 masks.
 
-### 1b. Sync down (laptop)
+> **Zoom is two knobs.** `--context-pad`/`--context-min` set how wide the window
+> is; `--sheet-tile-height` sets what it's rendered at. Raising only the first
+> shrinks the player straight back — every tile is scaled to that height, so a
+> wider view at 180 px cancels itself out. At full frame
+> (`--context-pad 30 --context-min 1600 --sheet-tile-height 1080`) you get the
+> whole pitch with the target crosshaired, which is how you actually tell youth
+> players apart at ~29 px tall: position, who they're next to, and which way play
+> is going. `--sheet-samples` (tiles per track on the sheet) is independent of
+> `--max-samples` (crops enrolled per track), so a readable sheet costs no
+> gallery coverage. All of this changes the *review sheets only* — enrolled crops
+> are unaffected, so re-dumping to retune costs a few minutes.
+
+#### Sync down (laptop)
 
 ```bash
 mkdir -p ~/soccer-annotation/<match_id>
-rsync -avP b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/enroll_crops/ \
-  ~/soccer-annotation/<match_id>/enroll_crops/
+rsync -avP b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/label_crops/ \
+  ~/soccer-annotation/<match_id>/label_crops/
 ```
 
-~2 MB for 57 tracks. Seconds, not minutes.
+~62 MB for 60 tracks at full-frame sheets (the crops themselves are ~1 MB of
+that; the 15 review sheets are the rest). Drop `--sheet-tile-height` to 720 if
+you want it nearer 25 MB.
 
-### 1c. Label by renaming folders (laptop)
+#### Label by renaming folders (laptop)
 
 Open `index_001.jpg` … side by side with the folder list, then:
 
@@ -111,16 +213,16 @@ Aim for every player on your squad appearing in at least one folder. Both kits
 matter: a gallery built from black-away tracks will abstain on every white-home
 track, so enrol one match of each and `--append`.
 
-### 1d. Sync back and enrol (HPC)
+#### Sync back and enrol (HPC)
 
 ```bash
 # laptop
-rsync -avP --delete ~/soccer-annotation/<match_id>/enroll_crops/ \
-  b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/enroll_crops/
+rsync -avP --delete ~/soccer-annotation/<match_id>/label_crops/ \
+  b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/label_crops/
 
 # HPC
 soccer-vision enroll --run runs/<match_id> \
-  --from-crops runs/<match_id>/enroll_crops \
+  --from-crops runs/<match_id>/label_crops \
   --out galleries/<team>.npz          # add --append for later matches
 
 soccer-vision identify --run runs/<match_id> --method reid \
@@ -129,27 +231,6 @@ soccer-vision identify --run runs/<match_id> --method reid \
 
 `--delete` matters on the way back: it's what makes the folders you deleted
 locally actually disappear on HPC.
-
-### Alternative: draw boxes in Label Studio
-
-Whole-track accept/reject is faster, but for a player no track cleanly isolates
-— a keeper in a different kit, a child who only ever appears mid-cluster — you
-can label boxes on individual frames instead:
-
-1. Export frames from the run's proxy and set up a project with
-   `rectanglelabels`, one `<Label value="..."/>` per roster name:
-   ```xml
-   <View><Image name="img" value="$image"/>
-     <RectangleLabels name="player" toName="img">
-       <Label value="Simon Weinstein"/>
-     </RectangleLabels></View>
-   ```
-2. Tasks carry the frame number in `data.frame` (or a numeric filename stem).
-3. Enrol the export: `soccer-vision enroll --run runs/<match_id>
-   --from-label-studio export.json --out galleries/<team>.npz`.
-
-Slower per player, but it's ground truth and it reaches players the folder route
-can't.
 
 ---
 

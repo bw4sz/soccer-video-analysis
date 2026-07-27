@@ -56,3 +56,47 @@ def test_falls_back_to_cache_when_run_predates_kit_stamping(tmp_path):
     teams = _resolve_track_teams(tmp_path, tracks, [], reader=None, args=_args())
 
     assert teams == {7: "black", 9: "white"}
+
+
+# --- frame-labelling project (`enroll --dump-frames`) -----------------------
+
+def test_frame_stays_pixel_exact_through_label_studio():
+    """The detector's pixel box must survive the percentage round trip.
+
+    That is what lets a human label a *person* on a full frame while the model
+    still crops at whatever size it trains on.
+    """
+    from soccer_vision.cli.enroll import _rect_result
+    from soccer_vision.identify.enroll import boxes_from_label_studio
+
+    bbox = (812.0, 431.0, 838.0, 494.0)
+    result = _rect_result(bbox, 1920, 1080, track_id=7)
+    result["value"] = dict(result["value"], rectanglelabels=["Simon Weinstein"])
+    export = [{"data": {"frame": 288}, "annotations": [{"result": [result]}]}]
+
+    (frame, parsed, name), = boxes_from_label_studio(export)
+
+    assert frame == 288
+    assert name == "Simon Weinstein"
+    assert np.allclose(parsed, np.asarray(bbox), atol=1e-6)
+
+
+def test_frame_spanning_boxes_are_dropped():
+    """A ballooned tracker lane would cover every real player in the UI."""
+    from soccer_vision.cli.enroll import _plausible_player_box
+
+    assert _plausible_player_box((812, 431, 838, 494), 1920, 1080)      # a player
+    assert not _plausible_player_box((0, 190, 1560, 490), 1920, 1080)   # spans the frame
+    assert not _plausible_player_box((100, 400, 260, 430), 1920, 1080)  # wider than tall
+    assert not _plausible_player_box((100, 400, 101, 402), 1920, 1080)  # too small
+
+
+def test_labeling_config_offers_every_roster_name_plus_unknown():
+    from soccer_vision.cli.enroll import UNNAMED_LABEL, _frame_labeling_config
+
+    xml = _frame_labeling_config(["Simon Weinstein", "Ada Lovelace"])
+
+    assert '<Label value="Simon Weinstein"/>' in xml
+    assert '<Label value="Ada Lovelace"/>' in xml
+    assert f'value="{UNNAMED_LABEL}"' in xml
+    assert 'zoomControl="true"' in xml

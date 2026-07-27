@@ -47,6 +47,10 @@ def run_enroll(args):
     print("=== soccer-vision enroll ===")
     print(f"Run:    {run_dir}")
 
+    if args.dump_frames:
+        _dump_frames(run_dir, tracks_path, proxy_path, Path(args.dump_frames), args)
+        return
+
     if args.dump_crops:
         _dump_crops(run_dir, tracks_path, proxy_path, Path(args.dump_crops), args)
         return
@@ -213,6 +217,175 @@ def _dump_crops(run_dir: Path, tracks_path: Path, proxy_path: Path, out_dir: Pat
           "(delete the rest), then:")
     print(f"  soccer-vision enroll --run {run_dir} --from-crops {out_dir} "
           f"--out {run_dir / 'gallery.npz'}")
+
+
+def _dump_frames(run_dir: Path, tracks_path: Path, proxy_path: Path, out_dir: Path, args):
+    """Write whole frames + a Label Studio project for naming players on them.
+
+    The alternative to labelling track folders, and the better one when a lane's
+    crops are too small to recognise anyone from. Here you see the **full frame**
+    at native resolution and can zoom into it, so identity comes from the same
+    cues you'd use watching the match — where someone is, who they're beside,
+    which way play is going.
+
+    Boxes come pre-drawn from ``tracks.json`` and labelled ``unknown``, so the
+    job is renaming boxes rather than drawing them. The detector's pixel
+    coordinates survive the round trip (Label Studio stores percentages;
+    :func:`soccer_vision.identify.enroll.boxes_from_label_studio` converts back),
+    which is what lets the model crop at whatever size it wants later — the human
+    labels a person, not a thumbnail.
+    """
+    import cv2
+
+    from soccer_vision.annotate.label_studio import local_files_url
+    from soccer_vision.clips.halo import load_track_boxes
+    from soccer_vision.io.video import VideoReader
+    from soccer_vision.profiles.loader import get_roster, load_profile
+
+    tracks = [(t, s) for t, s in load_track_boxes(tracks_path).items()
+              if len(s) >= args.min_track_frames]
+    reader = VideoReader(proxy_path)
+
+    wanted = (args.team or "").strip().lower()
+    teams = _resolve_track_teams(run_dir, tracks_path, tracks, reader, args) if wanted else {}
+
+    by_frame: dict[int, list] = {}
+    for tid, samples in tracks:
+        if wanted and (teams.get(tid) or "").lower() != wanted:
+            continue
+        for frame_no, bbox in samples:
+            by_frame.setdefault(int(frame_no), []).append((tid, bbox))
+
+    # Diversity is the point: a gallery built from one passage of play sees one
+    # patch of pitch in one light. Spread the frames evenly over the whole match,
+    # and only keep frames showing enough of the squad to be worth annotating.
+    candidates = sorted(f for f, boxes in by_frame.items() if len(boxes) >= args.min_players)
+    if not candidates:
+        print(f"No frames with >= {args.min_players} "
+              f"{'“' + wanted + '” ' if wanted else ''}players. "
+              f"Lower --min-players, or check --team.")
+        reader.close()
+        return
+    # One frame per equal time bin, and within a bin the *busiest* frame. Even
+    # spacing alone lands on warm-ups and stoppages, where three players stand in
+    # one corner of the pitch and the frame teaches the gallery nothing.
+    lo, hi = candidates[0], candidates[-1]
+    span = max(1, hi - lo + 1)
+    bins: dict[int, int] = {}
+    for f in candidates:
+        b = min(args.n_frames - 1, (f - lo) * args.n_frames // span)
+        if b not in bins or len(by_frame[f]) > len(by_frame[bins[b]]):
+            bins[b] = f
+    chosen = sorted(bins.values())
+
+    frames_dir = out_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    serve_root = Path(args.serve_root) if args.serve_root else run_dir.parent
+
+    roster = get_roster(load_profile(args.profile)) if args.profile else []
+    names = [str(p.get("name")) for p in roster if p.get("name")]
+
+    tasks, n_boxes = [], 0
+    try:
+        for frame_no in chosen:
+            frame = reader.read_frame(frame_no)
+            if frame is None:
+                continue
+            path = frames_dir / f"{frame_no:06d}.jpg"
+            cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            h, w = frame.shape[:2]
+            results = [_rect_result(bbox, w, h, tid) for tid, bbox in by_frame[frame_no]
+                       if _plausible_player_box(bbox, w, h)]
+            n_boxes += len(results)
+            tasks.append({
+                "data": {"image": local_files_url(path, serve_root),
+                         "frame": frame_no,
+                         "timestamp_s": round(frame_no / (reader.fps or 30), 2)},
+                "predictions": [{"model_version": "soccer-vision-tracker", "result": results}],
+            })
+    finally:
+        reader.close()
+
+    config = out_dir / "labeling_config.xml"
+    config.write_text(_frame_labeling_config(names))
+    tasks_path = out_dir / "label_studio_tasks.json"
+    tasks_path.write_text(json.dumps(tasks, indent=2))
+
+    print(f"\nWrote {len(tasks)} frames ({n_boxes} pre-drawn boxes) → {frames_dir}")
+    print(f"  config: {config}")
+    print(f"  tasks:  {tasks_path}")
+    if not names:
+        print("  NOTE: no --profile roster, so the label list is only "
+              f"'{UNNAMED_LABEL}' — pass --profile to get one label per player.")
+    print("\nNext: sync this folder to the machine running Label Studio, then")
+    print(f"  export LOCAL_FILES_DOCUMENT_ROOT={Path(serve_root).resolve()}")
+    print("  label-studio start   # create project → paste config → import tasks")
+    print(f"Then: soccer-vision enroll --run {run_dir} --from-label-studio export.json "
+          f"--out {run_dir / 'gallery.npz'}")
+
+
+UNNAMED_LABEL = "unknown"
+
+
+def _rect_result(bbox, frame_w: int, frame_h: int, track_id: int) -> dict:
+    """One pre-drawn Label Studio rectangle for a detected player.
+
+    Label Studio stores rectangles as percentages of the image, so the pixel box
+    is converted here and converted back by
+    :func:`soccer_vision.identify.enroll.boxes_from_label_studio` at enrolment —
+    the annotator names a person and the exact detector coordinates survive, to
+    be cropped at whatever size the model wants.
+    """
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    return {
+        "from_name": "player", "to_name": "image", "type": "rectanglelabels",
+        "original_width": frame_w, "original_height": frame_h, "image_rotation": 0,
+        "value": {"x": 100 * x1 / frame_w, "y": 100 * y1 / frame_h,
+                  "width": 100 * (x2 - x1) / frame_w, "height": 100 * (y2 - y1) / frame_h,
+                  "rotation": 0, "rectanglelabels": [UNNAMED_LABEL]},
+        "meta": {"text": [f"track {track_id}"]},
+    }
+
+
+def _plausible_player_box(bbox, frame_w: int, frame_h: int) -> bool:
+    """Whether a box could be a standing player, used to keep junk off the sheet.
+
+    The tracker occasionally emits a lane whose box balloons across most of the
+    frame. One of those in Label Studio covers every real player and has to be
+    clicked past on every task, so they're dropped here rather than annotated.
+    A player on this footage is upright and small: taller than wide, well under a
+    third of frame height.
+    """
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    w, h = x2 - x1, y2 - y1
+    if w < 3 or h < 6:
+        return False
+    if w > 0.15 * frame_w or h > 0.35 * frame_h:
+        return False
+    return h > w
+
+
+def _frame_labeling_config(names: list[str]) -> str:
+    """Label Studio config: one label per roster player, plus ``unknown``.
+
+    Every pre-drawn box arrives as ``unknown``; naming one is a two-click change,
+    and anything left ``unknown`` is skipped at enrolment rather than guessed at.
+    """
+    from xml.sax.saxutils import escape
+
+    labels = "\n".join(f'    <Label value="{escape(n)}"/>' for n in names)
+    return (
+        '<View>\n'
+        '  <Header value="Name each player on your squad. '
+        'Delete boxes for opponents, referees and anyone off the pitch."/>\n'
+        '  <Image name="image" value="$image" zoom="true" zoomControl="true" '
+        'rotateControl="false"/>\n'
+        '  <RectangleLabels name="player" toName="image">\n'
+        f'{labels}\n'
+        f'    <Label value="{UNNAMED_LABEL}" background="#888888"/>\n'
+        '  </RectangleLabels>\n'
+        '</View>\n'
+    )
 
 
 def _resolve_track_teams(run_dir: Path, tracks_path: Path, tracks, reader, args) -> dict:

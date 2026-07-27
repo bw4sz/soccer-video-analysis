@@ -108,6 +108,19 @@ def main():
     p_enroll.add_argument("--dump-crops", metavar="DIR",
                           help="Write a folder of crops per track for hand labelling, "
                                "then exit (rename folders to players, re-run --from-crops)")
+    p_enroll.add_argument("--dump-frames", metavar="DIR",
+                          help="Write whole frames + a Label Studio project for naming "
+                               "players on them, then exit. Boxes come pre-drawn from "
+                               "tracks.json; enrol the export with --from-label-studio")
+    p_enroll.add_argument("--n-frames", type=int, default=20,
+                          help="Frames to export for labelling, spread across the match "
+                               "(default: 20)")
+    p_enroll.add_argument("--min-players", type=int, default=4,
+                          help="Skip frames showing fewer than this many players of the "
+                               "selected team (default: 4)")
+    p_enroll.add_argument("--serve-root",
+                          help="Label Studio LOCAL_FILES_DOCUMENT_ROOT the frame paths are "
+                               "written relative to (default: the runs/ base)")
     p_enroll.add_argument("--from-crops", metavar="DIR",
                           help="Enrol from crop folders named after players")
     p_enroll.add_argument("--from-label-studio",
