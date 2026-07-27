@@ -14,5 +14,13 @@ roster:
 
 idp_source: "file:///Users/benweinstein/Dropbox/Saints/idps/"
 
+# Appearance gallery built by `soccer-vision enroll` and carried between matches,
+# so `identify` names players without reading a jersey. Drop this block to stay on
+# jersey OCR; `--method` on the command line overrides it either way.
+reid:
+  gallery: galleries/saints-u10.npz
+  min_similarity: 0.5
+  min_margin: 0.05
+
 claude:
   enabled: true
