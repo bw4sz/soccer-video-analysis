@@ -78,7 +78,7 @@ runs/{match_id}/
 runs/soccer_vision.db      # match records across all your videos
 ```
 
-**176 unit tests pass**; CI checks every change automatically.
+**171 unit tests pass**; CI checks every change automatically.
 
 ---
 
