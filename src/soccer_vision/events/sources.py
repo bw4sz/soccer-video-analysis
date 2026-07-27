@@ -6,21 +6,35 @@ new engine plugs in behind the same interface without touching the attribution o
 clip code. Each detector is a swappable *engine* named by a plain adjective — never
 a model name:
 
-- ``rules``   — ball-position heuristics for set pieces (always available).
 - ``learned`` — the trained action model over player tracklets (needs a checkpoint).
 - ``vlm``     — a video language model as a sliding-window spotter (opt-in).
 
-Event dicts follow the shape produced by ``events/set_piece.py``:
-``{label, frame, timestamp_s, position_ms, confidence, ...}``. ``team`` and
-``track_id`` are added later by ``events/associate.py``.
+Event dicts have the shape ``{label, frame, timestamp_s, position_ms,
+confidence, ...}``. ``team`` and ``track_id`` are added later by
+``events/associate.py``.
+
+**The ``rules`` engine was retired.** It was a set-piece detector whose every
+gate tested the ball's position in field metres, and those metres came from a
+homography that does not work on this footage (see :mod:`soccer_vision.pitch`).
+It did not fail quietly: the projection mapped frame centre to coordinates like
+``(14284, -14)`` and ``(-196656, -889)`` on a 55×36 m pitch, and the throw-in
+gate had no bounds check, so a run emitted 236 events that were 100%
+``throw_in`` and 100% false — which then propagated into clips, contact sheets
+and pre-filled Label Studio predictions. The bounded goal-kick and corner gates
+merely abstained instead, so with registration gone the engine had nothing left
+to do.
+
+Set-piece spotting should come back through the ``learned`` engine, or from
+pixel-space zones anchored on a turf mask — not from a metric test over an
+unvalidated homography. Naming ``rules`` now raises rather than returning an
+empty list, so a config that still asks for it says so instead of silently
+detecting nothing.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
-
-from soccer_vision.events.set_piece import detect_all_set_pieces
 
 
 @dataclass
@@ -47,28 +61,6 @@ class ActionDetector(Protocol):
     def detect(self, ctx: ActionContext) -> list[dict]:
         """Return event dicts for the match described by ``ctx``."""
         ...
-
-
-class RulesActionDetector:
-    """``rules`` engine — ball-position heuristics for goal kicks, corners, throw-ins.
-
-    Wraps the existing ``detect_all_set_pieces`` — always available (classical CV),
-    the default engine on a plain ``soccer-vision process`` run.
-    """
-
-    name = "rules"
-
-    def is_available(self) -> bool:
-        return True
-
-    def detect(self, ctx: ActionContext) -> list[dict]:
-        # Accept the new ``rules`` config block, falling back to the old
-        # ``set_piece`` key for existing configs.
-        kwargs = ctx.config.get("rules") or ctx.config.get("set_piece") or {}
-        events = detect_all_set_pieces(ctx.ball_positions, **kwargs)
-        for e in events:
-            e.setdefault("source", self.name)
-        return events
 
 
 class LearnedActionDetector:
@@ -163,7 +155,6 @@ class VLMActionDetector:
 # Registry of known engines, keyed by their plain-adjective name. Extend as
 # engines land.
 _REGISTRY: dict[str, type] = {
-    "rules": RulesActionDetector,
     "learned": LearnedActionDetector,
     "vlm": VLMActionDetector,
 }
@@ -171,9 +162,22 @@ _REGISTRY: dict[str, type] = {
 # Back-compat: the old model-named registry keys still resolve to the new engines,
 # so pre-rename configs keep working.
 _LEGACY_KEYS: dict[str, str] = {
-    "set_piece": "rules",
     "tackle": "learned",
     "soccerchat": "vlm",
+}
+
+# Engines removed rather than renamed — name → why. Asking for one raises, so a
+# stale config or command line gets an explanation instead of silent silence.
+_RETIRED_REASON = (
+    "the 'rules' set-piece engine was retired: every gate tested the ball's "
+    "position in field metres, and field registration was removed after both "
+    "estimators failed on overhead footage (it emitted 236 events, 100% "
+    "throw_in and 100% false). Use 'learned' once a checkpoint exists, or "
+    "player on-ball spans (extract/reel --player) in the meantime."
+)
+_RETIRED: dict[str, str] = {
+    "rules": _RETIRED_REASON,
+    "set_piece": _RETIRED_REASON,  # pre-rename alias of the same engine
 }
 
 # Engines that must be named explicitly — never part of the default active set even
@@ -188,13 +192,17 @@ def active_detectors(config: dict | None = None) -> list[ActionDetector]:
     subset; opt-in engines like ``vlm`` only run when named here. The default set is
     every registered engine except the opt-in ones. Engines whose ``is_available()``
     is False are dropped.
+
+    Raises :class:`ValueError` if a retired engine (see :data:`_RETIRED`) is named
+    explicitly — silently detecting nothing is how the old set-piece engine hid
+    its own failure, so an explicit request for it should be loud.
     """
     config = config or {}
-    names = (
-        config.get("action_engines")
-        or config.get("sources")
-        or [n for n in _REGISTRY if n not in _OPT_IN]
-    )
+    requested = config.get("action_engines") or config.get("sources")
+    for name in requested or []:
+        if name in _RETIRED:
+            raise ValueError(f"action engine {name!r} is no longer available: {_RETIRED[name]}")
+    names = requested or [n for n in _REGISTRY if n not in _OPT_IN]
     detectors: list[ActionDetector] = []
     for name in names:
         name = _LEGACY_KEYS.get(name, name)
@@ -217,9 +225,10 @@ def run_detectors(detectors: list[ActionDetector], ctx: ActionContext) -> list[d
 
 
 # --- Back-compat aliases (pre-rename import paths) --------------------------------
+# No SetPieceSource / RulesActionDetector alias: that engine is retired, not
+# renamed, so importing it should fail rather than resolve to something else.
 DetectionContext = ActionContext
 EventSource = ActionDetector
-SetPieceSource = RulesActionDetector
 TackleSource = LearnedActionDetector
 SoccerChatSource = VLMActionDetector
 active_sources = active_detectors

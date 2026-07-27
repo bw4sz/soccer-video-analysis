@@ -1,6 +1,6 @@
 """Test all ready leads on sample fixtures and save annotated results.
 
-Runs RF-DETR detection, ByteTrack tracking, and Hough registration on
+Runs RF-DETR detection and ByteTrack tracking on
 the 2-minute sample clips. Saves annotated frames as contact sheets
 for visual review.
 """
@@ -167,61 +167,6 @@ def test_bytetrack(video_path: Path, detector, out_dir: Path):
     print(f"  Frames tracked: {len(annotated_frames)}")
 
 
-def test_hough_registration(video_path: Path, out_dir: Path):
-    """Run Hough-line field registration on sampled frames."""
-    from soccer_vision.registration.hough import compute_homography, pixel_to_field
-
-    print(f"\n{'='*60}")
-    print(f"Hough Registration: {video_path.name}")
-    print(f"{'='*60}")
-
-    cap = cv2.VideoCapture(str(video_path))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    interval = max(1, int(fps * 5))  # every 5 seconds
-
-    annotated_frames = []
-    n_success = 0
-    n_total = 0
-
-    for fn in range(0, total, interval):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, fn)
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        n_total += 1
-        H, ok = compute_homography(frame)
-
-        annotated = frame.copy()
-        ts = fn / fps
-
-        if ok:
-            n_success += 1
-            # Draw field coordinate grid projected back
-            status = "OK"
-            color = (0, 255, 0)
-
-            # Test: project center of frame to field coords
-            cx, cy = frame.shape[1] // 2, frame.shape[0] // 2
-            fx, fy = pixel_to_field(cx, cy, H)
-            cv2.putText(annotated, f"Center -> ({fx:.1f}m, {fy:.1f}m)",
-                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        else:
-            status = "FAIL"
-            color = (0, 0, 255)
-
-        cv2.putText(annotated, f"F{fn} t={ts:.1f}s  Hough: {status}",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        annotated_frames.append(annotated)
-
-    cap.release()
-
-    sheet_path = _build_sheet(annotated_frames, out_dir / f"hough_{video_path.stem}.jpg")
-    print(f"  Contact sheet: {sheet_path}")
-    print(f"  Registration success: {n_success}/{n_total} ({n_success/max(1,n_total)*100:.0f}%)")
-
-
 def _build_sheet(frames: list, out_path: Path, thumb_w=480, thumb_h=270, cols=4) -> Path:
     """Build a contact sheet from annotated frames."""
     import math
@@ -250,9 +195,6 @@ if __name__ == "__main__":
 
     # 2. ByteTrack tracking
     test_bytetrack(video, detector, RESULTS)
-
-    # 3. Hough registration
-    test_hough_registration(video, RESULTS)
 
     print(f"\n{'='*60}")
     print(f"All results saved to: {RESULTS}")

@@ -323,10 +323,17 @@ Next: none — abandoned ms-swift in favor of transformers+peft (commit be6cfcc)
 - **associate**: events carry garbage field_x from the bad homography, so
   field-space matching failed the 5m threshold for every event (0/8). Now falls
   back to pixel space; stamp_event_positions anchors events on the ball.
-**Still open:** events remain ~100% throw_in — detect_throw_ins gates on
-  near_touchline(field_x, field_y) from the same degenerate homography, so a good
-  ball still goes through a bad transform. Homography is KEPT (user decision);
-  fixing/validating it is the next thread.
+**Resolved (2026-07-27):** the ~100% throw_in flood was detect_throw_ins gating on
+  near_touchline(field_x, field_y) from the same degenerate homography — and
+  unlike in_goal_zone/in_corner_zone that gate had no bounds check, so any
+  out-of-field fy (measured: -889 on a 36 m pitch) read as "on the touchline".
+  detect_throw_ins + near_touchline are now deleted from events/set_piece.py; the
+  two remaining detectors are bounded and abstain on bad coordinates, so the rules
+  engine emits ~0 events on this footage instead of 236 false ones.
+**Still open:** the homography itself. It is KEPT (user decision) but returns
+  ok=True while mapping frame centre to e.g. (14284, -14) m on a 55×36 pitch
+  (12/13 sampled frames on the saints proxy). Real set-piece spotting needs either
+  a working registration or the `learned` engine.
 
 ### Job (pending submit) — slurm/submit_sam3_saints_full.sh
 Why: First FULL-MATCH SAM3 run (players + ball text prompts) + identify, to

@@ -25,8 +25,7 @@ def run_pipeline(args):
     from soccer_vision.io.osl import add_event, new_osl_document, write_osl
     from soccer_vision.io.project import RunDir
     from soccer_vision.io.video import VideoReader
-    from soccer_vision.metrics.distance import distance_per_player
-    from soccer_vision.registration.hough import compute_homography, pixel_to_field
+    from soccer_vision.pitch import FIELD_H_M, FIELD_W_M
     from soccer_vision.store.db import MatchDB
     from soccer_vision.tracking.bytetrack import create_tracker, track_detections
     from soccer_vision.tracking.teams import TeamClassifier
@@ -104,10 +103,6 @@ def run_pipeline(args):
             sam3_ball = SAM3PlayerTracker.sharing(sam3_tracker, prompt=ball_prompt)
             sam3_ball.start()
             print(f"  Ball: SAM3 text-prompt {ball_prompt!r} (shared weights)")
-    elif detector_type == "sam":
-        print("  Detector: SAM for players + RF-DETR for ball")
-        from soccer_vision.detection.sam2 import SAMPlayerDetector
-        player_detector = SAMPlayerDetector(device=device, model_type="base")
     else:
         # RF-DETR player confidence threshold (config: detector.conf_threshold,
         # default 0.3). Overhead cameras may need lower (e.g. 0.15) to recover
@@ -140,16 +135,14 @@ def run_pipeline(args):
 
     ball_positions = []
     ball_samples: list[dict] = []
-    H_cache = None
-    h_recompute_interval = int(proxy_fps * 60 * 5)  # every 5 min
-    last_h_frame = -h_recompute_interval
 
     # Step 4: Player tracking
     print("\n[Step 4] Player tracking...")
     tracker = create_tracker(frame_rate=int(proxy_fps))
-    player_tracks: dict[int, list[tuple[float, float]]] = {}
     # Per-frame player positions for event→player association, and jersey-colour
-    # samples for team assignment.
+    # samples for team assignment. Pixel space throughout: there is no field
+    # registration (see soccer_vision.pitch for why), so everything downstream
+    # reasons in pixels.
     frame_players: dict[int, dict] = {}
     team_clf = TeamClassifier()
 
@@ -160,25 +153,18 @@ def run_pipeline(args):
             # Spectators are filtered after tracking (the prompt finds people
             # anywhere, including coaches/subs beyond the touchline).
             tracked = sam3_tracker.track(frame)
-            tracked = filter_spectators(tracked, H_cache, frame.shape)
+            tracked = filter_spectators(tracked, frame.shape)
         else:
             # Detect players and ball
             person_dets = player_detector.predict(frame)
 
-            # For RF-DETR, separate ball from people; for SAM, we only get people
-            if detector_type == "sam":
-                # SAM returns only player detections
-                ball_dets = sv.Detections.empty()
-            else:
-                # RF-DETR returns mixed detections; separate by class_id
-                person_mask = np.isin(person_dets.class_id, list(ALL_PERSON_CLASS_IDS))
-                ball_dets = person_dets[~person_mask]
-                person_dets = person_dets[person_mask]
+            # RF-DETR returns mixed detections; separate ball from people by class_id
+            person_mask = np.isin(person_dets.class_id, list(ALL_PERSON_CLASS_IDS))
+            ball_dets = person_dets[~person_mask]
+            person_dets = person_dets[person_mask]
 
             # Filter spectators: keep only field players
-            person_dets = filter_spectators(
-                person_dets, H_cache, frame.shape,
-            )
+            person_dets = filter_spectators(person_dets, frame.shape)
             detections = sv.Detections.merge([ball_dets, person_dets])
 
             tracked = track_detections(tracker, detections)
@@ -207,25 +193,11 @@ def run_pipeline(args):
         })
         if ball is not None:
             bx, by, bconf = ball
-
-            # Step 5: Field registration
-            if fn - last_h_frame >= h_recompute_interval:
-                H_new, ok = compute_homography(frame)
-                if ok:
-                    H_cache = H_new
-                last_h_frame = fn
-
-            fx, fy = None, None
-            if H_cache is not None:
-                fx, fy = pixel_to_field(bx, by, H_cache)
-
             ball_positions.append({
                 "frame": fn,
                 "timestamp_s": round(fn / proxy_fps, 2),
                 "pixel_x": bx,
                 "pixel_y": by,
-                "field_x": fx,
-                "field_y": fy,
                 "confidence": bconf,
             })
 
@@ -237,16 +209,9 @@ def run_pipeline(args):
                 foot_x = (x1 + x2) / 2
                 foot_y = y2  # bottom of bbox
 
-                fx = fy = None
-                if H_cache is not None:
-                    fx, fy = pixel_to_field(foot_x, foot_y, H_cache)
-                    player_tracks.setdefault(tid, []).append((fx, fy))
-
                 frame_players.setdefault(fn, {})[tid] = {
                     "pixel_x": float(foot_x),
                     "pixel_y": float(foot_y),
-                    "field_x": fx,
-                    "field_y": fy,
                     "bbox": [float(x1), float(y1), float(x2), float(y2)],
                 }
                 # SAM3 supplies a per-player mask; sampling jersey colour inside
@@ -330,17 +295,30 @@ def run_pipeline(args):
     events = stamp_event_positions(events, ball_positions)
     events = associate_events(events, frame_players, team_clf)
     print(f"  Found {len(events)} events")
+    if not detectors:
+        # Expect this on a default run: the 'rules' set-piece engine was retired
+        # with field registration, 'learned' has no checkpoint, and 'vlm' is
+        # opt-in. Say so plainly — a bare "Found 0 events" reads like a bug, and
+        # the useful pathway (on-ball spans, computed at selection time from
+        # ball_track.json + tracks.json) needs no event stream at all.
+        print("  No action engine is available, so no events were detected.")
+        print("  Detection and tracking above are unaffected — select clips by")
+        print("  player instead: soccer-vision reel --run <run> --player <name>")
 
     # Step 7: Metrics
+    #
+    # No distance-covered figure: it needs metres, and there is no field
+    # registration to produce them (see soccer_vision.pitch). Summing pixel
+    # displacement instead would be worse than omitting it — the Veo camera pans
+    # and zooms, so a player standing still accumulates "distance" while the
+    # camera moves past them.
     print("\n[Step 7] Computing metrics...")
-    distances = distance_per_player(player_tracks)
     stats = {
         "match_id": match_id,
         "total_events": len(events),
         "event_counts": {},
         "event_counts_by_team": {},
         "teams": team_names,
-        "distance_per_player": {str(k): round(v, 1) for k, v in distances.items()},
     }
     for e in events:
         label = e["label"]
@@ -360,7 +338,7 @@ def run_pipeline(args):
         match_id,
         video_path=str(video_path),
         fps=proxy_fps,
-        field_dimensions={"width": 55.0, "height": 36.0},
+        field_dimensions={"width": FIELD_W_M, "height": FIELD_H_M},
     )
     for e in events:
         extra = {k: e[k] for k in ("team", "track_id", "goal_zone") if e.get(k) is not None}

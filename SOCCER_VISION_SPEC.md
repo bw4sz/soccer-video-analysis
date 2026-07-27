@@ -30,8 +30,11 @@ Replicate subscription soccer video tools with open models:
 
 **Outputs:**
 - Clips of a detected player merged into highlight reels
-- Team clips filtered by event type (goal kicks, corners, throw-ins, etc.)
-- Game statistics: shots, possession, distance covered, heatmaps
+- Team clips filtered by event type (goal kicks, corners, throw-ins, etc.) —
+  *pending an action-detection engine; see below*
+- Game statistics: possession and event counts. Metre-denominated stats
+  (distance covered, sprints, heatmaps) are **out of scope** — they need a pitch
+  coordinate system this footage doesn't support (see *Field registration*)
 
 **Principles:**
 - Simpler over complex
@@ -55,11 +58,9 @@ Every match video runs through this single workflow:
       ↓
 4. Player tracking
       ↓
-5. Field registration (calibration)
+5. Event detection
       ↓
-6. Event detection
-      ↓
-7. Team metrics
+6. Team metrics
       ↓
 8. Database logging
       ↓
@@ -85,9 +86,8 @@ Flat repo with 4 CLI scripts:
 | File | Purpose |
 |---|---|
 | `detect_actions.py` | Pipeline A: frame sampling → contact sheets + index.json (no ML) |
-| `track.py` | Pipeline B: YOLO ball + Hough homography → goal-kick candidates |
+| `track.py` | Pipeline B: YOLO ball → stationary-ball candidates (its Hough goal-zone labels are unreliable — see *Field registration*) |
 | `extract_clips.py` | ffmpeg clip cut + concat |
-| `register.py` | Optional KpSFR homography pre-compute |
 
 **Migrate and refactor** this logic into `soccer_vision` package modules. Preserve behavior where possible; replace YOLO with RF-DETR.
 
@@ -133,19 +133,13 @@ soccer-video-analysis/          # repo root; consider renaming to soccer-vision
 │   │   ├── bytetrack.py        # supervision ByteTrack wrapper
 │   │   ├── sam3.py             # SAM3 player masks (optional GPU)
 │   │   └── gamestate.py        # sn-gamestate / TrackLab adapter
-│   ├── registration/
-│   │   ├── hough.py            # Hough-line homography fallback
-│   │   ├── kpsfr.py            # optional KpSFR subprocess
-│   │   └── sn_calib.py         # sn-calibration adapter
 │   ├── events/
-│   │   ├── set_piece.py        # goal kick / corner / throw-in heuristics
+│   │   ├── on_ball.py          # player↔ball proximity spans (pixel space)
 │   │   ├── spotting.py         # opensportslib LocalizationModel + sn-teamspotting
 │   │   └── phases.py           # in-play vs dead-ball (rule-based)
 │   ├── metrics/
-│   │   ├── distance.py
-│   │   ├── possession.py
-│   │   ├── shots.py
-│   │   └── heatmap.py
+│   │   ├── possession.py       # pixel-space ball→nearest-player
+│   │   └── shots.py            # 'shot' label filter (coordinate-free)
 │   ├── store/
 │   │   ├── db.py               # SQLite: matches, players, events, clips
 │   │   └── schema.sql
@@ -168,7 +162,6 @@ soccer-video-analysis/          # repo root; consider renaming to soccer-vision
 │   └── README.md
 ├── tests/
 │   ├── test_osl.py
-│   ├── test_set_piece.py
 │   ├── test_possession.py
 │   ├── test_virtual_cam.py
 │   └── fixtures/
@@ -274,7 +267,7 @@ broadcast:
 
 **Reference implementation to study (do not copy wholesale):** [chele-s/AutoCam-AI](https://github.com/chele-s/AutoCam-AI)
 
-All downstream pipeline steps read `broadcast_proxy.mp4`, not the raw file. Keep raw for archival and optional full-field heatmaps.
+All downstream pipeline steps read `broadcast_proxy.mp4`, not the raw file. Keep raw for archival.
 
 ---
 
@@ -310,13 +303,19 @@ Detection is decoupled from attribution and clip selection via a pluggable
 `ActionDetector` interface (`events/sources.py`): `is_available()` / `detect()`.
 Each implementation is an *engine* named by what it does, not the model behind it,
 and selected by plain name (`--action-engine`, or `action_engines:` in config):
-`RulesActionDetector` = `rules` (live), `LearnedActionDetector` = `learned`
-(interface until a checkpoint is passed), `VLMActionDetector` = `vlm` (opt-in).
-All emit the same event dicts, so new engines add labels (`tackle`, `goal`,
-`losing_the_ball`, ...) without touching downstream code. (Pre-rename names
-`EventSource` / `SetPieceSource` / `TackleSource` / `SoccerChatSource` and the
-`sources`/`set_piece`/`tackle`/`soccerchat` config keys remain as back-compat
-aliases.)
+`LearnedActionDetector` = `learned` (interface until a checkpoint is passed),
+`VLMActionDetector` = `vlm` (opt-in). All emit the same event dicts, so new
+engines add labels (`tackle`, `goal`, `losing_the_ball`, ...) without touching
+downstream code. (Pre-rename names `EventSource` / `TackleSource` /
+`SoccerChatSource` and the `sources`/`tackle`/`soccerchat` config keys remain as
+back-compat aliases.)
+
+> **No engine is available on a default run.** `rules` was retired (see
+> *Set-Piece Heuristics* below), `learned` has no checkpoint, and `vlm` is
+> opt-in — so `process` currently detects **zero events** by design, and
+> `--action-engine rules` raises rather than silently returning none. Player
+> selection goes through `events/on_ball.py` instead, which needs no event
+> stream. Landing a working `learned` engine is the critical path.
 
 - **Team assignment** is v1 by **jersey colour** (`tracking/teams.py`): cluster
   tracked players into two teams and name each cluster (blue / white / ...), so
@@ -332,38 +331,93 @@ aliases.)
 
 ## Metrics Engine
 
-All metrics from **field coordinates** (homography) + **tracker states**. No custom deep models for stats.
+> **Status: mostly blocked.** This section was written assuming field
+> coordinates in metres. Field registration has since been **removed** — both
+> estimators failed on all 6 test frames on Veo footage (see *Field
+> registration* below) — so every metre-denominated metric here is unavailable,
+> not merely unimplemented. Only the pixel-space and label-counting metrics run
+> today. The blocked ones were **deleted rather than left unreachable**, so that
+> nothing invites being wired back up to coordinates that do not exist.
 
-| Metric | Method |
-|---|---|
-| **Distance covered** | Sum of √(Δx²+Δy²) per track_id in field metres |
-| **Possession %** | Per in-play frame: ball within 3 m of nearest player → assign to team |
-| **Shots** | spotting `shot` class OR ball speed toward goal mouth |
-| **Touches** | Ball within 2 m of player for ≥2 consecutive frames |
-| **Sprints** | Speed > 5 m/s for ≥1 s on field coords |
-| **Heatmaps** | 2D histogram of player field positions |
+| Metric | Method | Status |
+|---|---|---|
+| **Possession %** | Per in-play frame: ball within N px of nearest player → assign to team | Works (pixel space) |
+| **Event counts** | Per label, and per label × team | Works (needs an action engine to count) |
+| **Distance covered** | Sum of √(Δx²+Δy²) per track_id in field metres | **Deleted** — needs metres; pixel sums are meaningless under a panning camera |
+| **Shots** | spotting `shot` class OR ball speed toward goal mouth | Label-filter half kept; the metric ball-speed half was **deleted** |
+| **Touches** | Ball within 2 m of player for ≥2 consecutive frames | Superseded by `events/on_ball.py` in pixels |
+| **Sprints** | Speed > 5 m/s for ≥1 s on field coords | **Deleted** — needs metres |
+| **Heatmaps** | 2D histogram of player field positions | **Deleted** — needs metres |
 
 Export: `stats.json` + OSL metadata.
 
-**Youth 7v7 field model** (from existing `track.py`):
+**Youth 7v7 field model** — nominal dimensions only, in
+`soccer_vision/pitch.py`. These *declare* pitch size for the OSL export; nothing
+measures against them.
 
 ```python
 FIELD_W_M = 55.0   # touchline
 FIELD_H_M = 36.0   # goal line to goal line
-BOX_DEPTH_M = 5.5  # goal area depth
 ```
 
 ---
 
-## Set-Piece Heuristics (preserve from track.py)
+## Field Registration — attempted, then removed
 
-Migrate existing goal-kick detection logic to `events/set_piece.py`:
+Pixel→metres registration was **removed on 2026-07-27**: `registration/`
+(`hough.py`, `kpsfr.py`, `sn_calib.py`), `register.py`, and everything that
+consumed `field_x` / `field_y`.
 
-- Sample ball position on broadcast proxy
-- Project to field coordinates via homography
-- Flag when ball is stationary (≥3 consecutive samples, ≤40 px drift) inside goal-area zone
-- Deduplicate within 5 s window
-- Merge with spotting model outputs (spotting takes precedence when confident; heuristics fill gaps)
+**Evaluation** (6 frames across the Saints Veo match): **both estimators failed
+on all 6.**
+
+| Estimator | Wired in? | Failure mode |
+|---|---|---|
+| Hough lines | Yes — the only one | No concept of "field"; takes outermost strong lines, which are apartment rooftops, stadium walls, the horizon and tree lines |
+| DeepLabv3 sn-calib | Never | Diffuse per-pixel noise, no coherent line masks — broadcast domain shift |
+| KpSFR | Never | Never run; same broadcast-training problem expected |
+
+**It failed destructively, not visibly** — `compute_homography` returned
+`ok=True` with a garbage matrix, so bad metres flowed downstream wearing a valid
+type: frame centre projected to `(14284, -14)` and `(-196656, -889)` on a 55×36 m
+pitch; `filter_by_homography` took detections 20 → 0 and left 52 track-frames
+where ~6000 were expected (job 37877533); 0/8 events could be associated to a
+player because bogus metres beat the working pixel path (job 37879440).
+
+**Venue-specific killer:** the home turf is a shared multi-use complex with blue,
+red and white lines from several overlapping pitches painted at once. Even a
+perfect line detector cannot say which touchline is *the* touchline — an argument
+against line-identity and keypoint homography here in general, not just against
+these implementations.
+
+**Replacement direction — turf mask, not lines.** The green turf separates
+cleanly from buildings, walls, track and trees: HSV green + morphology + largest
+connected component → boundary polygon, anchored on keyframes and propagated by
+frame-to-frame optical flow. No lines, no homography, no pretrained model, no
+domain shift. Yields on-field/off-field (replacing the crude central-rectangle
+hull in `detection/field_filter.py`) and rough pixel-space zones. Metric
+pixel→metres is deferred indefinitely — no shipped feature needs metres.
+
+---
+
+## Set-Piece Heuristics — attempted, then removed
+
+This section described migrating `track.py`'s goal-kick logic into
+`events/set_piece.py`. That was done, shipped as the `rules` action engine, and
+then **deleted on 2026-07-27**. The design was sound but rested on one step that
+does not work here — *"project to field coordinates via homography"*.
+
+With garbage metres in, the zone tests produced garbage out, and not quietly: one
+run emitted 236 events that were 100% `throw_in` and 100% false, propagating into
+clips, contact sheets and pre-filled Label Studio predictions. The unbounded
+touchline gate was the worst offender; the bounded goal-area and corner gates
+merely abstained. Naming `rules` or `set_piece` as an action engine now raises.
+
+**If you want to rebuild it**, do the zone tests in **pixel space against a turf
+mask** rather than metres against a homography — see *Field registration* below
+for why the mask is the tractable target. The stationary-ball part of the
+heuristic (≥3 consecutive samples, ≤40 px drift) was always pixel-space and was
+never the problem; it is worth keeping.
 
 Also extend heuristics for corner kicks (ball in corner arc + clustered players) and throw-ins (ball near touchline, stationary).
 
@@ -572,7 +626,6 @@ soccer-vision reel --event goal_kick --run runs/match_001/ --out goal_kicks.mp4
 | Test file | Coverage |
 |---|---|
 | `test_osl.py` | OSL JSON round-trip read/write |
-| `test_set_piece.py` | Synthetic ball positions → goal-kick detection |
 | `test_possession.py` | Known positions → possession split |
 | `test_virtual_cam.py` | Crop window smoothing (synthetic frames) |
 | `test_extract.py` | Clip timecode math (mock ffmpeg) |
@@ -601,8 +654,10 @@ Integration tests with real video: manual / optional nightly workflow.
 
 ### Phase 2 — Full Pipeline
 - [ ] Ball detection (RF-DETR) + ByteTrack
-- [ ] Field registration (sn-calibration + Hough fallback)
-- [ ] Event detection (set-piece heuristics + spotting adapter stub)
+- [x] ~~Field registration (sn-calibration + Hough fallback)~~ — attempted, 0/6
+      on Veo footage, removed. Turf-mask segmentation is the replacement target.
+- [x] ~~Event detection (set-piece heuristics)~~ — built on registration, removed
+      with it. Spotting adapter stub remains.
 - [ ] Metrics (distance, possession, shots)
 - [ ] SQLite DB + OSL export
 - [ ] Clip extraction + reel merge
@@ -635,11 +690,11 @@ Integration tests with real video: manual / optional nightly workflow.
 
 | Current file | New module | Notes |
 |---|---|---|
-| `track.py` homography + goal-zone logic | `registration/hough.py` + `events/set_piece.py` | Replace YOLO with RF-DETR |
+| ~~`track.py` homography + goal-zone logic~~ | *removed 2026-07-27* | Migrated, shipped, then deleted — the homography does not work on Veo footage |
 | `track.py` ball detection | `detection/ball.py` | RF-DETR, not YOLO class 32 |
 | `detect_actions.py` sampling + sheets | `verify/sheets.py` + `io/video.py` | Keep contact sheet workflow |
 | `extract_clips.py` | `clips/extract.py` | ffmpeg subprocess, unchanged logic |
-| `register.py` | `registration/kpsfr.py` | Optional subprocess adapter |
+| ~~`register.py`~~ | *removed 2026-07-27* | KpSFR was never run; same broadcast-domain problem expected |
 | `CLAUDE.md` pipeline docs | `docs/pipeline.rst` | Update terminology |
 
 ---
@@ -665,7 +720,7 @@ Integration tests with real video: manual / optional nightly workflow.
 | SAM3 requires GPU | Graceful fallback to RF-DETR + ByteTrack |
 | Jersey OCR fails on youth kits | Manual roster mapping in profile + GUI tag editor |
 | AGPL (opensportslib) | Open-source soccer-vision; note in README |
-| Single-camera calibration weak | Hough fallback; human verify via Claude contact sheets |
+| Single-camera calibration weak | **Realized, worse than expected** — Hough scored 0/6 on Veo and failed destructively (garbage metres typed as valid). Registration removed; turf-mask segmentation is the replacement direction |
 
 ---
 

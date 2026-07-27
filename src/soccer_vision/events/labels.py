@@ -1,9 +1,8 @@
 """Canonical soccer-vision event taxonomy.
 
 Single source of truth for the event labels used across the pipeline. The labels
-themselves are produced today by the set-piece heuristics
-(:mod:`soccer_vision.events.set_piece`), the phase classifier
-(:mod:`soccer_vision.events.phases`), and the SoccerNet mapping in
+themselves are produced today by the phase classifier
+(:mod:`soccer_vision.events.phases`) and the SoccerNet mapping in
 :mod:`soccer_vision.events.spotting`; this module consolidates them so the
 Label Studio config (:mod:`soccer_vision.annotate.label_studio`) and the
 SoccerChat verifier (:mod:`soccer_vision.verify.soccerchat`) stay in sync with

@@ -5,8 +5,8 @@
 Point it at a single-camera match (Veo, overhead, or any fixed wide-angle source)
 and ask for the clips you want. Two kinds of request drive everything:
 
-- **Individual actions** — *"every passing action by number 6 on the black team"* → one combined reel.
-- **Team actions** — *"all the throw-ins from the blue team"* → one combined reel.
+- **Individual actions** — *"every touch by number 6 on the black team"* → one combined reel.
+- **Team actions** — *"everything the blue team did on the ball"* → one combined reel.
 
 Same pipeline, same filter — pick a player, a team, an action label, or any
 combination. An open alternative to Trace / Veo Editor / LongoMatch with
@@ -14,9 +14,13 @@ programmatic control over your own footage. Python 3.12+, CPU-viable, no cloud.
 
 ```bash
 soccer-vision process match.mp4          # detect → track → attribute → store
-soccer-vision reel --run runs/match_001 --track 6 --event pass --out number6_passes.mp4
-soccer-vision extract --run runs/match_001 --events throw_in --team blue
+soccer-vision reel --run runs/match_001 --number 6 --halo --out number6.mp4
+soccer-vision extract --run runs/match_001 --number 6 --team blue
 ```
+
+> Selecting by **action label** (`--events pass`) needs an action detector, which
+> is the piece still in progress — see [What works now](#what-works-now).
+> Selecting by **player** or **team** works today.
 
 ---
 
@@ -46,12 +50,19 @@ stats, and cut clips:
 2. Find the ball and every player in each frame
 3. Keep track of who's who across the match
 4. Sort players onto their two teams by kit colour
-5. Map pixel positions onto the real field
-6. Spot the actions — today that's set pieces from ball position; passes,
-   shots, and tackles are on the way — and tie each one to the player and team
-   who did it
-7. Tally the numbers: distance covered, possession, shots, event counts
-8. Save everything: clips, an event log, and contact sheets for review
+5. Work out **who was on the ball, and when** — the stretches where a chosen
+   player was close enough to the ball to be touching or challenging for it
+6. Tally the numbers: possession, team assignments, event counts
+7. Save everything: clips, an event log, and contact sheets for review
+
+**On action labels.** Naming *what* a player did — pass, shot, tackle, throw-in
+— is the open problem, not finding and following them. The set-piece detector
+that used to fill that gap was removed: it decided "this is a throw-in" from the
+ball's position in field metres, and field registration does not work on this
+footage (both estimators failed on all 6 test frames), so it produced confident
+labels that were simply false. What ships today is honest and useful: pick a
+player and get their on-ball moments, cut and haloed. Learned action spotting is
+the next piece — see [What's left](#whats-left).
 
 Every match writes a self-contained run directory:
 
@@ -67,7 +78,7 @@ runs/{match_id}/
 runs/soccer_vision.db      # match records across all your videos
 ```
 
-**172 unit tests pass**; CI checks every change automatically.
+**176 unit tests pass**; CI checks every change automatically.
 
 ---
 
@@ -77,14 +88,14 @@ Both share the same `process` run and diverge only at **selection** — actions
 are already tagged with a player and team, and get filtered before cutting:
 
 ```bash
-# Individual player — every action by player #6
-soccer-vision reel --run runs/match_001 --track 6 --out number6.mp4
+# Individual player — every on-ball moment for player #6
+soccer-vision reel --run runs/match_001 --number 6 --halo --out number6.mp4
 
-# Team action — all throw-ins by the blue team
-soccer-vision extract --run runs/match_001 --events throw_in --team blue
+# Team filter — #6's moments, restricted to when they played for blue
+soccer-vision extract --run runs/match_001 --number 6 --team blue
 
-# Combine — only #6's passes, one reel
-soccer-vision reel --run runs/match_001 --track 6 --event pass --out number6_passes.mp4
+# Once an action detector ships, add a label to either of the above
+soccer-vision reel --run runs/match_001 --number 6 --event pass --out number6_passes.mp4
 ```
 
 > **Two ways to pick a player.** *Team-level* filtering works off jersey
@@ -101,10 +112,29 @@ soccer-vision reel --run runs/match_001 --track 6 --event pass --out number6_pas
 > **Asking for one player always gives you something.** Only set pieces are
 > detected as named actions today, so "every clip of number 6" would usually
 > match nothing. When it does, the clips fall back to the moments that player was
-> **on the ball** — nearest to it and close enough for it to be their touch —
+> **on the ball** — close enough to it to be their touch or their challenge —
 > which is a far denser signal than the event stream. That's proximity, not
 > action recognition: it finds when #6 had the ball, not that #6 *passed*. Pass
 > `--no-on-ball` to turn it off.
+
+---
+
+## Teaching it your own squad
+
+Two short annotation passes make the clips yours, and
+[`label_studio/README.md`](label_studio/README.md) walks through both:
+
+- **Who's who** — label a squad once by renaming folders of crops, and every
+  match after that names players by appearance instead of squinting at jersey
+  numbers (`soccer-vision enroll` → `identify --method reid`). No Label Studio
+  required.
+- **What happened** — confirm or correct the pipeline's event label on each
+  clip in Label Studio; the corrections are the training set that teaches it
+  youth footage.
+
+Both are built to run where the footage lives (a cluster, a workstation) and
+labelled on your laptop — the files you annotate are small, the ones they come
+from aren't.
 
 ---
 
@@ -153,8 +183,14 @@ Roughly in priority order:
   appearances between matches, so players can be named where their number can't
   be read. Still to do: following one player through the whole match as a single
   thread, rather than naming each stretch of tracking on its own.
-- **A better way to map the field** when the lines on the pitch are faint or
-  partly hidden.
+- **A usable sense of where the pitch is.** Line-based field registration was
+  removed rather than kept limping: on overhead footage it locked onto rooftops
+  and stadium walls instead of pitch lines, and our home venue paints blue, red
+  and white lines from several overlapping pitches, so even a perfect line
+  detector can't say which touchline is *the* touchline. The promising direction
+  is a **turf mask** — segment the green, take the largest region, use its
+  boundary polygon — which gives on-field/off-field and rough zones without
+  needing lines, metres, or a pretrained model.
 - **A desktop app** for reviewing clips without the command line.
 - **More action labels** — free kicks, kickoffs, substitutions.
 - **Easier install** — hosted docs, a PyPI release, example notebooks.

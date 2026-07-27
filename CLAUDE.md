@@ -85,35 +85,12 @@ python extract_clips.py \
 More precise candidate detection. Claude only reads a single small contact
 sheet at the end (≈ 5k tokens vs. 32k for Pipeline A).
 
-### Step 1 — (Optional) Pre-compute field registration with KpSFR
-
-KpSFR ([github.com/ericsujw/KpSFR](https://github.com/ericsujw/KpSFR)) is a
-deep-learning model that outputs a homography matrix per frame. More robust
-than the built-in Hough-line fallback when field lines are partially occluded.
-
-**Caveat:** trained on broadcast World Cup footage, not Veo overhead cameras.
-Test on a sample frame before relying on it. Skip if registration looks poor —
-track.py falls back to Hough lines automatically.
-
-```bash
-git clone https://github.com/ericsujw/KpSFR kpsfr/
-conda env create -f kpsfr/environment.yml && conda activate kpsfr
-# Download kpsfr_finetuned.pth → kpsfr/checkpoint/
-python register.py --video match.mp4 --kpsfr-repo kpsfr/ --fps 0.5
-# → registrations/homographies.json
-```
-
-### Step 1b — Run ball tracker
+### Step 1 — Run ball tracker
 
 ```bash
 pip install ultralytics   # one-time
 
-# Without KpSFR (built-in Hough-line fallback):
 python track.py --video match.mp4 --fps 3
-
-# With KpSFR homography cache:
-python track.py --video match.mp4 --fps 3 \
-  --homography-cache registrations/homographies.json
 
 # Options:
 #   --fps 3              sample rate (default 3 fps — fast, CPU-only)
@@ -123,8 +100,17 @@ python track.py --video match.mp4 --fps 3 \
 #   --half-frame N       frame where second half starts
 #   --model n/s/m        yolov8 size (n = fastest, default)
 #   --device cpu/mps     cpu works fine
-#   --homography-cache   path to homographies.json from register.py
+#   --homography-cache   legacy; leave unset (see the caveat below)
 ```
+
+> **`track.py` is a legacy standalone script**, not part of the `soccer-vision`
+> package, and its goal-zone logic depends on the Hough homography that
+> **does not work on Veo footage** — so its `[left]`/`[right]` zone labels and
+> any `field_x_m` / `field_y_m` it writes are unreliable. Field registration was
+> removed from the real pipeline for exactly this reason (see *Field registration*
+> below); `register.py` and the KpSFR homography cache it fed are gone. Treat
+> Pipeline B's candidates as "the ball sat still here" and let Claude's verify
+> step in Step 2 decide whether it's a goal kick.
 
 Outputs `candidates/candidates.json` + `candidates/sheet_001.jpg`.
 
@@ -239,12 +225,17 @@ better still.
 
 There are two ways to slice a processed match into clips:
 
-- **Team-level** — *"all the throw-ins from the black team"*, *"the black team
-  building out of the back."* Uses jersey **colour** (already assigned by
-  `process`); filter with `--team black`. No OCR needed.
+- **Team-level** — *"the black team building out of the back."* Uses jersey
+  **colour** (already assigned by `process`); filter with `--team black`. No OCR
+  needed.
 - **Individual-player** — *"all the passing actions by number six"*,
   *"highlights from number six."* Needs stable player identity, which comes from
   **reading the jersey number** off each track. This is what `identify` adds.
+
+Note that the *action* half of both examples (*"throw-ins"*, *"passing
+actions"*) is not detectable today — see *Field registration* and *On-ball
+spans* below. `--player` / `--number` / `--team` all work; `--events <label>`
+has nothing to match against yet.
 
 A ByteTrack id is an ephemeral lane, not a person — one player fragments into
 many lanes across a match, and the lane number is unrelated to the jersey.
@@ -399,18 +390,87 @@ on every away track — enrol from one match of each and `--append`.
 
 ---
 
-## On-ball fallback — what `--player` does when nothing was detected
+## Field registration — removed, and why not to bring it back as-is
 
-The rules engine only fires on set pieces, so a player query almost always
-matches **nothing** in the event stream: a youth match has a handful of throw-ins
-and goal kicks, and any one player is nearest for only a few. "No matching
-events" is technically correct and useless.
+**There is no pixel→metres registration in this pipeline.** `registration/`
+(Hough, KpSFR, sn-calib), `register.py`, and `events/set_piece.py` were deleted
+on 2026-07-27. Nothing produces `field_x` / `field_y` any more; every spatial
+question is answered in **pixel space**.
+
+**Why.** Evaluated on 6 frames across the Saints Veo match, both estimators
+failed on **all 6**:
+
+- **Hough** (`registration/hough.py`, the only one ever wired in) has no concept
+  of "field" — it takes the outermost strong lines, which on this footage are
+  apartment rooftops, stadium walls, the horizon and tree lines, never the faint
+  pitch lines.
+- **DeepLabv3 sn-calib** emitted diffuse per-pixel noise with no coherent line
+  masks — broadcast domain shift. Never wired in.
+- **KpSFR** was never run; same broadcast-training problem expected.
+
+**It failed destructively, not visibly.** Hough returned `ok=True` with a garbage
+matrix, so bad metres flowed downstream wearing a valid-looking type:
+
+| Symptom | Evidence |
+|---|---|
+| Frame centre projected off-pitch | `(14284, -14)` and `(-196656, -889)` on a 55×36 m pitch |
+| Every player rejected as a spectator | detections 20 → 0, 52 track-frames where ~6000 expected (job 37877533) |
+| A flood of confident false events | 236 events, 100% `throw_in`, 100% false — into clips, sheets, and pre-filled Label Studio predictions |
+| No event could get a team | 0/8 events had a `track_id` (job 37879440) — bogus metres beat the working pixel path |
+
+**Venue-specific killer:** the home turf is a shared multi-use complex with
+**blue, red and white** lines from several overlapping pitches painted at once.
+Even a perfect line detector cannot say which touchline is *the* touchline. This
+is a strong argument against line-identity and keypoint homography here, not just
+against these two implementations.
+
+**The direction, if you want to solve it: turf mask, not lines.** The green turf
+separates cleanly from buildings, walls, track and trees — HSV green +
+morphology + largest connected component → boundary polygon, anchored on
+keyframes and propagated between them by frame-to-frame optical flow (the camera
+pans and zooms about a roughly fixed point). No lines, no homography, no
+pretrained model, no domain shift. That gives on-field/off-field (feeding
+`detection/field_filter.py`, which is currently a crude central-rectangle hull)
+and rough zones — enough for set-piece detection in pixel space. Defer metric
+pixel→metres entirely unless a downstream metric truly needs metres.
+
+A VLM can pre-propose the turf boundary polygon (coarse region tracing is
+something it does well) to bootstrap Label Studio annotation; it is not reliable
+as a per-frame sub-pixel estimator.
+
+**Consequences to keep in mind when reading the code:**
+
+- `soccer_vision/pitch.py` holds nominal `FIELD_W_M` / `FIELD_H_M` (55×36) for
+  *declaring* pitch size in the OSL export, and nothing else. They are not
+  measurements.
+- **Every metre-denominated metric was deleted, not left unreachable** —
+  `metrics/heatmap.py` (whole module), `metrics/shots.py::is_shot_toward_goal`,
+  and `distance_per_player` from `stats.json`. Leaving them importable would
+  invite someone to wire them back up to coordinates that don't exist. Pixel
+  displacement is not a substitute for the distance figure: the camera pans, so
+  a stationary player would accumulate "distance" as the view moves past them.
+- What survives in `metrics/`: `possession.py` (pixel space) and
+  `shots.py::detect_shots_from_events` (a label filter, coordinate-free).
+- Old `runs/` from before this change still contain `field_x` / `field_y`. They
+  are ignored, not trusted — `associate.py` reads pixels only.
+
+---
+
+## On-ball spans — the only working selection pathway today
+
+**There is no action detector available on a default run.** The `rules`
+set-piece engine was retired with field registration, `learned` has no
+checkpoint yet, and `vlm` is opt-in — so `process` detects **zero events** and
+`annotations.json` comes out empty. That is expected, and `process` prints as
+much rather than leaving a bare "Found 0 events" looking like a bug. Detection,
+tracking, team assignment and the ball track are all unaffected.
 
 So when `--player` / `--number` / `--track` matches no detected events, `extract`
 and `reel` fall back to **on-ball spans** — the stretches where that player was
 close to the ball (`soccer_vision.events.on_ball`). This is pixel-space
 geometry over `ball_track.json` + `tracks.json`, so it needs neither the event
-detector nor the field homography (both unreliable on overhead footage).
+detector nor a field homography. In practice this is not a fallback any more but
+*the* pathway; it is what makes a player query answerable at all.
 
 **Proximity, not "nearest".** A span opens whenever the selected player is within
 `--on-ball-dist` of the ball, *not* only when they are the closest player on the
