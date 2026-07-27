@@ -178,11 +178,17 @@ def run_extract(args):
         events, team=args.team, track_id=args.track, track_ids=player_tracks
     )
 
-    if not events:
-        events = _on_ball_fallback(args, run_dir, player_tracks, args.events)
-        if events:
-            print(f"No detector events matched; cutting {len(events)} on-ball "
-                  f"span(s) instead ({_describe(args)}).")
+    # --on-ball asks for proximity spans outright, so it must win even when the
+    # detector *did* match something: a couple of stray set-piece hits on the
+    # player's lanes would otherwise silently suppress the spans that were
+    # explicitly requested.
+    if not events or getattr(args, "on_ball_force", False):
+        spans = _on_ball_fallback(args, run_dir, player_tracks, args.events)
+        if spans:
+            reason = ("--on-ball requested" if events else "No detector events matched")
+            print(f"{reason}; cutting {len(spans)} on-ball "
+                  f"span(s) ({_describe(args)}).")
+            events = spans
     if not events:
         print(f"No matching events found ({_describe(args)}).")
         return
@@ -232,13 +238,17 @@ def run_reel(args):
         track_ids=player_tracks,
     )
 
-    if not events:
-        events = _on_ball_fallback(
+    # See run_extract: --on-ball is a request, not just a fallback, so it takes
+    # precedence over a thin set-piece match on the same lanes.
+    if not events or getattr(args, "on_ball_force", False):
+        spans = _on_ball_fallback(
             args, run_dir, player_tracks, [args.event] if args.event else None
         )
-        if events:
-            print(f"No detector events matched; building a reel from "
-                  f"{len(events)} on-ball span(s) ({_describe(args)}).")
+        if spans:
+            reason = ("--on-ball requested" if events else "No detector events matched")
+            print(f"{reason}; building a reel from "
+                  f"{len(spans)} on-ball span(s) ({_describe(args)}).")
+            events = spans
     if not events:
         print(f"No matching events found ({_describe(args)}).")
         return
