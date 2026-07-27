@@ -120,6 +120,20 @@ def main():
                                "player (default: 3.0). Does not affect enrolled crops")
     p_enroll.add_argument("--context-min", type=int, default=384,
                           help="Review-sheet view: minimum window in pixels (default: 384)")
+    p_enroll.add_argument("--team",
+                          help="Only dump lanes on this kit colour (e.g. black) — usually "
+                               "you enrol one squad, not both. Uses the `teams` block of "
+                               "tracks.json, else classifies kit colour and caches it")
+    p_enroll.add_argument("--team-frames", type=int, default=300,
+                          help="Frames sampled to classify kit colour when tracks.json "
+                               "carries no `teams` block (default: 300)")
+    p_enroll.add_argument("--sheet-samples", type=int, default=6,
+                          help="Review-sheet view: tiles per track (default: 6). Independent "
+                               "of --max-samples, which sets how many crops are enrolled")
+    p_enroll.add_argument("--sheet-tile-height", type=int, default=180,
+                          help="Review-sheet view: rendered height per tile (default: 180). "
+                               "Raise it alongside --context-pad — a wider window drawn at "
+                               "the same height just shrinks the player again")
     p_enroll.add_argument("--max-tracks", type=int, default=60,
                           help="Dump only the N longest tracks (default: 60) — a match "
                                "fragments into hundreds of lanes, more than anyone labels")

@@ -151,22 +151,43 @@ def _dump_crops(run_dir: Path, tracks_path: Path, proxy_path: Path, out_dir: Pat
     tracks = [(t, s) for t, s in load_track_boxes(tracks_path).items()
               if len(s) >= args.min_track_frames]
     tracks.sort(key=lambda ts: -len(ts[1]))
-    print(f"Dumping the {min(args.max_tracks, len(tracks))} longest of "
-          f"{len(tracks)} tracks over {args.min_track_frames} frames...")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     reader = VideoReader(proxy_path)
+
+    if args.team:
+        teams = _resolve_track_teams(run_dir, tracks_path, tracks, reader, args)
+        wanted = args.team.strip().lower()
+        kept = [(t, s) for t, s in tracks if (teams.get(t) or "").lower() == wanted]
+        unknown = sum(1 for t, _ in tracks if teams.get(t) is None)
+        print(f"Team filter '{wanted}': {len(kept)} of {len(tracks)} lanes "
+              f"({unknown} unclassified, dropped)")
+        if not kept:
+            print(f"  No lanes on team '{wanted}'. Kit colours seen: "
+                  f"{sorted({v for v in teams.values() if v})}")
+            reader.close()
+            return
+        tracks = kept
+
+    print(f"Dumping the {min(args.max_tracks, len(tracks))} longest of "
+          f"{len(tracks)} tracks over {args.min_track_frames} frames...")
     written = 0
     # Context tiles are built in the same pass and kept in memory only. They must
     # never land in a player folder: they show neighbouring players too, so
     # enrolling one would bank someone else's appearance under this player's name.
     context: dict[str, list] = {}
+    # The sheet wants a handful of large tiles; the gallery wants many crops.
+    # Tying both to --max-samples forces a choice between a readable sheet and a
+    # well-covered player, so the sheet takes an evenly-spaced subset.
+    sheet_samples = max(1, getattr(args, "sheet_samples", 6))
     try:
         for tid, samples in tracks[:args.max_tracks]:
             step = max(1, len(samples) // args.max_samples)
             name = f"track_{tid:04d}{hints.get(tid, '')}"
             folder = out_dir / name
-            for frame_no, bbox in samples[::step][:args.max_samples]:
+            kept = samples[::step][:args.max_samples]
+            tile_stride = max(1, len(kept) // sheet_samples)
+            for i, (frame_no, bbox) in enumerate(kept):
                 frame = reader.read_frame(int(frame_no))
                 if frame is None:
                     continue
@@ -176,14 +197,16 @@ def _dump_crops(run_dir: Path, tracks_path: Path, proxy_path: Path, out_dir: Pat
                 folder.mkdir(exist_ok=True)
                 cv2.imwrite(str(folder / f"{int(frame_no):06d}.jpg"), crop)
                 written += 1
-                context.setdefault(name, []).append(
-                    _context_tile(frame, bbox, args.context_pad, args.context_min)
-                )
+                if i % tile_stride == 0 and len(context.get(name, ())) < sheet_samples:
+                    context.setdefault(name, []).append(
+                        _context_tile(frame, bbox, args.context_pad, args.context_min)
+                    )
     finally:
         reader.close()
 
     folders = sorted(p for p in out_dir.iterdir() if p.is_dir())
-    sheets = _write_index_sheets(out_dir, folders, context)
+    sheets = _write_index_sheets(out_dir, folders, context,
+                                 tile_h=getattr(args, "sheet_tile_height", TILE_H))
     print(f"\nWrote {written} crops across {len(folders)} track folders → {out_dir}")
     print(f"Review sheets ({len(sheets)}): {sheets[0].parent}/index_*.jpg")
     print("Next: rename the folders you recognise to player names "
@@ -192,8 +215,93 @@ def _dump_crops(run_dir: Path, tracks_path: Path, proxy_path: Path, out_dir: Pat
           f"--out {run_dir / 'gallery.npz'}")
 
 
+def _resolve_track_teams(run_dir: Path, tracks_path: Path, tracks, reader, args) -> dict:
+    """``{track_id: kit colour}`` for every lane, from the cheapest source available.
+
+    Three sources, in order:
+
+    1. the ``teams`` block ``process`` writes into ``tracks.json`` — free, and
+       what a current run always has;
+    2. ``track_teams.json``, this function's own cache from a previous call;
+    3. a classification pass over the video, cached for next time.
+
+    Runs processed before kit stamping landed have no ``teams`` block, so the
+    third path exists to keep ``--team`` working on them without re-running the
+    hours-long ``process``.
+    """
+    doc = json.loads(tracks_path.read_text())
+    stamped = doc.get("teams")
+    if stamped:
+        print(f"Team colours: from the `teams` block of {tracks_path.name}")
+        return {int(k): v for k, v in stamped.items()}
+
+    cache_path = run_dir / "track_teams.json"
+    if cache_path.exists():
+        cached = json.loads(cache_path.read_text()).get("teams", {})
+        print(f"Team colours: cached in {cache_path.name} ({len(cached)} lanes)")
+        return {int(k): v for k, v in cached.items()}
+
+    from soccer_vision.profiles.loader import get_kits, load_profile
+    from soccer_vision.tracking.teams import TeamClassifier
+
+    kits = get_kits(load_profile(args.profile)) if args.profile else []
+
+    # One read serves every lane alive in that frame, so sample frames globally
+    # rather than per track: 300 reads classify the whole match, where three
+    # frames per lane would be thousands. Seeks dominate the runtime here.
+    by_frame: dict[int, list] = {}
+    for tid, samples in tracks:
+        for frame_no, bbox in samples:
+            by_frame.setdefault(int(frame_no), []).append((tid, bbox))
+    frames = sorted(by_frame)
+    stride = max(1, len(frames) // max(1, args.team_frames))
+    chosen = frames[::stride][:args.team_frames]
+    print(f"Team colours: classifying from {len(chosen)} frames "
+          f"(no `teams` block in {tracks_path.name}; caching to {cache_path.name})")
+
+    # min_samples=2: a lane only shows up in a couple of the sampled frames, and
+    # the default of 3 would leave most of the match unclassified.
+    clf = TeamClassifier(min_samples=2, keep_crops=0)
+    for frame_no in chosen:
+        frame = reader.read_frame(frame_no)
+        if frame is None:
+            continue
+        mask = _not_turf_mask(frame)
+        for tid, bbox in by_frame[frame_no]:
+            clf.add_sample(tid, frame, bbox, mask)
+
+    clf.fit(kits=kits or None)
+    teams = {tid: clf.predict(tid) for tid, _ in tracks}
+    named = {k: v for k, v in teams.items() if v}
+    cache_path.write_text(json.dumps(
+        {"source": "enroll --team (turf-masked jersey colour)",
+         "kits": kits, "teams": {str(k): v for k, v in named.items()}}, indent=1))
+    counts = {v: sum(1 for x in named.values() if x == v) for v in sorted(set(named.values()))}
+    print(f"  {len(named)}/{len(teams)} lanes classified: {counts}")
+    return teams
+
+
+def _not_turf_mask(frame):
+    """Boolean mask of the pixels that aren't pitch, for jersey colour sampling.
+
+    ``process`` masks the colour sample with SAM3's per-player segmentation; a
+    run without one leaves the rectangular torso patch, which on an overhead
+    camera is mostly grass — the median then drags every kit toward green and
+    both clusters collapse to one colour (job 37877533 named both teams "blue").
+    Dropping green pixels is the poor cousin of a real mask, but it removes the
+    background that actually causes the collapse.
+    """
+    import cv2
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    turf = (h >= 30) & (h <= 90) & (s >= 60) & (v >= 40)
+    return ~turf
+
+
 TILE_H = 180          # crops are ~50px tall on an overhead camera; upscale to see them
 TRACKS_PER_SHEET = 12
+SHEET_MAX_PIXELS = 40_000_000   # keep a sheet openable in an ordinary image viewer
 LABEL_W = 260
 
 
@@ -221,16 +329,37 @@ def _context_tile(frame, bbox, pad: float, min_px: int):
     if tile.size == 0:
         return np.zeros((min_px, min_px, 3), dtype=np.uint8)
 
-    cv2.rectangle(tile, (int(x1) - wx1, int(y1) - wy1), (int(x2) - wx1, int(y2) - wy1),
-                  (0, 255, 255), 2)
+    # The marker has to scale with the window, not sit at a fixed 2px: pulled out
+    # to a full frame, a hairline box around a 29px-tall child is invisible, and
+    # a view you can't locate the player in is no more use than no view at all.
+    th, tw = tile.shape[:2]
+    thick = max(2, int(round(min(th, tw) / 260)))
+    px1, py1 = int(x1) - wx1, int(y1) - wy1
+    px2, py2 = int(x2) - wx1, int(y2) - wy1
+    cv2.rectangle(tile, (px1, py1), (px2, py2), (0, 255, 255), thick)
+
+    # Crosshair from the tile edges, stopping short of the box so it points at
+    # the player without covering them — findable at a glance on a wide view.
+    mx, my = (px1 + px2) // 2, (py1 + py2) // 2
+    gap_x = int((px2 - px1) * 3.0 + thick * 8)
+    gap_y = int((py2 - py1) * 1.8 + thick * 8)
+    for a, b in (((0, my), (mx - gap_x, my)), ((tw, my), (mx + gap_x, my)),
+                 ((mx, 0), (mx, my - gap_y)), ((mx, th), (mx, my + gap_y))):
+        cv2.line(tile, a, b, (0, 255, 255), thick, cv2.LINE_AA)
     return tile
 
 
-def _write_index_sheets(out_dir: Path, folders: list[Path], context: dict) -> list[Path]:
+def _write_index_sheets(out_dir: Path, folders: list[Path], context: dict,
+                        tile_h: int = TILE_H) -> list[Path]:
     """One image per dozen tracks: a labelled strip of context views per track.
 
     Without this the folders are unlabellable — the tight crops are ~50x21 px,
     which no one can put a name to in a file browser.
+
+    ``tile_h`` has to grow with ``--context-pad``: every tile is scaled to this
+    height, so a wider window rendered at the same height just shrinks the player
+    back to where we started. Pulling the view out without raising it cancels
+    itself out.
     """
     import cv2
     import numpy as np
@@ -241,12 +370,12 @@ def _write_index_sheets(out_dir: Path, folders: list[Path], context: dict) -> li
         for c in context.get(folder.name, []):
             if c is None or c.size == 0:
                 continue
-            scale = TILE_H / c.shape[0]
-            tiles.append(cv2.resize(c, (max(1, int(c.shape[1] * scale)), TILE_H)))
+            scale = tile_h / c.shape[0]
+            tiles.append(cv2.resize(c, (max(1, int(c.shape[1] * scale)), tile_h)))
         if not tiles:
             continue
-        label = np.zeros((TILE_H, LABEL_W, 3), dtype=np.uint8)
-        cv2.putText(label, folder.name[:22], (8, TILE_H // 2),
+        label = np.zeros((tile_h, LABEL_W, 3), dtype=np.uint8)
+        cv2.putText(label, folder.name[:22], (8, tile_h // 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
         strips.append(np.hstack([label] + tiles))
 
@@ -256,10 +385,14 @@ def _write_index_sheets(out_dir: Path, folders: list[Path], context: dict) -> li
     width = max(s.shape[1] for s in strips)
     padded = [np.pad(s, ((0, 2), (0, width - s.shape[1]), (0, 0))) for s in strips]
 
+    # A dozen full-resolution rows makes a 100+ megapixel JPEG that image viewers
+    # choke on, so the row count follows the pixel budget rather than a constant.
+    per_sheet = max(1, min(TRACKS_PER_SHEET, int(SHEET_MAX_PIXELS // (width * (tile_h + 2)))))
+
     paths = []
-    for i in range(0, len(padded), TRACKS_PER_SHEET):
-        sheet = np.vstack(padded[i:i + TRACKS_PER_SHEET])
-        path = out_dir / f"index_{i // TRACKS_PER_SHEET + 1:03d}.jpg"
+    for i in range(0, len(padded), per_sheet):
+        sheet = np.vstack(padded[i:i + per_sheet])
+        path = out_dir / f"index_{i // per_sheet + 1:03d}.jpg"
         cv2.imwrite(str(path), sheet, [cv2.IMWRITE_JPEG_QUALITY, 90])
         paths.append(path)
     return paths
