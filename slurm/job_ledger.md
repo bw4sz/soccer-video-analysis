@@ -357,3 +357,219 @@ Next: rsync clips_720p + label_studio_tasks.json + labeling_config.xml to the
   laptop under runs/<match_id>/clips/, then Label Studio. Expect to correct
   nearly every label — all 236 events came back `throw_in` off the degenerate
   homography, so the pre-fill is a candidate window, not a prior.
+
+### Job 38133841 — FOOTPASS in-domain detector eval (SAM3 vs RF-DETR)
+**Date:** 2026-07-27
+**Why:** Every SAM3 number we have (20-22 players/frame, 21/22 stable ids) was
+  measured on Veo footage with NO ground truth — a count, not an accuracy. This
+  is the missing baseline: P/R against real per-player boxes on the broadcast
+  footage both detectors were trained for. If SAM3 scores well here and badly on
+  Veo, the gap is domain; if badly on both, it's the prompt/threshold.
+**Data:** FOOTPASS val `game_24_H1` — 47,805 frames with >=1 visible player,
+  median 16 players/frame. GT = ROI_* columns of val_tactical_data.h5, rescaled
+  fullHD -> 640x352 by x/3, y/3.068181 (matching vendor/FOOTPASS TAAD_Dataset.py).
+  Alignment verified by eye on a GT-only overlay: 19 boxes sit tightly on players.
+**Design:** 10 windows x 40 consecutive frames (SAM3 needs continuity; session
+  reset per window). Uniform-random window placement, NOT filtered to wide shots
+  — replays/close-ups are part of a broadcast, and pre-selecting easy framings
+  would inflate the score; the wide-shot subset (>=8 GT players) is reported
+  separately. Detections kept with raw scores and swept post-hoc over
+  score {0.2,0.3,0.5} x IoU {0.3,0.5}.
+**Known-pessimistic precision:** GT counts only the ~22 players + keepers, not
+  referees/coaches/crowd, which both detectors return. Hence also
+  `precision_in_field` (detections whose centre falls in the padded GT envelope).
+**Dropped before submit:** planned upscale arms (frame x3). `Sam3VideoProcessor`
+  resizes every input to 1008x1008 regardless, so naive upsampling is a no-op and
+  cubic interpolation adds no information. Settling resolution-vs-domain needs the
+  fullHD videos (on HF, never downloaded) or SAHI-style tiling.
+**Result:** COMPLETED (exit 0, 6m42s, L4). 386 frames scored, median 15 GT players.
+  IoU 0.5 / score 0.3, all frames:
+    sam3    P 0.760  R 0.925  F1 0.835   P(in-field) 0.799   19 pred/fr  0.91 s/fr
+    rfdetr  P 0.838  R 0.977  F1 0.902   P(in-field) 0.846   18 pred/fr  0.04 s/fr
+  At IoU 0.3 both are near-ceiling on recall: sam3 0.980, rfdetr 0.994.
+  Wide-shot subset is within 0.003 of "all" for both — the broadcast's replays and
+  close-ups are not what's costing either model anything.
+**Headline:** RF-DETR BEATS SAM3 in-domain, and is 23x faster. That reverses the
+  premise of the SAM3 migration. RF-DETR was retired on a Veo *count* (5-6
+  players/frame vs SAM3's 20-22) with no ground truth behind it; here it detects
+  18/frame at 0.977 recall. So RF-DETR is not a weak detector — it is a strong
+  broadcast detector that collapses under domain shift, and SAM3's real advantage
+  is robustness to that shift, not detection quality. Keep SAM3 for Veo; do not
+  assume it dominates everywhere.
+**Precision is a LOWER BOUND, by two mechanisms.** (1) GT excludes referees,
+  coaches and touchline staff, all of which both models return — the ref alone is
+  ~1 of ~4 FP/frame for sam3. (2) GT is incomplete: on the inspected overlays both
+  detectors independently box real players that carry no GT box. Two independent
+  models agreeing on a box the GT lacks is evidence of a GT miss, not two
+  coincident false positives. Recall is the metric to trust here.
+**Side finding:** SAM3's metrics are IDENTICAL at score 0.2/0.3/0.5. `obj_id_to_score`
+  holds each object's *birth* detection score, constant for the object's life
+  (removed objects get -1e4), and essentially all survivors score >=0.5. So
+  `SAM3PlayerTracker(min_score=...)` is a near-inert knob in the production
+  pipeline — not a bug, but not the tuning lever it looks like.
+**Next:** (a) The resolution question is still open and now matters more — a
+  median GT player is 13x26 px here, so both scores are "good at 13px", not "good
+  at broadcast". Fetch one fullHD val game or add SAHI tiling. (b) Re-check
+  whether SAM3 is worth 23x the compute on Veo, or whether RF-DETR at a lower
+  conf + the field filter closes enough of the gap. (c) No ball GT exists in
+  FOOTPASS tactical data — ball detection remains unvalidated in any domain.
+
+### Job 38162552 — TAAD on our footage, SAM3 tracklets (controlled re-run of 36500443)
+**Date:** 2026-07-27
+**Why:** The July smoke runs concluded "TAAD domain shift is the real blocker",
+  but they fed TAAD tracklets built by RF-DETR + ByteTrack. Job 38133841 then
+  showed RF-DETR gets 0.977 recall in-domain while finding only 5-6 players/frame
+  on Veo (SAM3: 20-22). TAAD is track-aware — tracklets ARE its input and it
+  scores the top-13 longest tracks per team — so it was reasoning over a pitch
+  missing most of its players. "The action head doesn't transfer" and "the input
+  was incomplete" are confounded in every result we have.
+**Design:** Same video, same 1150-1170s window (frame 34466, 600 frames), same
+  checkpoint (taad_03072026_1113 best_model.pt), same inference flags
+  (--conf 0.15 --nms 15 --ball-gate soft). ONLY the front end changes:
+  `--detector sam3` on footpass_extract_tracklets.py, running three SAM3 sessions
+  ("soccer player" / "soccer ball" / "referee") over one shared copy of the
+  weights. chunk_frames=30 because three concurrent sessions each grow masklet
+  memory ~0.12GB/frame and the L4 has 23GB.
+**Baseline to beat (36500443, RF-DETR tracklets), vs the in-domain prior from
+  FOOTPASS val (6070 events):**
+    class      in-domain   RF-DETR run   ratio
+    pass          50.4%        11.1%      0.2x
+    drive         40.7%         2.8%      0.1x
+    block          1.3%        52.8%     41.1x
+    shot           1.1%        22.2%     20.1x
+  pass+drive 91.1% -> 13.9%;  block+shot 2.4% -> 75.0%. The two lowest-precision
+  in-domain classes (block P0.15, shot P0.31) became three-quarters of output.
+**Also changed:** jersey colour is now sampled inside the SAM3 mask rather than
+  over the bbox (the fix that turned "blue, blue" into "black, blue" elsewhere);
+  preview caption no longer hardcodes "RF-DETR+ByteTrack".
+**Result:** COMPLETED (exit 0, 14m50s). 35 events:
+  block 18, shot 7, pass 5, throw-in 3, drive 1, cross 1, header 0, tackle 0.
+  block+shot 71% (was 75%); pass+drive 17% (was 14%). **The collapse is unchanged.**
+  Tracklets DID change materially — 55 tracks vs 63, 8000 rows vs 12233, ball
+  589/600 (98%) vs 559 (93%), teams 'gray'/'black' vs 'black'/'orange' — and TAAD
+  produced the same inverted distribution anyway. That points at the action head,
+  not the input.
+**MY PREMISE WAS WRONG, and it weakens this experiment's rationale.** RF-DETR was
+  NOT starving TAAD on this video: it produced 20.4 player-detections/frame here
+  against SAM3's 13.3. The "5-6 vs 20-22 players/frame" figure comes from job
+  37864846, measured on `SaintsU11_OVF_Jul192026.MP4` — the Veo overhead camera —
+  whereas every TAAD smoke run uses `match-saints-16b-pre-mls-next-2026-04-26.mp4`,
+  a different camera. I conflated two videos. The RF-DETR-starvation hypothesis was
+  never true for this footage.
+**Two uncontrolled differences I introduced:**
+  (1) Field polygon came back "unreliable" and was skipped, where the July run got
+      a 56%-of-frame polygon. Same code, same window — the difference is the python
+      env (blue soccer-vision env for SAM3, cv2 4.13, vs the repo .venv in July).
+      Known immaterial to the verdict: job 36460253 proved mask on/off gives
+      byte-identical TAAD predictions on this exact window.
+  (2) The "referee" concept vetoed 654 player boxes (~1.1/frame). Keyframe
+      kf_02_f34895 shows the real referee correctly unboxed, but also two large
+      foreground players missing — the veto is over-firing. With the field mask off,
+      sideline spectators near the goal are also tracked (t38/t45/t39/t47/t48).
+**Verdict:** Domain shift in the action head is now the best-supported explanation,
+  but this run is one 20s window, ~35 events, with two confounds. Treat as
+  corroboration, not proof.
+**Next:** Stop engineering tracklets for this — the returns aren't there. The real
+  route is FOOTPASS.md section B: annotate our matches with (frame, team, jersey,
+  class) and fine-tune from best_model.pt. Note the official metric groups by
+  (team, shirt, class) so it cannot be computed on our footage without jersey
+  numbers — a class-and-time-only variant is needed. Also worth fixing regardless:
+  the referee-veto over-firing and the field-polygon env sensitivity.
+
+## 38162799 / 38162800 — 2026-07-27 18:10 — slurm/submit_sam3_process.sh (U14G)
+Why: `enroll --dump-frames` (and everything else) needs a processed run per squad,
+  and only the U11 match has one. Target is the U14G re-id gallery from
+  data/wfc-rangers-vs-saints-pcu-cup-2026-07-11.mp4 (Veo, 60.6 min, 1920x1080).
+  This footage differs from the U11 match in ways SAM3 has never been tested on:
+  **Veo not XbotGo**, low sun with long shadows and lens flare, and the shared
+  multi-pitch venue whose blue/red/white line clutter is the venue that killed
+  field registration. So a 3-min smoke (38162799, data/u14g_smoke180.mp4, cut from
+  15:00) runs first and the full match (38162800) is chained
+  --dependency=afterok, so a failure costs 10 GPU-minutes instead of hours.
+  Profile examples/profiles/saints-u14g.yaml declares kits black/white; its roster
+  is empty pending the squad list, which the Label Studio label list needs.
+  New script generalises submit_sam3_saints_full.sh, which hard-codes the U11 video.
+Result: FAILED — smoke 38162799 hit the 1h wall I set (TIMEOUT at 01:00:21) and the
+  chained full run was cancelled (DependencyNeverSatisfied). NOT a hang: the U11
+  full match (job 38050708) took 6h21m for 9226 sampled frames = ~2.5 s/frame, so
+  this 3-min clip's ~900 sampled frames needed ~40min and 1h left no margin for
+  model load. My error was overriding the script's 8h default with --time=01:00:00.
+  Two fixes: (a) PYTHONUNBUFFERED=1 in the script — SLURM redirects stdout to a
+  file, so Python buffered it and the log showed only "[Step 1]" after an hour,
+  which reads exactly like a hang; (b) don't process the full 60-min match for
+  enrolment at all (see 38176317).
+Next: on success, `enroll --dump-frames runs/saints-u14g-pcu-2026-07-11/label_frames`
+  and pull for labelling. Watch (a) does SAM3's "soccer player" prompt hold up on
+  Veo at this sun angle, (b) does the black/white kit split survive the shadows —
+  this run should carry a proper `teams` block, unlike the U11 run.
+
+## 38176317 — 2026-07-27 22:15 — slurm/submit_sam3_process.sh (U14G sampler)
+Why: At ~2.5 s/sampled frame the full 60-min U14G match is a ~13h job that writes
+  its JSON only at the end — a bad bet for something we only need a gallery from.
+  A gallery wants diverse exemplars, not coverage, so this processes
+  data/u14g_sampler600.mp4: six 100s chunks (t=300/850/1400/1950/2500/3050)
+  stream-copied out of the match and concatenated = 10 min, 18143 frames, ~3024
+  sampled. Spanning the match keeps the diversity that matters here, since the sun
+  drops through the game and shadows change. Joins verified to decode clean.
+  ~2.1h expected, 5h wall. match_id saints-u14g-sampler.
+Result:
+Next: `enroll --dump-frames runs/saints-u14g-sampler/label_frames --profile
+  examples/profiles/saints-u14g.yaml` (roster now has all 13 players), pull ~1MB
+  and label in Label Studio. Full-match processing stays deferred until clips are
+  actually wanted from this game.
+
+## 38176330 / 38176804 / 38177148 — 2026-07-27 22:10 — why is SAM3 ~26x RF-DETR?
+Why: Job 38133841 measured the headline gap on FOOTPASS footage (SAM3 0.91 s/frame
+  vs RF-DETR 0.04) but never said where the time goes, and job 38162799 — a
+  **3-minute** smoke — hit the 1h wall without finishing. Needed the decomposition
+  before deciding what (if anything) to optimise.
+  Scripts: slurm/profile_detector_speed.py (stage breakdown + resolution sweep),
+  slurm/profile_sam3_scaling.py (object-count and chunk-depth sweeps).
+Result: COMPLETED. On an L4, 1920x1080, 120 frames of data/u14g_smoke180.mp4:
+
+  RF-DETR (players+ball, one pass)  0.062 s/frame   flat in object count
+  SAM3 "soccer player" session      1.354 s/frame
+  SAM3 "soccer ball" session        0.269 s/frame
+  SAM3 production total (both)      1.623 s/frame   = 26.1x RF-DETR
+
+  Stage split of the player session: forward 93.0%, postproc 5.7%, preproc 1.0%,
+  id-mapping 0.2%, session rotation 0.1%. **It is the model forward, full stop** —
+  mask->box conversion and the chunked-session machinery are not the problem.
+
+  Two scaling laws, both fit essentially perfectly:
+    forward = 0.205 s + 38.7 ms x n_masklets          (R^2 = 1.000, 6 prompts)
+    forward = 1.034 s + 10.7 ms x chunk_depth         (chunk_frames 10/20/30/60)
+  So the fixed image+text encode is only ~0.21 s (already 3.4x RF-DETR's *whole*
+  frame) and everything above that is per-tracked-object. At 27 masklets, 84% of
+  the forward is per-object work. Confirmed in the transformers source: SAM3's
+  tracker propagation batches objects along the **batch dimension** through memory
+  attention + the mask decoder (models/sam3_video/modeling_sam3_video.py,
+  run_tracker_propagation), so N objects really is ~N x the compute. RF-DETR
+  decodes a fixed query set in one pass — 0.046 s whether it finds 5 or 27.
+
+  **Resolution is not a lever.** 640x360 is only 1.2x faster than 1920x1080
+  despite 9x fewer pixels (1.134 vs 1.354 s/frame) — SAM3 resizes internally to a
+  fixed size. Downscaling the video buys almost nothing.
+
+  **Prompt choice IS a lever, because it changes masklet count:**
+    goalkeeper 1 -> 0.247s | referee 5 -> 0.384s | "person on a sports field"
+    20.5 -> 0.994s | "soccer player" 27 -> 1.242s | "person" 34 -> 1.531s
+  We pay 38.7 ms/frame for every spectator and sub SAM3 latches onto *before*
+  filter_spectators ever discards them.
+
+Separate, detector-independent finding: `VideoReader.sample_frames` seeks with
+  `cap.set(CAP_PROP_POS_FRAMES, fn)` for every sampled frame
+  (src/soccer_vision/io/video.py:41), which on H.264 re-decodes from the preceding
+  keyframe. Measured 249 ms/frame vs 30 ms for sequential grab-and-skip — **8.3x**,
+  and it hits the RF-DETR path just as hard.
+
+Consequence: the U14G full match (108,972 frames, 18,162 detection-frames at 5 fps)
+  projects to 8.19 h of SAM3 + 1.26 h of decoding = **9.4 h against the 8 h wall
+  limit in submit_sam3_process.sh** — job 38162800 could never have finished even
+  had the smoke passed. RF-DETR on the same match: 1.6 h, of which 1.26 h is
+  decoding.
+Next: cheapest wins first, in order — (1) sequential reader, ~1.1 h off every run
+  regardless of detector; (2) chunk_frames 60 -> 10, ~31% off SAM3's forward, but
+  re-check id stability since rotation is what fragments lanes; (3) a tighter
+  player prompt to cut masklet count. Only after those, consider whether the ball
+  needs its own session every frame — it re-encodes the same image for one object.
