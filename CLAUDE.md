@@ -155,6 +155,78 @@ python extract_clips.py \
 
 ---
 
+## Detector — RF-DETR by default, SAM3 opt-in
+
+`process` detects players and the ball with **RF-DETR**
+(`julianzu9612/RFDETR-Soccernet`, wired in `detection/rfdetr.py`). SAM3
+(`tracking/sam3.py`) is available behind `detector.type: sam3` but is not the
+default. Submit a match with `slurm/submit_process.sh`, which defaults to
+`examples/process_match.yaml`.
+
+```bash
+# default — RF-DETR
+sbatch slurm/submit_process.sh data/<match>.mp4 <match-id> examples/profiles/<team>.yaml
+
+# opt into SAM3 (raise --time to 12:00:00 first, or it will not finish)
+sbatch slurm/submit_process.sh data/<match>.mp4 <match-id> <profile> examples/saints-u11-sam3.yaml
+```
+
+**Why RF-DETR is the default.** Three reasons, in order of how much they matter:
+
+| | RF-DETR | SAM3 |
+|---|---|---|
+| Weights | public | **HF-gated** (`facebook/sam3`) |
+| s/detection-frame, 1080p, L4 | **0.062** | 1.623 |
+| Full 60-min match | **~1.6 h** | ~9.4 h |
+| FOOTPASS broadcast F1 @IoU 0.5 | **0.902** | 0.835 |
+| FOOTPASS broadcast recall | **0.977** | 0.925 |
+
+The gate is the practical one: it makes a fresh clone or a new collaborator's
+setup fail in a way no amount of caching fixes, against an ethos of *quick,
+dirty and easy*. The speed is the operational one — 9.4 h silently overran an
+8 h wall (job 38162800). The quality row is the surprising one: **RF-DETR is
+not the weaker detector.** SAM3 was adopted on a Veo player *count* (5-6/frame
+vs 20-22) that was never ground-truthed and has since failed to reproduce —
+job 38162552 measured RF-DETR at 20.4 detections/frame against SAM3's 13.3 on
+the same clip, and the speed profiling saw 22-27/frame on U14G Veo footage.
+
+Speed numbers are jobs 38176330 / 38177148; quality is job 38133841. SAM3's
+cost is `0.205s + 38.7ms x n_masklets` — nearly all per-tracked-object, so
+resolution is not a lever (640x360 is only 1.2x faster than 1080p) but prompt
+choice is, because it changes how many objects get tracked.
+
+**When to reach for SAM3 anyway.** Its real advantage is robustness to domain
+shift, not detection quality — RF-DETR is a strong *broadcast* detector, and
+the open question is how far it degrades on overhead/Veo footage where no
+ground truth exists. If a run comes back thin, try `conf_threshold: 0.15`
+(`examples/saints-u11-0.15-threshold.yaml`) **before** switching models.
+
+**Two known costs of the default**, both measured on a 3-min U14G Veo clip
+(job 38178685, `runs/u14g-smoke-rfdetr`, 2m45s where SAM3 timed out at 60 min):
+
+1. **Ball jitter.** RF-DETR's ball is flickery on overhead footage: 84.5% of
+   frames detected, but median frame-to-frame jump 54px and **p95 905px** on a
+   1920px-wide frame. SAM3's `"soccer ball"` prompt gives p95 208px (job
+   37883252). `process` writes `ball_track.json` **raw**, so on-ball spans — the
+   only working selection pathway — inherit that jitter.
+   `soccer_vision.tracking.ball_kalman` exists for exactly this and is *not*
+   wired into `process`; see *Trim empty* below, including the caveat that it
+   over-rejects at the 5 fps `process` samples at.
+
+2. **Track fragmentation.** ByteTrack ids are far more ephemeral than SAM3's
+   masklet ids: **856 lanes** in three minutes, median lane length 7
+   detection-frames (~1.4 s), only 32 lanes reaching 50 frames. SAM3 gave 55
+   lanes over 600 frames on comparable footage (job 38162552). This is the
+   fragmentation `enroll`/`identify` already exist to paper over — merging lanes
+   per player — but `enroll --dump-crops --max-tracks 60` now samples from a much
+   shorter-lived pool, so check crop yield per player before trusting a gallery
+   built this way.
+
+Neither is a reason to go back to SAM3 by default; both are worth fixing on the
+RF-DETR path, where the fixes are cheap and reusable.
+
+---
+
 ## Trim empty — cut dead time into a shorter clip
 
 Youth matches are mostly dead time (ball out of play, or sitting still while

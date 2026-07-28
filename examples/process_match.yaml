@@ -1,3 +1,18 @@
+# Default processing config: RF-DETR for players and ball.
+#
+# RF-DETR is the default because it needs no HuggingFace gate
+# (julianzu9612/RFDETR-Soccernet is public), it is ~26x faster than SAM3
+# (0.062 vs 1.623 s/detection-frame at 1080p on an L4, jobs 38176330/38177148),
+# and where we have ground truth it is also the *better* detector — F1 0.902 vs
+# 0.835, recall 0.977 vs 0.925 on FOOTPASS broadcast (job 38133841).
+#
+# Overhead cameras render players small; if a run comes back thin, drop
+# conf_threshold to 0.15 before reaching for another model (see
+# examples/saints-u11-0.15-threshold.yaml).
+detector:
+  type: rfdetr
+  conf_threshold: 0.3
+
 # Only applied when `soccer-vision process` is run with --broadcast (off by
 # default — most footage doesn't need the crop).
 broadcast:

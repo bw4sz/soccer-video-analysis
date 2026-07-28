@@ -608,3 +608,37 @@ Next: cheapest wins first, in order — (1) sequential reader, ~1.1 h off every 
   exactly what TAAD's top-13-longest selection favours. The July runs had the mask on.
   This is an uncontrolled variable in both SAM3 runs and worth fixing before any
   further TAAD-on-our-footage work.
+
+## 38178685 — 2026-07-27 23:33 — slurm/submit_process.sh (RF-DETR is the default again)
+Why: User's call, on two grounds the profiling above supports. (1) `facebook/sam3`
+  is HF-gated, which breaks a fresh clone or a new collaborator in a way caching
+  can't fix — against a "quick and dirty and easy" ethos. (2) SAM3 costs 26x per
+  frame and a full match (9.4h) silently overran the 8h wall. The quality argument
+  for SAM3 had already collapsed: job 38133841 has RF-DETR *ahead* in-domain
+  (F1 0.902 vs 0.835, recall 0.977 vs 0.925), and the Veo count that motivated the
+  migration (5-6 players/frame) never reproduced — 38162552 measured RF-DETR at
+  20.4 detections/frame vs SAM3's 13.3, and the speed profiling saw 22-27/frame.
+Changed: examples/process_match.yaml now carries an explicit `detector: type:
+  rfdetr`; submit_sam3_process.sh renamed to submit_process.sh, taking config as
+  a 4th arg (default RF-DETR) and dropping the wall 8h -> 4h; process.py comments
+  reordered so RF-DETR reads as the default and SAM3 as opt-in; CLAUDE.md gained a
+  "Detector" section; label_studio/README.md no longer points at the SAM3 config.
+  SAM3 is untouched and still selectable via examples/saints-u11-sam3.yaml.
+Result: COMPLETED (exit 0, **2m45s** on data/u14g_smoke180.mp4 — the same 3-min
+  clip whose SAM3 run, 38162799, hit a 1h wall without finishing). 856 tracks,
+  662 kit-stamped (77%), teams correctly named black/white from the profile,
+  ball 760/899 visible (84.5%). Team colour sampling falls back from mask to bbox
+  cleanly when the detector supplies no mask.
+**Two real quality costs, measured, both worth fixing rather than reverting for:**
+  (1) Ball jitter: median jump 54px, **p95 905px** on a 1920px frame (SAM3: p95
+      208px). ball_track.json is written raw and on-ball spans inherit it.
+      tracking/ball_kalman.py already exists for this and is not wired into
+      `process` — but it over-rejects at the 5fps `process` samples at (~39%),
+      so wiring it in probably wants the ball sampled denser at the same time.
+  (2) Fragmentation: 856 lanes in 3 min, median lane 7 detection-frames, only 32
+      lanes >=50 frames, vs SAM3's 55 lanes over 600 frames (38162552). enroll's
+      `--dump-crops --max-tracks 60` now draws from a much shorter-lived pool.
+Next: (a) decide on ball_kalman-in-process + ball sample rate; (b) re-check
+  enroll crop yield per player on an RF-DETR run before trusting a new gallery;
+  (c) the seek-per-frame reader (see 38176330) is now the single biggest win
+  left — 1.26h of RF-DETR's projected 1.57h full-match runtime is decoding.

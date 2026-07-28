@@ -75,19 +75,27 @@ def run_pipeline(args):
     device = args.device
     detector_type = config.get("detector", {}).get("type", "rfdetr")
 
-    # RF-DETR is the fallback ball detector. It is very unreliable on overhead
-    # footage — on this match it "found" a ball in 71% of frames but with a p95
-    # frame-to-frame jump of 1260px on a 1920px-wide frame (job 37883252), i.e.
-    # mostly false positives in the trees and crowd. SAM3 prompted with
-    # "soccer ball" cuts that to 208px, so the sam3 path below overrides it.
+    # RF-DETR is the default for players and ball: public weights (no HF gate),
+    # ~26x faster than SAM3 (0.062 vs 1.623 s/detection-frame at 1080p on an L4,
+    # jobs 38176330/38177148), and better where ground truth exists — F1 0.902 vs
+    # 0.835 on FOOTPASS broadcast (job 38133841).
+    #
+    # Its weak spot is the ball on overhead footage: on the Saints match it
+    # "found" a ball in 71% of frames but with a p95 frame-to-frame jump of
+    # 1260px on a 1920px-wide frame (job 37883252) — mostly false positives in
+    # the trees and crowd. `soccer_vision.tracking.ball_kalman` exists to gate
+    # exactly that flicker; it is not applied here (trim-empty applies it when
+    # building its own track), so ball_track.json from this pipeline is raw.
     ball_detector = RFDETRSoccerDetector.from_pretrained(device=device)
 
-    # Player detection: SAM3 (text-prompted detect+track) or RF-DETR
+    # Player detection: RF-DETR (default) or SAM3 (opt-in, detector.type: sam3)
     sam3_tracker = None
     sam3_ball = None
     if detector_type == "sam3":
         # SAM3 replaces BOTH the detector and ByteTrack: its video model returns
-        # a persistent object id per player from a text prompt alone.
+        # a persistent object id per player from a text prompt alone. Opt-in
+        # because facebook/sam3 is HF-gated and costs ~26x RF-DETR per frame —
+        # worth it where domain shift breaks RF-DETR, not as a default.
         from soccer_vision.tracking.sam3 import SAM3PlayerTracker
         prompt = config.get("detector", {}).get("prompt", "soccer player")
         print(f"  Detector: SAM3 text-prompt {prompt!r} (detect+track)")

@@ -35,18 +35,22 @@ run Label Studio and, optionally, `annotate --export`.
 
 **Each team needs a processed run.** Crops and clips both come out of
 `runs/<match_id>/`, so a squad you haven't processed yet (U10B, U14G) needs one
-`soccer-vision process` pass first — on HPC, via SLURM, since SAM3 detection is
-the expensive step:
+`soccer-vision process` pass first — on HPC, via SLURM, since detection wants a
+GPU:
 
 ```bash
-soccer-vision process data/<match>.mp4 --out-dir runs --match-id <team>-<date> \
-  --config examples/saints-u11-sam3.yaml
+sbatch slurm/submit_process.sh data/<match>.mp4 <team>-<date> \
+  examples/profiles/<team>.yaml
 ```
+
+That defaults to RF-DETR (~1.6 h for a 60-min match). See
+[Detector](../CLAUDE.md#detector--rf-detr-by-default-sam3-opt-in) for when to
+opt into SAM3 instead — it is ~6x slower and HF-gated.
 
 For **enrolment only**, you don't need the whole match. A gallery wants a few
 good exemplars per player, not coverage — process a 5–10 minute segment per
-team and dump crops from that. It turns an 8-hour job into a short one, and the
-gallery it produces is just as usable.
+team and dump crops from that. It turns an hours-long job into a short one, and
+the gallery it produces is just as usable.
 
 ---
 
