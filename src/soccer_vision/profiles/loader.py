@@ -61,6 +61,10 @@ def get_jersey_by_name(profile: dict, name: str) -> int | None:
     A first name shared by two players on the roster is ambiguous and resolves
     to nothing rather than to whichever happens to be listed first — the caller
     reports no match and the user can disambiguate with ``--number``.
+
+    A ``nickname`` counts as an exact match, so ``--player Mo`` reaches Morrighan
+    — that is what the squad calls her, and it's the label she was annotated
+    under.
     """
     key = name.strip().lower()
 
@@ -71,6 +75,8 @@ def get_jersey_by_name(profile: dict, name: str) -> int | None:
     roster = get_roster(profile)
     for p in roster:
         if (p.get("name") or "").strip().lower() == key:
+            return jersey_of(p)
+        if (p.get("nickname") or "").strip().lower() == key:
             return jersey_of(p)
 
     first = [p for p in roster if (p.get("name") or "").strip().lower().split(" ")[0] == key]

@@ -136,6 +136,78 @@ def test_picked_label_maps_back_to_the_roster_name():
     assert roster_full_name(profile, "Rangers keeper") == "Rangers keeper"
 
 
+# --- nicknames --------------------------------------------------------------
+
+def test_nickname_replaces_the_first_name_on_the_label_list():
+    """A squad calls her Mo, so that's what the annotator should be clicking."""
+    from soccer_vision.cli.enroll import label_names
+
+    roster = [{"name": "Morrighan Wright", "nickname": "Mo"},
+              {"name": "Iris McDonald"}]
+
+    assert label_names(roster) == ["Mo", "Iris"]
+
+
+def test_nickname_resolves_back_to_the_roster_name():
+    """Otherwise "Mo" and "Morrighan Wright" become two players in one gallery."""
+    from soccer_vision.cli.enroll import roster_full_name
+    from soccer_vision.profiles.loader import get_jersey_by_name
+
+    profile = {"roster": [{"name": "Morrighan Wright", "nickname": "Mo", "jersey": 21}]}
+
+    assert roster_full_name(profile, "Mo") == "Morrighan Wright"
+    assert roster_full_name(profile, "mo") == "Morrighan Wright"
+    assert roster_full_name(profile, "Morrighan") == "Morrighan Wright"
+    # ...and the same person is reachable by nickname at clip time.
+    assert get_jersey_by_name(profile, "Mo") == 21
+
+
+# --- enrolling an export ----------------------------------------------------
+
+def test_unknown_boxes_are_never_enrolled():
+    """They are the opponents and refs; one shared 'unknown' would match anyone."""
+    from soccer_vision.cli.enroll import UNNAMED_LABEL, named_boxes
+
+    profile = {"roster": [{"name": "Morrighan Wright", "nickname": "Mo", "jersey": 21}]}
+    boxes = [(10, (0, 0, 1, 1), "Mo"), (10, (2, 2, 3, 3), UNNAMED_LABEL)]
+
+    named, unresolved = named_boxes(boxes, profile)
+
+    assert [n for _, _, n in named] == ["Morrighan Wright"]
+    assert not unresolved
+
+
+def test_a_label_off_the_roster_is_kept_but_flagged():
+    """Usually a nickname the profile doesn't know — which would split a player."""
+    from soccer_vision.cli.enroll import named_boxes
+
+    profile = {"roster": [{"name": "Morrighan Wright", "jersey": 21}]}
+
+    named, unresolved = named_boxes([(10, (0, 0, 1, 1), "Mo")], profile)
+
+    assert [n for _, _, n in named] == ["Mo"]
+    assert unresolved == {"Mo": 1}
+
+
+def test_export_finds_its_frames_by_number(tmp_path):
+    """Label Studio's own paths are server-side; the frame number is what travels."""
+    from argparse import Namespace
+
+    from soccer_vision.cli.enroll import _labelled_frames
+
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    for name in ("004476.jpg", "008952.jpg", "index.txt"):
+        (frames / name).touch()
+    export = tmp_path / "annotations.json"
+    export.touch()
+
+    got = _labelled_frames(export, Namespace(frames=None))
+
+    assert sorted(got) == [4476, 8952]
+    assert got[4476].name == "004476.jpg"
+
+
 def test_only_nameable_boxes_are_kept():
     """Distant crowd is what makes a frame look 'busy'; it can't be labelled."""
     from soccer_vision.cli.enroll import labellable_boxes
