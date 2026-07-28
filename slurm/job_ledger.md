@@ -573,3 +573,38 @@ Next: cheapest wins first, in order — (1) sequential reader, ~1.1 h off every 
   re-check id stability since rotation is what fragments lanes; (3) a tighter
   player prompt to cut masklet count. Only after those, consider whether the ball
   needs its own session every frame — it re-encodes the same image for one object.
+
+### Job 38177302 — SAM3 tracklets with per-track referee vote
+**Date:** 2026-07-27
+**Why:** The frame-level referee veto in 38162552 dropped 654 player boxes (~1.1/frame)
+  and visibly cost two foreground players. Replaced with a per-track vote: accumulate
+  the fraction of a track's frames that overlap a referee box, drop the whole track
+  only above --ref-vote (0.6). A track is either the official or it isn't.
+**Result:** COMPLETED (exit 0, 14m46s). Fix works — keyframe kf_02_f34895 shows the
+  #7 foreground player recovered as t24, with the actual referee still correctly
+  unboxed. Vote dropped 2/58 tracks (563 detections) vs the veto's 654; rows 8000 ->
+  8128; continuity drops 46 -> 9.
+**But the over-firing diagnosis was WRONG.** The new diagnostic shows SAM3's "referee"
+  concept returns 1.13 objects/frame (min 0, median 1, max 3) — well-behaved, not
+  over-matching. The problem was never a greedy concept; it was that a *correct*
+  concept's occasional frame-level overlap deleted real players outright. The vote
+  fixes exactly that failure mode, but the magnitude was smaller than the raw 654
+  suggested: only 91 detections were recovered, the other 563 being two genuine
+  referee/official tracks.
+**Effect on the verdict: none.** TAAD output is byte-identical to 38162552 — 35 events,
+  block 18, shot 7, pass 5, throw-in 3, drive 1, cross 1, header 0, tackle 0. The
+  recovered player never entered TAAD's top-13-longest-tracks-per-team selection. So
+  the class collapse is not a referee-filter artifact, and this is now the third
+  distinct tracklet configuration (RF-DETR, SAM3, SAM3+vote) to produce the same
+  inverted distribution.
+**Behaviour change to know about:** the referee veto now runs AFTER tracking for both
+  detectors so they share one code path. `--ref-filter frame` is therefore no longer
+  bit-identical to the July runs (ByteTrack now sees referee boxes before they are
+  filtered). The controlled comparison it existed for is finished.
+**Still open (unrelated, and now looks more urgent):** the turf polygon fails in the
+  blue env ("unreliable") but succeeds in the repo .venv (75% of frame) on the same
+  window — an OpenCV-version sensitivity, not a data problem. With the mask off,
+  sideline spectators are tracked, and being stationary they form LONG STABLE tracks —
+  exactly what TAAD's top-13-longest selection favours. The July runs had the mask on.
+  This is an uncontrolled variable in both SAM3 runs and worth fixing before any
+  further TAAD-on-our-footage work.

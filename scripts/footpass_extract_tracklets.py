@@ -1,10 +1,28 @@
 """Extract FOOTPASS-format tracklets from one of our videos (pipeline "A").
 
-Composes the existing soccer-vision modules — RF-DETR player detection
-(`detection/rfdetr.py`) + ByteTrack (`tracking/bytetrack.py`) + jersey-colour
-team clustering (`tracking/teams.py`) — and writes a tactical HDF5 in the schema
-the FOOTPASS TAAD dataloader expects, so a trained TAAD can predict actions on
-our footage.
+Composes the existing soccer-vision modules — player detection + tracking +
+jersey-colour team clustering (`tracking/teams.py`) — and writes a tactical HDF5
+in the schema the FOOTPASS TAAD dataloader expects, so a trained TAAD can predict
+actions on our footage.
+
+``--detector`` picks the front end:
+
+- ``rfdetr`` (default) — RF-DETR (`detection/rfdetr.py`) + ByteTrack
+  (`tracking/bytetrack.py`). What the July 2026 smoke runs used.
+- ``sam3`` — SAM3 text-prompted concept segmentation (`tracking/sam3.py`), one
+  session per concept ("soccer player" / "soccer ball" / "referee") sharing one
+  copy of the weights. Detects and tracks in a single pass, so ByteTrack is not
+  involved and object ids come from SAM3's masklet memory.
+
+**Why the choice matters here.** TAAD is *track-aware*: tracklets are its input,
+not the raw video, and it scores only the top-13 longest tracks per team. On our
+Veo footage RF-DETR finds 5-6 players/frame against SAM3's 20-22, so the July
+runs fed TAAD a pitch with most of the players missing. The in-domain detector
+eval (job 38133841) showed RF-DETR is *not* a weak detector — 0.977 recall on
+broadcast, better than SAM3's 0.925 — which means its Veo behaviour is domain
+shift, and the tracklets it produced there cannot be assumed adequate. Swapping
+to SAM3 separates "the action head doesn't transfer" from "the input was
+incomplete"; the two were confounded before.
 
 Schema (one row per (player, frame), matching `utils/TAAD_Dataset.py`):
     FRAME, PLAYER_ID, LEFT_TO_RIGHT(team 0/1), SHIRT_NUMBER, ROLE_ID,
@@ -119,17 +137,49 @@ def main() -> int:
                     help="px slack outside the field polygon still counted as on-field")
     ap.add_argument("--ball-conf", type=float, default=0.2,
                     help="confidence threshold for the ball (kept lower than players — it's small)")
-    ap.add_argument("--drop-referees", action="store_true", default=True,
-                    help="drop player boxes that overlap a detected referee (default on)")
+    ap.add_argument("--ref-filter", choices=["vote", "frame", "off"], default="vote",
+                    help="vote: drop a whole track only if it overlaps a referee in most of "
+                         "its frames (robust to per-frame flicker); frame: drop individual "
+                         "boxes that overlap a referee in that frame; off: no referee removal")
+    ap.add_argument("--ref-iou", type=float, default=0.45,
+                    help="IoU above which a player box counts as overlapping a referee box")
+    ap.add_argument("--ref-vote", type=float, default=0.6,
+                    help="--ref-filter vote: fraction of a track's frames that must overlap a "
+                         "referee before the whole track is dropped")
     ap.add_argument("--min-track-coverage", type=float, default=0.5,
                     help="drop a track present in fewer than this fraction of frames within its "
                          "own lifespan — flickery tracks are usually supporters/referees")
     ap.add_argument("--min-track-frames", type=int, default=10,
                     help="drop tracks seen in fewer than this many frames total")
+    ap.add_argument("--detector", choices=["rfdetr", "sam3"], default="rfdetr",
+                    help="rfdetr: RF-DETR + ByteTrack; sam3: SAM3 text-prompt detect+track")
+    ap.add_argument("--sam3-chunk", type=int, default=30,
+                    help="SAM3 session rotation length. Each session's masklet memory grows "
+                         "~0.12GB/frame and three concepts run at once, so keep this well "
+                         "below the single-tracker default of 60 or the GPU runs out.")
     args = ap.parse_args()
 
-    det = RFDETRSoccerDetector.from_pretrained(device=args.device)
-    tracker = create_tracker()
+    det = tracker = None
+    players_tr = ball_tr = ref_tr = None
+    if args.detector == "sam3":
+        if args.stride != 1:
+            return print("ERROR: --detector sam3 needs --stride 1 (tracking needs "
+                         "consecutive frames to keep object ids)") or 2
+        from soccer_vision.tracking.sam3 import SAM3PlayerTracker
+
+        players_tr = SAM3PlayerTracker(device=args.device, prompt="soccer player",
+                                       chunk_frames=args.sam3_chunk)
+        # One model, driven by text: extra concepts need only their own session,
+        # not another ~3GB of weights.
+        ball_tr = SAM3PlayerTracker.sharing(players_tr, "soccer ball")
+        ref_tr = (SAM3PlayerTracker.sharing(players_tr, "referee")
+                  if args.ref_filter != "off" else None)
+        for tr in (players_tr, ball_tr, ref_tr):
+            if tr is not None:
+                tr.start()
+    else:
+        det = RFDETRSoccerDetector.from_pretrained(device=args.device)
+        tracker = create_tracker()
     teams = TeamClassifier()
 
     cap = cv2.VideoCapture(args.video)
@@ -164,57 +214,120 @@ def main() -> int:
     rows = []       # (frame, track_id, x, y, w, h)
     ball_rows = []  # (frame, px, py, conf) — best on-field ball per frame
     n_off = n_ref = n_ball = 0
+    n_ref_objs = []  # referee objects seen per frame — diagnostic for over-firing
     for t in range(f0, f1):
         ok, frame = cap.read()
         if not ok:
             break
         if (t - f0) % args.stride:
             continue
-        dets = det.predict(frame, conf_threshold=min(args.ball_conf, args.conf))
-        if len(dets) == 0:
-            continue
-        cid = np.asarray(dets.class_id)
-        conf = np.asarray(dets.confidence)
-        xyxy_all = np.asarray(dets.xyxy)
+        if args.detector == "sam3":
+            # SAM3 detects and tracks in one pass per concept, so there is no
+            # class-id split and no ByteTrack. Note --conf is not applied here:
+            # SAM3 scores an object once at birth and keeps that value for its
+            # life, so a per-frame confidence gate is inert (job 38133841 —
+            # identical metrics at 0.2/0.3/0.5). Filtering happens via the
+            # tracker's own min_score.
+            tracked = players_tr.track(frame)
+            ball_dets = ball_tr.track(frame)
+            ref_boxes = (np.asarray(ref_tr.track(frame).xyxy)
+                         if ref_tr is not None else np.empty((0, 4)))
+            ball_cands = [
+                ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0, float(c))
+                for b, c in zip(np.asarray(ball_dets.xyxy), np.asarray(ball_dets.confidence))
+            ] if len(ball_dets) else []
+            n_ref_objs.append(len(ref_boxes))
+        else:
+            dets = det.predict(frame, conf_threshold=min(args.ball_conf, args.conf))
+            if len(dets) == 0:
+                continue
+            cid = np.asarray(dets.class_id)
+            conf = np.asarray(dets.confidence)
+            xyxy_all = np.asarray(dets.xyxy)
 
-        # --- ball: highest-confidence ball detection that's on the field ---
-        bmask = np.isin(cid, list(BALL_CLASS_IDS)) & (conf >= args.ball_conf)
-        for bi in np.argsort(-conf[bmask]) if bmask.any() else []:
-            bx, by, bx2, by2 = xyxy_all[bmask][bi]
-            cx_b, cy_b = (bx + bx2) / 2.0, (by + by2) / 2.0
+            # --- ball: every ball detection above threshold, best-first below ---
+            bmask = np.isin(cid, list(BALL_CLASS_IDS)) & (conf >= args.ball_conf)
+            ball_cands = [
+                (float((xyxy_all[i][0] + xyxy_all[i][2]) / 2.0),
+                 float((xyxy_all[i][1] + xyxy_all[i][3]) / 2.0), float(conf[i]))
+                for i in np.where(bmask)[0]
+            ]
+
+            # --- referees: RF-DETR often also emits a spurious 'player' box on the
+            # same official, so referee boxes veto overlapping player boxes below ---
+            ref_boxes = (xyxy_all[cid == REFEREE_CLASS_ID] if args.ref_filter != "off"
+                         else np.empty((0, 4)))
+            n_ref_objs.append(len(ref_boxes))
+
+            # --- players (+ goalkeepers), tracked ---
+            pmask = np.isin(cid, list(PLAYER_CLASS_IDS)) & (conf >= args.conf)
+            keep = list(np.where(pmask)[0])
+            players = dets[np.array(keep, dtype=int)] if keep else dets[np.zeros(len(dets), bool)]
+            tracked = track_detections(tracker, players)
+
+        # --- ball: highest-confidence candidate that is on the field ---
+        for cx_b, cy_b, cb in sorted(ball_cands, key=lambda c: -c[2]):
             if on_field_pt(cx_b, cy_b):
-                ball_rows.append((t, float(cx_b), float(cy_b), float(conf[bmask][bi])))
+                ball_rows.append((t, cx_b, cy_b, cb))
                 n_ball += 1
                 break
 
-        # --- referees: their boxes veto overlapping player boxes (RF-DETR often
-        # also emits a spurious 'player' box on the same official) ---
-        ref_boxes = xyxy_all[cid == REFEREE_CLASS_ID] if args.drop_referees else np.empty((0, 4))
-
-        # --- players (+ goalkeepers), referee- and field-filtered, then tracked ---
-        pmask = np.isin(cid, list(PLAYER_CLASS_IDS)) & (conf >= args.conf)
-        keep = []
-        for i in np.where(pmask)[0]:
-            box = xyxy_all[i]
-            if any(_iou(box, r) > 0.45 for r in ref_boxes):
+        if tracked is None or len(tracked) == 0 or tracked.tracker_id is None:
+            continue
+        # SAM3 carries a per-player mask; sampling jersey colour inside it instead
+        # of over the whole box is what turned the team split from "blue, blue"
+        # into "black, blue" on this footage (overhead boxes are mostly turf).
+        masks = getattr(tracked, "mask", None)
+        for k, (xyxy, tid) in enumerate(zip(tracked.xyxy, tracked.tracker_id)):
+            x1, y1, x2, y2 = [float(v) for v in xyxy]
+            ref_hit = any(_iou((x1, y1, x2, y2), r) > args.ref_iou for r in ref_boxes)
+            if args.ref_filter == "frame" and ref_hit:
                 n_ref += 1
                 continue
-            keep.append(i)
-        players = dets[np.array(keep, dtype=int)] if keep else dets[np.zeros(len(dets), bool)]
-        tracked = track_detections(tracker, players)
-        if tracked.tracker_id is None:
-            continue
-        for xyxy, tid in zip(tracked.xyxy, tracked.tracker_id):
-            x1, y1, x2, y2 = [float(v) for v in xyxy]
             if not on_field(x1, y1, x2, y2):
                 n_off += 1
                 continue
-            rows.append((t, int(tid), x1, y1, x2 - x1, y2 - y1))
-            teams.add_sample(int(tid), frame, xyxy)
+            rows.append((t, int(tid), x1, y1, x2 - x1, y2 - y1, ref_hit))
+            # A box that overlapped a referee is a suspect colour sample whichever
+            # way the vote later goes, so it never feeds the team clusterer.
+            if not ref_hit:
+                teams.add_sample(int(tid), frame, xyxy,
+                                 masks[k] if masks is not None else None)
     cap.release()
     if field_poly is not None:
         print(f"[field-mask] dropped {n_off} off-field detections")
-    print(f"[referee] dropped {n_ref} player boxes overlapping a referee")
+    if n_ref_objs:
+        ro = np.array(n_ref_objs)
+        print(f"[referee] detector returned {ro.mean():.2f} referee objects/frame "
+              f"(min {ro.min()}, median {int(np.median(ro))}, max {ro.max()}) — a real match "
+              f"has 1-3, so a high number here means the concept is over-matching")
+
+    # Referee removal by per-track vote. A player is not a referee for three frames
+    # and then not one again: frame-level vetoes delete real players wherever the
+    # referee concept flickers onto them (654 boxes, ~1.1/frame, in job 38162552,
+    # which visibly cost two foreground players). A track is either the official or
+    # it isn't, so decide once over its whole lifetime.
+    n_ref_tracks = 0
+    if args.ref_filter == "vote":
+        hits, total = {}, {}
+        for r in rows:
+            tid = r[1]
+            total[tid] = total.get(tid, 0) + 1
+            hits[tid] = hits.get(tid, 0) + (1 if r[6] else 0)
+        ref_tracks = {tid for tid in total if hits[tid] / total[tid] >= args.ref_vote}
+        near_miss = sorted(
+            (hits[t] / total[t] for t in total if 0.2 <= hits[t] / total[t] < args.ref_vote),
+            reverse=True)[:5]
+        n_before_ref = len(rows)
+        rows = [r for r in rows if r[1] not in ref_tracks]
+        n_ref = n_before_ref - len(rows)
+        n_ref_tracks = len(ref_tracks)
+        print(f"[referee] vote>={args.ref_vote:.0%}: dropped {n_ref_tracks}/{len(total)} tracks "
+              f"({n_ref} detections)"
+              + (f"; kept tracks with ref-overlap "
+                 f"{', '.join(f'{v:.0%}' for v in near_miss)}" if near_miss else ""))
+    elif args.ref_filter == "frame":
+        print(f"[referee] frame veto: dropped {n_ref} player boxes overlapping a referee")
     n_sampled = max(1, (f1 - f0) // args.stride)
     print(f"[ball] detected in {n_ball}/{n_sampled} frames ({n_ball/n_sampled:.0%})")
 
@@ -247,7 +360,7 @@ def main() -> int:
     rows.sort(key=lambda r: (r[1], r[0]))
     out = []
     prev = {}
-    for (t, tid, x, y, w, h) in rows:
+    for (t, tid, x, y, w, h, _ref_hit) in rows:
         team_key = teams._track_team.get(tid)  # team_a / team_b / None
         lr = key_to_lr.get(team_key, 0)
         cx, foot = (x + w / 2) / W, (y + h) / H  # normalised foot point
@@ -269,9 +382,13 @@ def main() -> int:
         "fps": fps, "start_frame": f0, "num_frames": args.num_frames, "stride": args.stride,
         "n_tracks": int(len(set(r[1] for r in rows))), "n_rows": len(out),
         "team_names": tname, "note": "SHIRT_NUMBER=-1, ROLE_ID=0, CLS=0 (unknown)",
+        "detector": args.detector,
         "field_mask": args.field_mask, "off_field_dropped": int(n_off),
         "field_polygon": field_poly.reshape(-1, 2).tolist() if field_poly is not None else None,
         "referees_dropped": int(n_ref),
+        "ref_filter": args.ref_filter, "ref_iou": args.ref_iou, "ref_vote": args.ref_vote,
+        "ref_tracks_dropped": int(n_ref_tracks),
+        "ref_objects_per_frame_mean": round(float(np.mean(n_ref_objs)), 2) if n_ref_objs else 0.0,
         "tracks_dropped_flicker": int(len(flicker)),
         "ball_detected_frames": int(n_ball),
         "ball_track": [[int(t), round(px, 1), round(py, 1), round(c, 3)] for (t, px, py, c) in ball_rows],
@@ -281,11 +398,14 @@ def main() -> int:
 
     if args.preview:
         _render_preview(args.video, arr, W, H, fps, f0, f1, args.preview, tname, field_poly,
-                        {int(r[0]): (r[1], r[2]) for r in ball_rows})
+                        {int(r[0]): (r[1], r[2]) for r in ball_rows},
+                        stack="SAM3+team" if args.detector == "sam3"
+                        else "RF-DETR+ByteTrack+team")
     return 0
 
 
-def _render_preview(video, arr, W, H, fps, f0, f1, out, tname, field_poly=None, ball_by_frame=None):
+def _render_preview(video, arr, W, H, fps, f0, f1, out, tname, field_poly=None,
+                    ball_by_frame=None, stack="RF-DETR+ByteTrack+team"):
     ball_by_frame = ball_by_frame or {}
     cap = cv2.VideoCapture(video)
     cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
@@ -312,7 +432,7 @@ def _render_preview(video, arr, W, H, fps, f0, f1, out, tname, field_poly=None, 
             cv2.circle(frame, (int(bx), int(by)), 9, (0, 255, 255), -1, cv2.LINE_AA)
             cv2.circle(frame, (int(bx), int(by)), 9, (0, 0, 0), 2, cv2.LINE_AA)
         cv2.rectangle(frame, (0, 0), (W, 30), (0, 0, 0), -1)
-        cv2.putText(frame, f"OUR FOOTAGE  f{t}  {t/fps:.1f}s  RF-DETR+ByteTrack+team  (no TAAD yet)",
+        cv2.putText(frame, f"OUR FOOTAGE  f{t}  {t/fps:.1f}s  {stack}  (no TAAD yet)",
                     (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1, cv2.LINE_AA)
         writer.write(frame)
     cap.release()
