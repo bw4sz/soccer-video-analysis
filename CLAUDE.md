@@ -535,15 +535,27 @@ measure with leave-one-frame-out before trusting a gallery on a new venue.
 **What's been ruled out, so nobody re-treads it** (all on the same 45 held-out
 crops, `slurm/validate_reid_frames.py`):
 
-- **Balancing exemplars per player does not help.** The errors *look* like
-  hubness — 13 of 26 name the same player, and the three 8-exemplar players
-  absorb most of the rest — but capping every player at 2 or 3 exemplars leaves
-  rank-1 unchanged (19/45 → 19/45 and 18/45) and costs precision. The imbalance
-  is not what's driving the confusions.
+- **Capping exemplars per player does not fix the imbalance.** Rank-1 is
+  unchanged (19/45 → 19/45 at cap 2, 18/45 at cap 3) and precision drops —
+  because capping discards a player's *good* crops as readily as her bad ones.
+  Read this narrowly: it rules out the cap, **not** the imbalance, which does
+  bite (below).
 - **`top_k` trades recall for precision, it doesn't add accuracy.** At
   `min_margin` 0.05: `top_k=1` names 13 at 9/13, `top_k=2` names 11 at 9/11,
   `top_k=3` (default) names 6 at 5/6. Zero-margin accuracy is 19/45 for all
   three. Pick a point on that curve; there is no free win on it.
+
+**How the imbalance actually bites**, since the counts alone don't show it. A
+player's score is the **mean of her top-3 exemplars**, so few exemplars means
+averaging two excellent matches against one bad one, while a player with seven
+draws three consistent-but-mediocre ones. On frame 8952 the query is Leire, her
+two nearest exemplars in the whole gallery are Leire at 0.792 and 0.787 — and
+she ties Morrighan at 0.701 because her third is 0.524 against Morrighan's
+0.728/0.712/0.664. Margin 0.000, abstain. Same on frame 4476, where Catherine's
+0.703 rank-1 exemplar leaves her outside the top four *players*. `top_k=1` names
+both correctly; that is the 13-vs-6 in the table above, not a coincidence.
+Distinguish this from an honest near-miss: on the same frame Morrighan's own
+query wins at 0.736 against 0.709 and abstains purely because 0.028 < 0.05.
 - **Absolute brightness is not the problem** — dark and bright halves score
   10/22 and 9/23.
 
