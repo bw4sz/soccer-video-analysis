@@ -14,7 +14,7 @@ Build **soccer-vision**: an open-source soccer video analysis toolkit that repli
 
 **Do not use "Veo" as a camera type anywhere.** Veo is a commercial vendor we are replacing. Use: *raw match footage*, *single-camera*, *wide-angle*, *panoramic*.
 
-**Do not use Ultralytics/YOLO.** Use Transformers-based models (RF-DETR, opensportslib, SAM3) + [supervision](https://github.com/roboflow/supervision).
+**Do not use Ultralytics/YOLO.** Use Transformers-based models (RF-DETR, opensportslib) + [supervision](https://github.com/roboflow/supervision).
 
 ---
 
@@ -131,7 +131,6 @@ soccer-video-analysis/          # repo root; consider renaming to soccer-vision
 │   │   └── ball.py             # ball-specific detection
 │   ├── tracking/
 │   │   ├── bytetrack.py        # supervision ByteTrack wrapper
-│   │   ├── sam3.py             # SAM3 player masks (optional GPU)
 │   │   └── gamestate.py        # sn-gamestate / TrackLab adapter
 │   ├── events/
 │   │   ├── on_ball.py          # player↔ball proximity spans (pixel space)
@@ -196,7 +195,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gpu = ["inference[gpu]"]       # SAM3 streaming
 gui = ["pyside6>=6.6", "supervision[desktop]"]
 broadcast = ["tracklab"]       # sn-gamestate; heavy, install on demand
 train = ["lightning"]
@@ -215,7 +213,6 @@ dev = ["pytest", "ruff", "sphinx"]
 |---|---|---|
 | Ball + players + GK + referee | RF-DETR fine-tuned on SoccerNet | `julianzu9612/RFDETR-Soccernet` (HF) |
 | Small ball fallback | RF-DETR ball-only | `eeeeeeeeeeeeee3/soccer-ball-detection` (HF) |
-| Player segmentation / tracking | SAM3 | `transformers` / Roboflow inference |
 | Multi-object IDs | ByteTrack | `supervision` |
 | Field calibration | sn-calibration | [Google Drive weights](https://drive.google.com/file/d/1dbN7LdMV03BR1Eda8n7iKNIyYp9r07sM) |
 | Player positions + jersey + team | sn-gamestate / TrackLab | Zenodo auto-download |
@@ -320,7 +317,7 @@ back-compat aliases.)
 - **Team assignment** is v1 by **jersey colour** (`tracking/teams.py`): cluster
   tracked players into two teams and name each cluster (blue / white / ...), so
   events are filterable by `--team blue`. Jersey OCR → named roster (sn-jersey /
-  sn-gamestate) and SAM3 masklet identity are later phases behind the same seam.
+  sn-gamestate) and appearance re-id are later phases behind the same seam.
 - **Association** (`events/associate.py`) tags each event with the nearest
   player's `track_id` and their `team`; persisted on the `events` table and in
   OSL. Clips are then selectable per team or per player (track), composable with
@@ -676,7 +673,6 @@ Integration tests with real video: manual / optional nightly workflow.
 ### Phase 5 — Advanced Models
 - [ ] sn-gamestate / TrackLab adapter (optional `[broadcast]` extra)
 - [ ] sn-teamspotting / opensportslib LocalizationModel
-- [ ] SAM3 player tracking (optional `[gpu]` extra)
 - [ ] opensportslib upstream PRs
 
 ### Phase 6 — Publish
@@ -717,7 +713,6 @@ Integration tests with real video: manual / optional nightly workflow.
 |---|---|
 | RF-DETR slow on CPU | Downsample for detection; run broadcast step at 5 fps |
 | sn-gamestate install heavy | Optional `[broadcast]` extra |
-| SAM3 requires GPU | Graceful fallback to RF-DETR + ByteTrack |
 | Jersey OCR fails on youth kits | Manual roster mapping in profile + GUI tag editor |
 | AGPL (opensportslib) | Open-source soccer-vision; note in README |
 | Single-camera calibration weak | **Realized, worse than expected** — Hough scored 0/6 on Veo and failed destructively (garbage metres typed as valid). Registration removed; turf-mask segmentation is the replacement direction |

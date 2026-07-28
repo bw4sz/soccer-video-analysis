@@ -7,8 +7,13 @@ kits:
   - black   # away
   - white   # home
 
+# `nickname` is optional. It replaces the first name in the Label Studio label
+# list `enroll --dump-frames` writes — annotators click what the squad actually
+# calls someone — and enrolment maps it back, so the gallery stays keyed by the
+# full name and `--player Si` / `--player Simon` / `--number 6` all agree.
 roster:
   - name: Simon Weinstein
+    nickname: Si
     jersey: 6
 
 claude:

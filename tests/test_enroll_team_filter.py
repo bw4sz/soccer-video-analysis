@@ -56,3 +56,175 @@ def test_falls_back_to_cache_when_run_predates_kit_stamping(tmp_path):
     teams = _resolve_track_teams(tmp_path, tracks, [], reader=None, args=_args())
 
     assert teams == {7: "black", 9: "white"}
+
+
+# --- frame-labelling project (`enroll --dump-frames`) -----------------------
+
+def test_frame_stays_pixel_exact_through_label_studio():
+    """The detector's pixel box must survive the percentage round trip.
+
+    That is what lets a human label a *person* on a full frame while the model
+    still crops at whatever size it trains on.
+    """
+    from soccer_vision.cli.enroll import _rect_result
+    from soccer_vision.identify.enroll import boxes_from_label_studio
+
+    bbox = (812.0, 431.0, 838.0, 494.0)
+    result = _rect_result(bbox, 1920, 1080, track_id=7)
+    result["value"] = dict(result["value"], rectanglelabels=["Simon Weinstein"])
+    export = [{"data": {"frame": 288}, "annotations": [{"result": [result]}]}]
+
+    (frame, parsed, name), = boxes_from_label_studio(export)
+
+    assert frame == 288
+    assert name == "Simon Weinstein"
+    assert np.allclose(parsed, np.asarray(bbox), atol=1e-6)
+
+
+def test_frame_spanning_boxes_are_dropped():
+    """A ballooned tracker lane would cover every real player in the UI."""
+    from soccer_vision.cli.enroll import _plausible_player_box
+
+    assert _plausible_player_box((812, 431, 838, 494), 1920, 1080)      # a player
+    assert not _plausible_player_box((0, 190, 1560, 490), 1920, 1080)   # spans the frame
+    assert not _plausible_player_box((100, 400, 260, 430), 1920, 1080)  # wider than tall
+    assert not _plausible_player_box((100, 400, 101, 402), 1920, 1080)  # too small
+
+
+def test_labeling_config_offers_every_roster_name_plus_unknown():
+    from soccer_vision.cli.enroll import UNNAMED_LABEL, _frame_labeling_config
+
+    xml = _frame_labeling_config(["Simon Weinstein", "Ada Lovelace"])
+
+    assert '<Label value="Simon Weinstein"/>' in xml
+    assert '<Label value="Ada Lovelace"/>' in xml
+    assert f'value="{UNNAMED_LABEL}"' in xml
+    assert 'zoomControl="true"' in xml
+
+
+# --- first-name labels ------------------------------------------------------
+
+def test_labels_are_first_names():
+    """A coach picks "Morrighan" off a dropdown, not "Morrighan Wright"."""
+    from soccer_vision.cli.enroll import label_names
+
+    roster = [{"name": "Morrighan Wright", "jersey": 21},
+              {"name": "Iris McDonald", "jersey": 50}]
+
+    assert label_names(roster) == ["Morrighan", "Iris"]
+
+
+def test_shared_first_names_get_a_surname_initial():
+    from soccer_vision.cli.enroll import label_names
+
+    roster = [{"name": "Morgan Lobey"}, {"name": "Morgan Kelly"}, {"name": "Iris McDonald"}]
+
+    assert label_names(roster) == ["Morgan L.", "Morgan K.", "Iris"]
+
+
+def test_picked_label_maps_back_to_the_roster_name():
+    """The gallery is keyed by the full name, so --player/--number still resolve."""
+    from soccer_vision.cli.enroll import roster_full_name
+
+    profile = {"roster": [{"name": "Morrighan Wright", "jersey": 21},
+                          {"name": "Morgan Lobey"}, {"name": "Morgan Kelly"}]}
+
+    assert roster_full_name(profile, "Morrighan") == "Morrighan Wright"
+    assert roster_full_name(profile, "Morgan L.") == "Morgan Lobey"
+    assert roster_full_name(profile, "Morrighan Wright") == "Morrighan Wright"
+    # An opponent typed in by hand is kept, not silently dropped.
+    assert roster_full_name(profile, "Rangers keeper") == "Rangers keeper"
+
+
+# --- nicknames --------------------------------------------------------------
+
+def test_nickname_replaces_the_first_name_on_the_label_list():
+    """A squad calls her Mo, so that's what the annotator should be clicking."""
+    from soccer_vision.cli.enroll import label_names
+
+    roster = [{"name": "Morrighan Wright", "nickname": "Mo"},
+              {"name": "Iris McDonald"}]
+
+    assert label_names(roster) == ["Mo", "Iris"]
+
+
+def test_nickname_resolves_back_to_the_roster_name():
+    """Otherwise "Mo" and "Morrighan Wright" become two players in one gallery."""
+    from soccer_vision.cli.enroll import roster_full_name
+    from soccer_vision.profiles.loader import get_jersey_by_name
+
+    profile = {"roster": [{"name": "Morrighan Wright", "nickname": "Mo", "jersey": 21}]}
+
+    assert roster_full_name(profile, "Mo") == "Morrighan Wright"
+    assert roster_full_name(profile, "mo") == "Morrighan Wright"
+    assert roster_full_name(profile, "Morrighan") == "Morrighan Wright"
+    # ...and the same person is reachable by nickname at clip time.
+    assert get_jersey_by_name(profile, "Mo") == 21
+
+
+# --- enrolling an export ----------------------------------------------------
+
+def test_unknown_boxes_are_never_enrolled():
+    """They are the opponents and refs; one shared 'unknown' would match anyone."""
+    from soccer_vision.cli.enroll import UNNAMED_LABEL, named_boxes
+
+    profile = {"roster": [{"name": "Morrighan Wright", "nickname": "Mo", "jersey": 21}]}
+    boxes = [(10, (0, 0, 1, 1), "Mo"), (10, (2, 2, 3, 3), UNNAMED_LABEL)]
+
+    named, unresolved = named_boxes(boxes, profile)
+
+    assert [n for _, _, n in named] == ["Morrighan Wright"]
+    assert not unresolved
+
+
+def test_a_label_off_the_roster_is_kept_but_flagged():
+    """Usually a nickname the profile doesn't know — which would split a player."""
+    from soccer_vision.cli.enroll import named_boxes
+
+    profile = {"roster": [{"name": "Morrighan Wright", "jersey": 21}]}
+
+    named, unresolved = named_boxes([(10, (0, 0, 1, 1), "Mo")], profile)
+
+    assert [n for _, _, n in named] == ["Mo"]
+    assert unresolved == {"Mo": 1}
+
+
+def test_export_finds_its_frames_by_number(tmp_path):
+    """Label Studio's own paths are server-side; the frame number is what travels."""
+    from argparse import Namespace
+
+    from soccer_vision.cli.enroll import _labelled_frames
+
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    for name in ("004476.jpg", "008952.jpg", "index.txt"):
+        (frames / name).touch()
+    export = tmp_path / "annotations.json"
+    export.touch()
+
+    got = _labelled_frames(export, Namespace(frames=None))
+
+    assert sorted(got) == [4476, 8952]
+    assert got[4476].name == "004476.jpg"
+
+
+def test_only_nameable_boxes_are_kept():
+    """Distant crowd is what makes a frame look 'busy'; it can't be labelled."""
+    from soccer_vision.cli.enroll import labellable_boxes
+
+    near = (800, 400, 830, 470)      # 70px tall — a player near the camera
+    far = (300, 350, 310, 362)       # 12px tall — someone by the next pitch
+    kept = labellable_boxes([near, far], frame_h=1080)
+
+    assert kept == [near]
+
+
+def test_boxes_below_keeps_the_near_pitch():
+    """At a complex the frame holds another match; only position separates them."""
+    from soccer_vision.cli.enroll import boxes_below
+
+    near = (900, 700, 930, 800)      # feet at y=800
+    far = (400, 300, 420, 360)       # feet at y=360, the next pitch over
+
+    assert boxes_below([near, far], frame_h=1080, min_y_frac=0.45) == [near]
+    assert boxes_below([near, far], frame_h=1080, min_y_frac=0.0) == [near, far]

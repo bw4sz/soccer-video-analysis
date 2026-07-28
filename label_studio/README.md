@@ -4,13 +4,13 @@ Two annotation jobs feed the pipeline, and they are **not** the same task:
 
 | | What you label | Where | Feeds |
 |---|---|---|---|
-| **1. Player identity (re-id)** | which track is which player | a file browser + review sheets — no Label Studio needed | `gallery.npz` → `identify --method reid` → `--player` clips |
+| **1. Player identity (re-id)** | which player each detected box is | Label Studio | `gallery.npz` → `identify --method reid` → `--player` clips |
 | **2. Events** | what happened in a clip | Label Studio | corrected event labels → action-recognition training |
 
 Both follow the same split: **compute stays on HPC, labelling happens on your
-laptop.** The artifacts you actually annotate are small (a crops folder is
-~2 MB; clips downscale to a few hundred MB); the videos and models they come
-from are not (a run directory is ~10 GB). So every walkthrough below is
+laptop.** The artifacts you actually annotate are small (a 24-frame labelling
+export is ~1 MB; clips downscale from 6.1 GB to ~350 MB); the videos and models
+they come from are not (a run directory is ~10 GB). So every walkthrough below is
 *generate on HPC → sync down → label locally → sync back*.
 
 Paths on HPC are under `/orange/ewhite/b.weinstein/soccer-video-analysis/`;
@@ -33,20 +33,20 @@ pip install label-studio    # laptop only, for the event pathway
 Labelling itself needs neither GPU nor models — a laptop clone is only there to
 run Label Studio and, optionally, `annotate --export`.
 
-**Each team needs a processed run.** Crops and clips both come out of
-`runs/<match_id>/`, so a squad you haven't processed yet (U10B, U14G) needs one
-`soccer-vision process` pass first — on HPC, via SLURM, since SAM3 detection is
-the expensive step:
+**Enrolment needs no processed run.** `enroll --video ... --dump-frames` detects
+on the two dozen frames it exports and nothing else, so a squad you've never
+processed (U10B, U14G) can be labelled straight off the raw file in seconds. Going
+through `process` for this was a 5-GPU-hour job that never finished (38176317).
+
+**Clips do need one**, so a match you actually want footage from gets a
+`soccer-vision process` pass — on HPC, via SLURM, since detection wants a GPU:
 
 ```bash
-soccer-vision process data/<match>.mp4 --out-dir runs --match-id <team>-<date> \
-  --config examples/saints-u11-sam3.yaml
+sbatch slurm/submit_process.sh data/<match>.mp4 <team>-<date> \
+  examples/profiles/<team>.yaml
 ```
 
-For **enrolment only**, you don't need the whole match. A gallery wants a few
-good exemplars per player, not coverage — process a 5–10 minute segment per
-team and dump crops from that. It turns an 8-hour job into a short one, and the
-gallery it produces is just as usable.
+Detection is RF-DETR (~1.6 h for a 60-min match, most of it video decoding).
 
 ---
 
@@ -57,99 +57,122 @@ The goal is a `gallery.npz` per squad: each player's appearance banked once, so
 (OCR only manages ~34% of crops on overhead footage). Full background:
 [Enroll](../CLAUDE.md#enroll--carry-a-teams-appearances-instead-of-re-reading-jerseys).
 
-### 1a. Dump crops (HPC)
+**Two routes, and which one depends on whether the match is processed.**
+
+| | Tracklets (1d) | Frames (1a-1c) |
+|---|---|---|
+| You see | a 20s clip, every player ringed and numbered | one still frame, boxes pre-drawn |
+| You do | pick a name per number | pick a name per box |
+| One decision buys | every crop in that lane (~7-30) | one crop |
+| Cues available | position, motion, who they're next to | position, neighbours |
+| Needs | a `process` run (`tracks.json`) | nothing — runs off raw video |
+| Sync size | ~15 MB per window | ~1 MB for 24 frames |
+
+Use **tracklets** when the match is processed — it is far higher yield, and the
+motion is what makes a child recognisable. Use **frames** for a match you haven't
+processed, or when you want a gallery started in the next ten minutes.
+
+(Renaming folders of track crops used to be a third route; it was removed on
+2026-07-28, see the note at the end of this section.)
+
+### 1a. Export frames to label (HPC)
 
 ```bash
+# From a processed run:
 soccer-vision enroll --run runs/<match_id> \
-  --dump-crops runs/<match_id>/enroll_crops \
-  --context-pad 1.0 --context-min 160
+  --dump-frames runs/<match_id>/label_frames \
+  --profile examples/profiles/<team>.yaml --n-frames 24 --min-players 8
+
+# Or straight off the video, with no `process` run at all — detection runs on
+# the two dozen exported frames only, which takes seconds:
+soccer-vision enroll --video data/<match>.mp4 \
+  --dump-frames runs/<match_id>_label_frames \
+  --profile examples/profiles/<team>.yaml --n-frames 24 --min-players 8
 ```
 
-Writes one folder per ByteTrack lane (`track_0021__ocr20/` — the `__ocr20`
-suffix is the jersey number OCR voted, a hint while labelling), plus
-`index_*.jpg` review sheets. Only the `--max-tracks 60` longest lanes are
-dumped; a full match fragments into ~2,000 lanes (1,663 over 20 frames on the
-Saints U11 match), which is far more than anyone will label and unnecessary for
-a gallery.
+Writes `frames/*.jpg` (full resolution), `labeling_config.xml` (one label per
+roster player plus `unknown`), and `label_studio_tasks.json` with **every
+detected player already boxed**. A 24-frame export is ~1 MB and carries ~530
+boxes.
 
-> **Zoom the review sheets in.** The tight crop that feeds the model is
-> ~50×21 px — unidentifiable in a file browser. The sheets pull back and outline
-> the target so you can use position, teammates and direction of play to tell
-> who it is. The **defaults (`--context-pad 3.0 --context-min 384`) are too wide
-> to recognise a child**: you see a pitch with a small yellow box on it. At
-> `--context-pad 1.0 --context-min 160` the player fills the tile, kit and hair
-> colour read clearly, and a jersey number is occasionally legible. Use those
-> values. They change the *review sheets only* — the enrolled crops are
-> unaffected, so re-dumping to retune costs nothing but a couple of minutes.
+Frames are picked one per equal time bin, taking the **busiest** frame in each —
+even spacing alone lands on warm-ups and stoppages where three players stand in
+one corner. Boxes that balloon across the frame (a known tracker artifact) are
+dropped so they don't cover every real player in the UI.
 
-### 1b. Sync down (laptop)
+> **Why this beats labelling crops.** A player is ~29 px tall here, so a track
+> crop is 14×20 px — you cannot recognise a child from it at any zoom, and
+> that's *by design*: it's the size the re-id model trains on. Labelling on the
+> full frame separates the two. You identify a person using everything in the
+> picture; Label Studio stores the box as percentages, `enroll` converts it back
+> to exact pixels, and the model crops to whatever size it wants at enrolment
+> time. Covered by a round-trip test in
+> [`tests/test_enroll_team_filter.py`](../tests/test_enroll_team_filter.py).
+
+> **Leave `--team` off here.** Filtering to one kit hides lanes the colour
+> classifier got wrong, and a missing box is invisible to you — you'd never know
+> a player wasn't offered. Better to see every person and delete the ones that
+> aren't yours.
+
+### 1b. Sync down and label (laptop)
 
 ```bash
-mkdir -p ~/soccer-annotation/<match_id>
-rsync -avP b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/enroll_crops/ \
-  ~/soccer-annotation/<match_id>/enroll_crops/
+mkdir -p ~/soccer-annotation/runs/<match_id>
+rsync -avP b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/label_frames/ \
+  ~/soccer-annotation/runs/<match_id>/label_frames/
+
+export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+export LOCAL_FILES_DOCUMENT_ROOT=$HOME/soccer-annotation/runs
+label-studio start
 ```
 
-~2 MB for 57 tracks. Seconds, not minutes.
+Create the project from `labeling_config.xml`, import
+`label_studio_tasks.json`, then per frame: **name** each box that's one of your
+players, **delete** the boxes for opponents, referees and sideline figures.
+Anything left `unknown` is skipped at enrolment rather than guessed at. Zoom in
+(the control is enabled in the config) — the players are small.
 
-### 1c. Label by renaming folders (laptop)
+You don't need every box on every frame. A handful of confident names per player
+across a few frames is already a working gallery.
 
-Open `index_001.jpg` … side by side with the folder list, then:
+**Renaming a label is fine** (a squad's nickname beats a formal first name), but
+put the nickname in the profile too — `nickname: Mo` under that roster entry.
+Enrolment maps it back to the full name; without it, "Mo" and "Morrighan Wright"
+become two players in one gallery. `enroll` prints every label that didn't
+resolve to a roster name, so check that line.
 
-- **Rename** each folder you recognise to the player's name —
-  `track_0021__ocr20/` → `Simon Weinstein/`. Match the roster names in the
-  team profile (`examples/profiles/saints-u11.yaml`) so `--player` resolves.
-- **Merge** several lanes into one player's folder when they're the same child.
-  This is encouraged — more poses per player makes a better gallery entry.
-- **Delete** everything you can't identify, plus opponents, referees and
-  sideline figures. The tracker picks up spectators behind the barrier and the
-  ref in yellow; enrolling either poisons the gallery.
-- **Leave** anything you're unsure about as `track_*`. Folders keeping that
-  prefix are skipped, so a half-finished pass enrols only what you named.
+### 1c. Enrol the export (HPC)
 
-Aim for every player on your squad appearing in at least one folder. Both kits
-matter: a gallery built from black-away tracks will abstain on every white-home
-track, so enrol one match of each and `--append`.
-
-### 1d. Sync back and enrol (HPC)
+Export → JSON from Label Studio and **drop it back into the same folder as the
+frames** (`runs/<match_id>/label_frames/annotations.json`) — the crops are cut
+from those JPEGs, so nothing else needs to be present:
 
 ```bash
-# laptop
-rsync -avP --delete ~/soccer-annotation/<match_id>/enroll_crops/ \
-  b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/enroll_crops/
+rsync -avP ~/soccer-annotation/runs/<match_id>/label_frames/annotations.json \
+  b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/label_frames/
 
-# HPC
-soccer-vision enroll --run runs/<match_id> \
-  --from-crops runs/<match_id>/enroll_crops \
+soccer-vision enroll --from-label-studio runs/<match_id>/label_frames/annotations.json \
+  --profile examples/profiles/<team>.yaml \
   --out galleries/<team>.npz          # add --append for later matches
 
 soccer-vision identify --run runs/<match_id> --method reid \
   --gallery galleries/<team>.npz --profile examples/profiles/<team>.yaml
 ```
 
-`--delete` matters on the way back: it's what makes the folders you deleted
-locally actually disappear on HPC.
+No `--run` and no GPU: enrolment reads the labelled frames off disk and embeds a
+few hundred crops on CPU in seconds. If the frames aren't beside the export, say
+where they are with `--frames <dir>`, or let it decode them from the source video
+with `--video`.
 
-### Alternative: draw boxes in Label Studio
+Both kits matter: a gallery built only from black-away frames will abstain on
+every white-home track, so label one match of each and `--append`.
 
-Whole-track accept/reject is faster, but for a player no track cleanly isolates
-— a keeper in a different kit, a child who only ever appears mid-cluster — you
-can label boxes on individual frames instead:
-
-1. Export frames from the run's proxy and set up a project with
-   `rectanglelabels`, one `<Label value="..."/>` per roster name:
-   ```xml
-   <View><Image name="img" value="$image"/>
-     <RectangleLabels name="player" toName="img">
-       <Label value="Simon Weinstein"/>
-     </RectangleLabels></View>
-   ```
-2. Tasks carry the frame number in `data.frame` (or a numeric filename stem).
-3. Enrol the export: `soccer-vision enroll --run runs/<match_id>
-   --from-label-studio export.json --out galleries/<team>.npz`.
-
-Slower per player, but it's ground truth and it reaches players the folder route
-can't.
+> **Why there's no crop-folder route any more.** `--dump-crops` wrote a folder of
+> crops per ByteTrack lane for you to rename, with `index_*.jpg` review sheets so
+> you could tell the lanes apart. But a player is ~29 px tall on this footage, so
+> every knob it grew (`--context-pad`, `--context-min`, `--sheet-tile-height`)
+> existed to pull the *view* back out to a full frame — i.e. to reconstruct what
+> Label Studio shows you for free. Removed 2026-07-28 along with `--from-crops`.
 
 ---
 

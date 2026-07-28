@@ -155,6 +155,115 @@ python extract_clips.py \
 
 ---
 
+## Detector — RF-DETR
+
+`process` detects players and the ball with **RF-DETR**
+(`julianzu9612/RFDETR-Soccernet`, wired in `detection/rfdetr.py`). It is the only
+detector; SAM3 was evaluated and **removed on 2026-07-28** (see below). Submit a
+match with `slurm/submit_process.sh`, which defaults to
+`examples/process_match.yaml`.
+
+```bash
+sbatch slurm/submit_process.sh data/<match>.mp4 <match-id> examples/profiles/<team>.yaml
+```
+
+**Measured behaviour**, across all four of our cameras plus four harvested youth
+clips (jobs 38223174 / 38223284):
+
+| | RF-DETR |
+|---|---|
+| Weights | public, no HF gate |
+| s/detection-frame, 1080p / 720p | **0.045** / 0.038 |
+| Scaling in object count | flat from 15 to 30 objects/frame |
+| Full 60-min match | ~1.6 h, **mostly video decoding** (~0.2 h is detection) |
+| FOOTPASS broadcast F1 @IoU 0.5 | 0.902 |
+| FOOTPASS broadcast recall | 0.977 |
+
+If a run comes back thin, try `conf_threshold: 0.15`
+(`examples/saints-u11-0.15-threshold.yaml`). RF-DETR is also **fine-tunable**
+(`rfdetr`'s `train()`; our checkpoint is already a SoccerNet fine-tune), which is
+the real lever for overhead/Veo footage — the labelled frames from `enroll` are
+training data. Its numbers above are unoptimized; `optimize_for_inference(
+dtype=float16)` is an untouched speed lever.
+
+### Why SAM3 was removed — do not reintroduce it without new evidence
+
+SAM3 (`facebook/sam3`) was briefly the default and is now deleted from the repo.
+The case for it collapsed on every axis:
+
+- **The count that motivated it never reproduced.** It was adopted on a Veo
+  player *count* (5-6/frame for RF-DETR vs 20-22 for SAM3) that was never
+  ground-truthed. Job 38162552 measured RF-DETR at 20.4 detections/frame against
+  SAM3's 13.3 on the same clip; the figure had conflated two different videos.
+- **RF-DETR is the better detector where ground truth exists** — F1 0.902 vs
+  0.835, recall 0.977 vs 0.925 on FOOTPASS broadcast (job 38133841).
+- **It cost 29-39x per frame on every video tested**, 1.08-1.70 s/frame against
+  RF-DETR's 0.038-0.046, projecting to 5.4-8.5 h per match against ~0.2 h. The
+  gap is a property of the models, not the footage.
+- **The weights are HF-gated**, so a fresh clone or a new collaborator fails in a
+  way no caching fixes — against an ethos of *quick, dirty and easy*.
+
+Its one genuine advantage was a steadier ball track (p95 jump 208px vs RF-DETR's
+905px, job 37883252) and longer-lived object ids. Both are worth fixing on the
+RF-DETR path rather than paying 30x compute for.
+
+**Two known costs of the RF-DETR path**, both measured on a 3-min U14G Veo clip
+(job 38178685, `runs/u14g-smoke-rfdetr`, 2m45s):
+
+1. **Ball jitter.** RF-DETR's ball is flickery on overhead footage: 84.5% of
+   frames detected, but median frame-to-frame jump 54px and **p95 905px** on a
+   1920px-wide frame. `process` writes `ball_track.json` **raw**, so on-ball
+   spans — the only working selection pathway — inherit that jitter.
+   `soccer_vision.tracking.ball_kalman` exists for exactly this and is *not*
+   wired into `process`; see *Trim empty* below, including the caveat that it
+   over-rejects at the 5 fps `process` samples at.
+
+2. **Track fragmentation.** ByteTrack ids are ephemeral: **856 lanes** in three
+   minutes, median lane length 7 detection-frames (~1.4 s), only 32 lanes
+   reaching 50 frames. This is the fragmentation `enroll`/`identify` already
+   exist to paper over — merging lanes per player. It costs enrolment nothing now
+   that the gallery is built from labelled *frames* rather than from whole lanes,
+   but it does mean OCR bootstrapping (`enroll` off `jerseys.json`) has fewer
+   long lanes to vote on.
+
+Both are worth fixing on the RF-DETR path, where the fixes are cheap and reusable.
+
+### Team colour without a segmentation mask — fixed, and how
+
+A third cost showed up on the same clip and has been dealt with, but the reasoning
+is worth keeping because it will resurface on any new venue.
+
+RF-DETR returns boxes, not the per-player mask `sample_jersey_bgr` had been
+using to sample kit colour from player pixels only. The bbox fallback averaged
+kit with turf and shadow and stamped **624 tracks `black` against 38 `white`** —
+`--team` and every kit-aware query were simply wrong. Two things were going on,
+and only the second one matters:
+
+1. **Turf contamination** — real, and fixed by rejecting grass-hued pixels
+   (`turf_pixels`) inside the torso window. Worth doing, but it was the minor part.
+2. **Shadow** — the actual cause. Under a low sun the local turf ranges over
+   L\* 50–101, so **a white kit in shade is darker than a black kit in sun**. No
+   amount of turf rejection helps: absolute lightness is not the kit's property.
+
+The fix is to judge a player against the grass they are standing on
+(`estimate_local_illuminant` samples a turf ring around the box). A dark kit
+reflects less than that grass, a light kit more, so the *sign* of
+torso-minus-turf lightness names the team. That gave **419 black / 243 white**
+where the old path gave 624/38.
+
+**Clustering cannot find this boundary, so don't try.** The relative-lightness
+histogram is unimodal with a long sunlit-white tail — the two kits abut rather
+than separate — and both k-means and Otsu cut at +53, isolating 12 bright shirts
+out of 188. Zero is the boundary for a physical reason, not a statistical one.
+
+It applies only when the profile's declared kits **straddle** the turf in
+lightness (`lightness_split_kits`): black/white and blue/white qualify, red/blue
+does not, and there the code falls back to colour clustering, where hue separates
+them. Tracks that never see grass (about 1 in 662) are placed by nearest cluster
+colour. `process` prints which route it took as `Team split by:`.
+
+---
+
 ## Trim empty — cut dead time into a shorter clip
 
 Youth matches are mostly dead time (ball out of play, or sitting still while
@@ -299,11 +408,13 @@ that to a ~9 MB backbone and cache it, since those identities aren't our players
 `identify` extra isn't needed for the re-id path, only for the OCR fallback.
 
 ```bash
-# Label a squad by hand: dump crops per track, rename the folders, enrol.
-soccer-vision enroll --run runs/<match> --dump-crops crops/
-#   → crops/track_0021__ocr20/*.jpg ; rename to crops/Simon Weinstein/, drop the rest
-soccer-vision enroll --run runs/<match> --from-crops crops/ \
-                     --out galleries/saints-u11.npz
+# Label a squad by hand — export frames, name the boxes in Label Studio, enrol.
+soccer-vision enroll --video data/<match>.mp4 --dump-frames label_frames/ \
+                     --profile team.yaml --n-frames 24
+#   → label_frames/{frames/,labeling_config.xml,label_studio_tasks.json}
+#   label on a laptop, drop the export back beside the frames, then:
+soccer-vision enroll --from-label-studio label_frames/annotations.json \
+                     --profile team.yaml --out galleries/saints-u11.npz
 
 # Or cold start from OCR: read numbers once, enrol from the reads it got right.
 soccer-vision identify --run runs/<match> --method ocr --profile team.yaml
@@ -320,23 +431,82 @@ soccer-vision enroll --run runs/<next> --append --out galleries/saints-u11.npz
 
 **Three enrolment sources.**
 
-1. **Dump and label folders** (`--dump-crops` → rename → `--from-crops`) — the
-   tracker does the cropping, you do the naming. Folders come out as
-   `track_0021__ocr20/`; rename the ones you recognise to the player, delete the
-   rest, re-run with `--from-crops`. Folders still carrying the `track_` prefix
-   are skipped, so a half-finished pass enrols only what you named. Merging
-   several lanes into one player's folder is encouraged — more poses, better
-   gallery entry. Only the `--max-tracks 60` longest lanes are dumped (a match
-   fragments into ~2,000), and `index_*.jpg` review sheets are written alongside:
-   an overhead camera renders a player in about 50×21 px, unlabellable in a file
-   browser, so the sheets upscale each track's crops into a captioned strip.
-2. **Bootstrap from OCR** (default) — reuse the high-confidence votes in
-   `jerseys.json` (`--min-confidence 0.8 --min-obs 5`). Free, but a
+0. **Label Studio tracklets** (`--dump-tracklets` → label → `--from-tracklets`) —
+   the highest-yield route, and the one to reach for when a gallery is thin.
+   Renders windows of play with every tracked player ringed and numbered, and
+   asks for a name per number; **one decision harvests every crop in that lane**
+   instead of one crop per box. It also gives the annotator motion and pitch
+   position, which is how people actually tell youth players apart ("Morgan
+   plays centre mid") and which no still frame carries. Needs a `process` run
+   for `tracks.json`. See *Tracklet labelling* below for the two things that
+   bite: slot numbers are per window, and a lane's crops are near-duplicates.
+1. **Label Studio frames** (`--dump-frames` → label → `--from-label-studio`) —
+   the no-tracking route: works straight off a raw video with no `process` run,
+   which is why it exists. Every detected player arrives pre-boxed and labelled
+   `unknown`; you name the ones who are yours and delete the rest. Labelling
+   happens on the **full frame**, which is the whole point: an overhead camera
+   renders a player in about 50×21 px, so a crop in isolation is unnameable at
+   any zoom, while on the frame you have position, neighbours and the direction
+   of play to go on. The box round-trips as percentages and converts back to the
+   detector's exact pixels, so the model still crops at the size it trains on.
+   Enrolment reads the JPEGs sitting beside the export, so it needs **no
+   processed run and no video** — `--dump-frames` works straight off `--video`.
+   Boxes left `unknown` are skipped rather than banked under a shared identity.
+2. **Bootstrap from OCR** (`--run`, no other source) — reuse the high-confidence
+   votes in `jerseys.json` (`--min-confidence 0.8 --min-obs 5`). Free, but a
    confident-wrong read enrols the wrong player, so pass `--exclude-jersey 1`
    (PARSeq's hallucination class on this footage).
-3. **Label Studio** (`--from-label-studio export.json`) — `rectanglelabels`
-   named after players, for when you want boxes drawn on frames rather than
-   whole tracks accepted or rejected.
+
+Labelling folders of track crops (`--dump-crops` / `--from-crops`, with
+`index_*.jpg` review sheets) was the third route and is **gone** — deleted
+2026-07-28. It asked people to name a player from a contact sheet of wide
+context tiles instead of from the picture itself, and every knob added to make
+those tiles readable (`--context-pad`, `--sheet-tile-height`) was working around
+the fact that the crop is the wrong thing to look at. Label Studio on frames
+does the same job better; don't reintroduce it.
+
+### Tracklet labelling — one decision per lane
+
+```bash
+# Render windows of play with every lane of our squad ringed and numbered:
+soccer-vision enroll --run runs/<match> --dump-tracklets runs/<match>/tracklets \
+    --profile examples/profiles/<team>.yaml --team black \
+    --window 20 --n-windows 8 --max-lanes 12
+
+# Label in Label Studio, drop the export back beside the manifest, then:
+soccer-vision enroll --run runs/<match> \
+    --from-tracklets runs/<match>/tracklets/annotations.json \
+    --out galleries/<team>.npz --append
+```
+
+**Slot numbers are per window, and the manifest is not optional.** Label Studio
+fixes its labelling config for a whole project, but ByteTrack ids differ in every
+window — so a config naming real track ids cannot exist. Each window ranks its
+lanes and hands out slots 1..N, the config declares N dropdowns once, and
+`tracklets.json` records what each slot meant. Lose that file and the export is
+uninterpretable; `--manifest` points at it if it isn't beside the export.
+
+**A lane is worth many crops but few *views*.** Median lane on the U14G RF-DETR
+run is 7 detection-frames (~1.4 s), so its crops are one pose in one light —
+`--max-samples` caps how many are taken per lane, because 129 near-duplicates
+from one lane would swamp a gallery built from a dozen genuine views. The answer
+to a thin gallery is **more windows and more videos**, not longer ones, which is
+why `--n-windows` spreads evenly across the match rather than seeking out busy
+passages.
+
+`not ours` and `unsure` are first-class options in every dropdown and enrol
+nothing. Both exist so an annotator clearing a form never has to guess — a guess
+banks the wrong appearance under a real player's name, which is worse than a gap.
+
+**Nicknames.** A roster entry may carry `nickname: Mo`, which replaces the first
+name in the annotator's label list — a squad clicking "Mo" twenty times a frame
+shouldn't have to translate "Morrighan" each time. Enrolment maps it back to the
+full name, so the gallery is keyed consistently and `--player Mo`,
+`--player Morrighan` and `--number 21` all reach the same person. A label that
+resolves to nobody on the roster is still enrolled (it may be a hand-typed
+opponent) but is **reported at enrolment** — usually it means a nickname is
+missing from the profile, which would otherwise split one player into two
+gallery entries.
 
 **Config / fallback.** `identify --method` takes `auto` (default — `reid+ocr`
 when a gallery is present, else `ocr`), `ocr`, `reid`, or `reid+ocr`. `reid+ocr`
@@ -380,9 +550,69 @@ Tune `min_margin`, not `min_similarity`. And **the abstentions are not noise** �
 raising the margin costs recall fast without buying precision, because at 0.05
 precision is already 100%. Leave it at 0.05 and let OCR pick up the rest.
 
-Untested and worth knowing before trusting this: everything above is *within one
-match*, so same kit, light and camera position. Cross-match generalisation — the
-actual reason to carry a gallery — needs a second processed match to measure.
+Read those numbers narrowly. That test holds out a *lane* and matches it against
+other lanes of the same player minutes away in the same match — one player
+against 7, with a mean over many crops each.
+
+**The harder test, and it does not pass yet.** On the U14G gallery built from a
+Label Studio export (`galleries/saints-u14g.npz`, 47 exemplars over 11 players,
+2026-07-28) leave-one-**frame**-out — build the gallery from the rest of the
+match, then name a player in a frame they were not enrolled from:
+
+| min_margin | named of 45 | correct when named |
+|---|---|---|
+| 0.00 (no abstention) | 45 | **19/45 (42%)** |
+| 0.02 | 24 | 12/24 |
+| 0.05 (default) | 6 | 5/6 |
+| 0.10 | 2 | 2/2 |
+
+**42% at zero margin is the ceiling** — that is pure nearest neighbour with
+nothing thrown away, so no threshold can do better, and it is not a tuning
+problem. Chance is 9%, so the embedding carries real signal and nowhere near
+enough of it. The abstention machinery is doing its job (5/6 at the default,
+protecting you from a 58% error rate) but 13% recall is not usable.
+
+The deeper reason this is harder than the SoccerNet task the weights were trained
+on: re-ID normally separates people by **clothing**, and teammates wear an
+identical kit. At ~53x76 px all that's left is build, hair and gait. Expect this
+to need far more labelled frames than the broadcast literature implies — and
+measure with leave-one-frame-out before trusting a gallery on a new venue.
+
+**What's been ruled out, so nobody re-treads it** (all on the same 45 held-out
+crops, `slurm/validate_reid_frames.py`):
+
+- **Capping exemplars per player does not fix the imbalance.** Rank-1 is
+  unchanged (19/45 → 19/45 at cap 2, 18/45 at cap 3) and precision drops —
+  because capping discards a player's *good* crops as readily as her bad ones.
+  Read this narrowly: it rules out the cap, **not** the imbalance, which does
+  bite (below).
+- **`top_k` trades recall for precision, it doesn't add accuracy.** At
+  `min_margin` 0.05: `top_k=1` names 13 at 9/13, `top_k=2` names 11 at 9/11,
+  `top_k=3` (default) names 6 at 5/6. Zero-margin accuracy is 19/45 for all
+  three. Pick a point on that curve; there is no free win on it.
+
+**How the imbalance actually bites**, since the counts alone don't show it. A
+player's score is the **mean of her top-3 exemplars**, so few exemplars means
+averaging two excellent matches against one bad one, while a player with seven
+draws three consistent-but-mediocre ones. On frame 8952 the query is Leire, her
+two nearest exemplars in the whole gallery are Leire at 0.792 and 0.787 — and
+she ties Morrighan at 0.701 because her third is 0.524 against Morrighan's
+0.728/0.712/0.664. Margin 0.000, abstain. Same on frame 4476, where Catherine's
+0.703 rank-1 exemplar leaves her outside the top four *players*. `top_k=1` names
+both correctly; that is the 13-vs-6 in the table above, not a coincidence.
+Distinguish this from an honest near-miss: on the same frame Morrighan's own
+query wins at 0.736 against 0.709 and abstains purely because 0.028 < 0.05.
+- **Absolute brightness is not the problem** — dark and bright halves score
+  10/22 and 9/23.
+
+**Two leads that did survive.** Rank-1 is 42% but the correct player is in the
+**top 3 exemplars 62%** of the time, so there is signal the current scoring
+doesn't extract. And accuracy tracks **contrast and box size**, not brightness:
+the low-contrast half scores 7/22 against 12/23 for the high-contrast half, same
+for small vs large boxes, and the late backlit frames where the black kit
+silhouettes (83552-101456) manage 3/13 against 16/32 earlier in the match. On 45
+crops those splits are suggestive, not conclusive — worth re-checking on a bigger
+annotation set before building on them.
 
 **Caveat.** The gallery is kit- and season-specific. A team with two kits (Saints
 run black away / white home) needs both enrolled, or a home gallery will abstain

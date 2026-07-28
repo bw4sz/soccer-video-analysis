@@ -1,3 +1,15 @@
+# Default processing config: RF-DETR for players and ball.
+#
+# Public weights (julianzu9612/RFDETR-Soccernet — no HuggingFace gate), 0.045
+# s/detection-frame at 1080p and flat in object count, and where we have ground
+# truth it is also the better detector — F1 0.902, recall 0.977 on FOOTPASS
+# broadcast (job 38133841).
+#
+# Overhead cameras render players small; if a run comes back thin, drop
+# conf_threshold to 0.15 (see examples/saints-u11-0.15-threshold.yaml).
+detector:
+  conf_threshold: 0.3
+
 # Only applied when `soccer-vision process` is run with --broadcast (off by
 # default — most footage doesn't need the crop).
 broadcast:

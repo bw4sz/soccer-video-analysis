@@ -100,26 +100,68 @@ def main():
     p_enroll = subparsers.add_parser(
         "enroll", help="Bank a team's appearances into a re-id gallery (carried between matches)"
     )
-    p_enroll.add_argument("--run", required=True, help="Run directory path")
+    p_enroll.add_argument("--run", help="Run directory path")
+    p_enroll.add_argument("--video",
+                          help="Export labelling frames straight from a video, detecting "
+                               "only on the exported frames — no `process` run needed "
+                               "(with --dump-frames)")
     p_enroll.add_argument("--profile", help="Project profile YAML (maps jersey → name)")
-    p_enroll.add_argument("--out", help="Gallery path (default: <run>/gallery.npz)")
+    p_enroll.add_argument("--out",
+                          help="Gallery path (default: gallery.npz beside the run, or "
+                               "beside a --from-label-studio export)")
     p_enroll.add_argument("--append", action="store_true",
                           help="Merge into the existing gallery instead of replacing it")
-    p_enroll.add_argument("--dump-crops", metavar="DIR",
-                          help="Write a folder of crops per track for hand labelling, "
-                               "then exit (rename folders to players, re-run --from-crops)")
-    p_enroll.add_argument("--from-crops", metavar="DIR",
-                          help="Enrol from crop folders named after players")
-    p_enroll.add_argument("--from-label-studio",
-                          help="Enrol from a Label Studio rectanglelabels export "
-                               "(default: bootstrap from jerseys.json OCR votes)")
+    p_enroll.add_argument("--dump-frames", metavar="DIR",
+                          help="Write whole frames + a Label Studio project for naming "
+                               "players on them, then exit. Boxes come pre-drawn from "
+                               "tracks.json; enrol the export with --from-label-studio")
+    p_enroll.add_argument("--dump-tracklets", metavar="DIR",
+                          help="Write windows of play as clips with every tracked "
+                               "player ringed and numbered, plus a Label Studio "
+                               "project naming them. One decision per lane harvests "
+                               "every crop in it; enrol with --from-tracklets")
+    p_enroll.add_argument("--from-tracklets", metavar="JSON",
+                          help="Enrol from a --dump-tracklets export (needs the "
+                               "tracklets.json manifest beside it, and --run for the "
+                               "video the crops are cut from)")
+    p_enroll.add_argument("--manifest", metavar="JSON",
+                          help="tracklets.json for --from-tracklets, if it isn't "
+                               "beside the export")
+    p_enroll.add_argument("--window", type=float, default=20.0, metavar="SEC",
+                          help="Seconds per tracklet window (default: 20)")
+    p_enroll.add_argument("--n-windows", type=int, default=8,
+                          help="Windows to render, spread across the match (default: 8). "
+                               "Spread beats length — a gallery wants varied views, and "
+                               "one lane's crops are 1.4s of near-duplicates")
+    p_enroll.add_argument("--max-lanes", type=int, default=12,
+                          help="Lanes ringed per window, longest first (default: 12). "
+                               "Fixes the number of dropdowns in the config")
+    p_enroll.add_argument("--n-frames", type=int, default=20,
+                          help="Frames to export for labelling, spread across the match "
+                               "(default: 20)")
+    p_enroll.add_argument("--min-players", type=int, default=4,
+                          help="Skip frames showing fewer than this many players of the "
+                               "selected team (default: 4)")
+    p_enroll.add_argument("--min-y-frac", type=float, default=0.0,
+                          help="Keep only detections whose feet are below this fraction of "
+                               "frame height — the way to exclude a neighbouring pitch's "
+                               "match at a multi-field complex (e.g. 0.45; 0 keeps all)")
+    p_enroll.add_argument("--min-motion", type=float, default=6.0,
+                          help="Drop detections that barely move between frames half a "
+                               "second apart — the seated crowd and the next pitch over "
+                               "(default: 6.0 grey levels; 0 disables)")
+    p_enroll.add_argument("--serve-root",
+                          help="Label Studio LOCAL_FILES_DOCUMENT_ROOT the frame paths are "
+                               "written relative to (default: the runs/ base)")
+    p_enroll.add_argument("--from-label-studio", metavar="JSON",
+                          help="Enrol from a Label Studio rectanglelabels export — the "
+                               "labelled frames beside it are the crops, so no run or "
+                               "video is needed (default: bootstrap from jerseys.json)")
+    p_enroll.add_argument("--frames", metavar="DIR",
+                          help="Where the frames a --from-label-studio export was drawn "
+                               "on live (default: frames/ beside the export)")
     p_enroll.add_argument("--min-track-frames", type=int, default=20,
                           help="Skip tracks shorter than this when dumping (default: 20)")
-    p_enroll.add_argument("--context-pad", type=float, default=3.0,
-                          help="Review-sheet view: box sizes of context around the "
-                               "player (default: 3.0). Does not affect enrolled crops")
-    p_enroll.add_argument("--context-min", type=int, default=384,
-                          help="Review-sheet view: minimum window in pixels (default: 384)")
     p_enroll.add_argument("--team",
                           help="Only dump lanes on this kit colour (e.g. black) — usually "
                                "you enrol one squad, not both. Uses the `teams` block of "
@@ -127,16 +169,6 @@ def main():
     p_enroll.add_argument("--team-frames", type=int, default=300,
                           help="Frames sampled to classify kit colour when tracks.json "
                                "carries no `teams` block (default: 300)")
-    p_enroll.add_argument("--sheet-samples", type=int, default=6,
-                          help="Review-sheet view: tiles per track (default: 6). Independent "
-                               "of --max-samples, which sets how many crops are enrolled")
-    p_enroll.add_argument("--sheet-tile-height", type=int, default=180,
-                          help="Review-sheet view: rendered height per tile (default: 180). "
-                               "Raise it alongside --context-pad — a wider window drawn at "
-                               "the same height just shrinks the player again")
-    p_enroll.add_argument("--max-tracks", type=int, default=60,
-                          help="Dump only the N longest tracks (default: 60) — a match "
-                               "fragments into hundreds of lanes, more than anyone labels")
     p_enroll.add_argument("--weights", help="Re-id checkpoint (default: sportsreid OSNet_x1_0)")
     p_enroll.add_argument("--device", default=None, help="PyTorch device: cpu / cuda")
     p_enroll.add_argument("--max-samples", type=int, default=20,

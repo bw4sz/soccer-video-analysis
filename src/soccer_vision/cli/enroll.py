@@ -17,20 +17,39 @@ def run_enroll(args):
     import numpy as np
 
     from soccer_vision.clips.halo import load_track_boxes
-    from soccer_vision.identify.enroll import (
-        boxes_from_label_studio,
-        crops_from_directory,
-        names_from_jerseys,
-    )
-    from soccer_vision.identify.gallery import (
-        build_gallery,
-        load_gallery,
-        merge_galleries,
-        save_gallery,
-    )
-    from soccer_vision.identify.reid import ReIDEmbedder, crop_player, embed_tracks
+    from soccer_vision.identify.enroll import names_from_jerseys
+    from soccer_vision.identify.reid import ReIDEmbedder, embed_tracks
     from soccer_vision.io.video import VideoReader
     from soccer_vision.profiles.loader import load_profile
+
+    profile = load_profile(args.profile) if args.profile else None
+    exclude = {int(n) for n in (args.exclude_jersey or [])}
+
+    print("=== soccer-vision enroll ===")
+
+    # Labelling frames needs boxes on a couple of dozen frames — not a tracked,
+    # team-clustered match. `--video` detects on those frames alone, so a squad
+    # can be enrolled straight off raw footage with no `process` run at all.
+    if args.video and args.dump_frames:
+        print(f"Video:  {args.video}")
+        _dump_frames_from_video(Path(args.video), Path(args.dump_frames), args)
+        return
+
+    # An annotation export ships beside the frames it labelled, so enrolling it
+    # reads those JPEGs and needs neither a processed run nor the source video.
+    if args.from_label_studio:
+        _enroll_from_label_studio(args, profile)
+        return
+
+    if args.video:
+        print("--video goes with --dump-frames or --from-label-studio; "
+              "other modes read a processed run.")
+        return
+
+    if not args.run:
+        print("enroll needs --run <run-dir>, --video with --dump-frames, "
+              "or --from-label-studio <export.json>.")
+        return
 
     run_dir = Path(args.run)
     tracks_path = run_dir / "tracks.json"
@@ -41,65 +60,69 @@ def run_enroll(args):
         print(f"No broadcast_proxy.mp4 in {run_dir} — run `soccer-vision process` first.")
         return
 
-    profile = load_profile(args.profile) if args.profile else None
-    exclude = {int(n) for n in (args.exclude_jersey or [])}
-
-    print("=== soccer-vision enroll ===")
     print(f"Run:    {run_dir}")
 
-    if args.dump_crops:
-        _dump_crops(run_dir, tracks_path, proxy_path, Path(args.dump_crops), args)
+    if args.dump_frames:
+        _dump_frames(run_dir, tracks_path, proxy_path, Path(args.dump_frames), args)
+        return
+
+    if args.dump_tracklets:
+        _dump_tracklets(run_dir, tracks_path, proxy_path,
+                        Path(args.dump_tracklets), args, profile)
+        return
+
+    if args.from_tracklets:
+        _enroll_from_tracklets(run_dir, tracks_path, proxy_path, out_path, args, profile)
+        return
+
+    jerseys_path = run_dir / "jerseys.json"
+    if not jerseys_path.exists():
+        print(f"No jerseys.json in {run_dir} — run `soccer-vision identify` "
+              "first, or enrol annotations with --from-label-studio.")
         return
 
     print("Loading re-id backbone...")
     embedder = ReIDEmbedder.from_pretrained(weights=args.weights, device=args.device)
 
+    doc = json.loads(jerseys_path.read_text())
+    track_names = names_from_jerseys(
+        doc, profile,
+        min_confidence=args.min_confidence,
+        min_obs=args.min_obs,
+        exclude=exclude,
+    )
+    print(f"Source: jerseys.json — {len(track_names)} tracks above threshold "
+          f"(conf>={args.min_confidence}, n_obs>={args.min_obs})")
+    if not track_names:
+        print("Nothing to enrol. Lower --min-confidence or annotate frames.")
+        return
+
     reader = VideoReader(proxy_path)
     try:
-        if args.from_crops:
-            import cv2
-
-            labelled = crops_from_directory(args.from_crops)
-            print(f"Source: labelled crop folders — {len(labelled)} crops, "
-                  f"{len(set(n for _, n in labelled))} players")
-            images = [(cv2.imread(str(p)), n) for p, n in labelled]
-            images = [(img, n) for img, n in images if img is not None]
-            embeddings = (embedder.embed([img for img, _ in images]) if images
-                          else np.zeros((0, 512), dtype=np.float32))
-            names = [n for _, n in images]
-        elif args.from_label_studio:
-            export = json.loads(Path(args.from_label_studio).read_text())
-            boxes = boxes_from_label_studio(export)
-            print(f"Source: Label Studio — {len(boxes)} labelled boxes")
-            embeddings, names = _embed_boxes(boxes, embedder, reader, crop_player, np)
-        else:
-            jerseys_path = run_dir / "jerseys.json"
-            if not jerseys_path.exists():
-                print(f"No jerseys.json in {run_dir} — run `soccer-vision identify` "
-                      "first, or enrol from annotations with --from-label-studio.")
-                return
-            doc = json.loads(jerseys_path.read_text())
-            track_names = names_from_jerseys(
-                doc, profile,
-                min_confidence=args.min_confidence,
-                min_obs=args.min_obs,
-                exclude=exclude,
-            )
-            print(f"Source: jerseys.json — {len(track_names)} tracks above threshold "
-                  f"(conf>={args.min_confidence}, n_obs>={args.min_obs})")
-            if not track_names:
-                print("Nothing to enrol. Lower --min-confidence or annotate frames.")
-                return
-            per_track = embed_tracks(
-                load_track_boxes(tracks_path), embedder, reader,
-                max_samples_per_track=args.max_samples,
-                track_ids=set(track_names),
-            )
-            embeddings = (np.concatenate(list(per_track.values())) if per_track
-                          else np.zeros((0, 512), dtype=np.float32))
-            names = [track_names[t] for t, e in per_track.items() for _ in range(len(e))]
+        per_track = embed_tracks(
+            load_track_boxes(tracks_path), embedder, reader,
+            max_samples_per_track=args.max_samples,
+            track_ids=set(track_names),
+        )
     finally:
         reader.close()
+
+    embeddings = (np.concatenate(list(per_track.values())) if per_track
+                  else np.zeros((0, 512), dtype=np.float32))
+    names = [track_names[t] for t, e in per_track.items() for _ in range(len(e))]
+
+    _save_gallery(embeddings, names, out_path, args,
+                  next_hint=f"--run {run_dir} --method reid --gallery {out_path}")
+
+
+def _save_gallery(embeddings, names: list[str], out_path: Path, args, *, next_hint: str):
+    """Build, optionally merge, and write the gallery — then say what's in it."""
+    from soccer_vision.identify.gallery import (
+        build_gallery,
+        load_gallery,
+        merge_galleries,
+        save_gallery,
+    )
 
     if len(embeddings) == 0:
         print("No crops could be embedded — nothing enrolled.")
@@ -111,6 +134,7 @@ def run_enroll(args):
         gallery = merge_galleries(existing, gallery, max_per_player=args.max_per_player)
         print(f"Appended to existing gallery ({len(existing['names'])} players in it)")
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     save_gallery(gallery, out_path)
 
     counts = Counter(gallery["names"][i] for i in gallery["label"])
@@ -118,101 +142,717 @@ def run_enroll(args):
     for name, n in counts.most_common():
         print(f"  {name:<24} {n} exemplars")
     print(f"Saved: {out_path}")
-    print(f"Next: soccer-vision identify --run {run_dir} --method reid --gallery {out_path}")
+    print(f"Next: soccer-vision identify {next_hint}")
 
 
-def _dump_crops(run_dir: Path, tracks_path: Path, proxy_path: Path, out_dir: Path, args):
-    """Write one folder of crops per track, for you to rename to player names.
+def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
+                    out_dir: Path, args, profile):
+    """Render windows of play with every lane ringed, plus the Label Studio project.
 
-    Folders are named ``track_<id>`` — plus the jersey number OCR voted, when
-    there is one, as a hint while labelling. Rename a folder to the player and
-    it enrols; leave the prefix and it's skipped.
-
-    Only the ``--max-tracks`` **longest** lanes are dumped. A match fragments
-    into hundreds of lanes (1,995 on the Saints U11 full match, 1,335 of them
-    over 40 frames), which is far more than anyone will label by hand — and
-    unnecessary, since enrolment wants a few good exemplars per player, not
-    coverage. The longest lanes are also the ones that saw the player from the
-    most angles, so they make the best gallery entries.
+    One decision per lane instead of one per box, and the annotator sees motion
+    and pitch position — the cues people actually use to tell youth players
+    apart, and ones no still frame carries.
     """
-    import cv2
-
+    from soccer_vision.annotate.label_studio import local_files_url
+    from soccer_vision.annotate.tracklets import (
+        build_tasks,
+        choose_windows,
+        labeling_config,
+        render_window_clip,
+        write_manifest,
+    )
     from soccer_vision.clips.halo import load_track_boxes
-    from soccer_vision.identify.reid import crop_player
-    from soccer_vision.io.video import VideoReader
+    from soccer_vision.profiles.loader import get_roster
 
-    hints = {}
-    jerseys_path = run_dir / "jerseys.json"
-    if jerseys_path.exists():
-        for tid, info in json.loads(jerseys_path.read_text()).get("tracks", {}).items():
-            if info.get("jersey") is not None:
-                hints[int(tid)] = f"__ocr{info['jersey']}"
+    doc = json.loads(tracks_path.read_text())
+    fps = float(doc.get("fps") or 30.0)
+    teams = {int(k): v for k, v in (doc.get("teams") or {}).items()}
+    track_samples = load_track_boxes(tracks_path)
 
-    tracks = [(t, s) for t, s in load_track_boxes(tracks_path).items()
-              if len(s) >= args.min_track_frames]
-    tracks.sort(key=lambda ts: -len(ts[1]))
+    windows = choose_windows(
+        track_samples, fps=fps, window_s=args.window,
+        n_windows=args.n_windows, min_track_frames=args.min_track_frames,
+        max_lanes=args.max_lanes, teams=teams, team=args.team,
+    )
+    if not windows:
+        print(f"No lane lasted {args.min_track_frames} frames"
+              f"{f' on team {args.team}' if args.team else ''}. "
+              "Lower --min-track-frames, or drop --team.")
+        return
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    clips_dir = out_dir / "clips"
+    serve_root = Path(args.serve_root) if args.serve_root else out_dir.parent
+
+    total_lanes = sum(len(w["lanes"]) for w in windows)
+    crops = sum(lane["n_frames"] for w in windows for lane in w["lanes"])
+    print(f"{len(windows)} windows x {args.window:.0f}s, {total_lanes} lanes ringed "
+          f"({crops} crops behind them, {crops / max(1, total_lanes):.0f} per lane)")
+
+    urls = {}
+    for w in windows:
+        path = clips_dir / f"window_{w['window']:03d}_{int(w['start_s'])}s.mp4"
+        print(f"  window {w['window']}/{len(windows)} at {w['start_s']:.0f}s "
+              f"— {len(w['lanes'])} lanes", flush=True)
+        render_window_clip(proxy_path, path, window=w,
+                           track_samples=track_samples, fps=fps)
+        urls[w["window"]] = local_files_url(path, serve_root)
+
+    names = label_names(get_roster(profile) if profile else [])
+    config = out_dir / "labeling_config.xml"
+    config.write_text(labeling_config(names, args.max_lanes))
+    tasks_path = out_dir / "label_studio_tasks.json"
+    tasks_path.write_text(json.dumps(build_tasks(windows, urls, fps), indent=2))
+    manifest = write_manifest(out_dir / "tracklets.json", run_dir=run_dir,
+                              video=proxy_path, fps=fps, windows=windows,
+                              max_lanes=args.max_lanes)
+
+    size_mb = sum(p.stat().st_size for p in clips_dir.glob("*.mp4")) / 1e6
+    print(f"\nWrote {len(windows)} clips ({size_mb:.0f} MB) → {clips_dir}")
+    print(f"  config:   {config}")
+    print(f"  tasks:    {tasks_path}")
+    print(f"  manifest: {manifest}  (slot → track id; keep it, enrolment needs it)")
+    if not names:
+        print("  NOTE: no --profile roster, so the dropdowns offer only "
+              f"'{'not ours'}'/'unsure' — pass --profile for one option per player.")
+    print("\nNext: sync this folder to the machine running Label Studio, then")
+    print(f"  export LOCAL_FILES_DOCUMENT_ROOT={Path(serve_root).resolve()}")
+    print("  label-studio start   # create project → paste config → import tasks")
+    print(f"Then drop the export back here as {out_dir / 'annotations.json'} and:")
+    print(f"  soccer-vision enroll --run {run_dir} "
+          f"--from-tracklets {out_dir / 'annotations.json'} --out galleries/<team>.npz")
+
+
+def _enroll_from_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
+                           out_path: Path, args, profile):
+    """Enrol every crop in each lane the annotator put a name to."""
+    import numpy as np
+
+    from soccer_vision.annotate.tracklets import boxes_from_tracklet_export
+    from soccer_vision.clips.halo import load_track_boxes
+    from soccer_vision.identify.reid import ReIDEmbedder, crop_player
+    from soccer_vision.io.video import VideoReader
+
+    export_path = Path(args.from_tracklets)
+    manifest_path = (Path(args.manifest) if args.manifest
+                     else export_path.parent / "tracklets.json")
+    if not export_path.exists():
+        print(f"No such export: {export_path}")
+        return
+    if not manifest_path.exists():
+        print(f"No tracklets.json beside the export ({manifest_path}). It carries the "
+              "slot → track id map, which the export doesn't; point at it with "
+              "--manifest.")
+        return
+
+    manifest = json.loads(manifest_path.read_text())
+    track_samples = load_track_boxes(tracks_path)
+    boxes, summary = boxes_from_tracklet_export(
+        json.loads(export_path.read_text()), manifest, track_samples,
+        max_samples_per_lane=args.max_samples,
+    )
+    boxes = [(f, b, roster_full_name(profile, n)) for f, b, n in boxes]
+
+    print(f"Source: tracklets — {summary['lanes_named']} lanes named across "
+          f"{summary['windows']} windows ({summary['lanes_skipped']} skipped as "
+          f"not-ours/unsure), {len(boxes)} crops")
+    for name, n in sorted(summary["per_player"].items(), key=lambda kv: -kv[1]):
+        print(f"  {roster_full_name(profile, name):<24} {n} crops")
+    if not boxes:
+        print("Nothing named in the export — nothing to enrol.")
+        return
+
+    print("Loading re-id backbone...")
+    embedder = ReIDEmbedder.from_pretrained(weights=args.weights, device=args.device)
+
     reader = VideoReader(proxy_path)
-
-    if args.team:
-        teams = _resolve_track_teams(run_dir, tracks_path, tracks, reader, args)
-        wanted = args.team.strip().lower()
-        kept = [(t, s) for t, s in tracks if (teams.get(t) or "").lower() == wanted]
-        unknown = sum(1 for t, _ in tracks if teams.get(t) is None)
-        print(f"Team filter '{wanted}': {len(kept)} of {len(tracks)} lanes "
-              f"({unknown} unclassified, dropped)")
-        if not kept:
-            print(f"  No lanes on team '{wanted}'. Kit colours seen: "
-                  f"{sorted({v for v in teams.values() if v})}")
-            reader.close()
-            return
-        tracks = kept
-
-    print(f"Dumping the {min(args.max_tracks, len(tracks))} longest of "
-          f"{len(tracks)} tracks over {args.min_track_frames} frames...")
-    written = 0
-    # Context tiles are built in the same pass and kept in memory only. They must
-    # never land in a player folder: they show neighbouring players too, so
-    # enrolling one would bank someone else's appearance under this player's name.
-    context: dict[str, list] = {}
-    # The sheet wants a handful of large tiles; the gallery wants many crops.
-    # Tying both to --max-samples forces a choice between a readable sheet and a
-    # well-covered player, so the sheet takes an evenly-spaced subset.
-    sheet_samples = max(1, getattr(args, "sheet_samples", 6))
+    crops, names = [], []
     try:
-        for tid, samples in tracks[:args.max_tracks]:
-            step = max(1, len(samples) // args.max_samples)
-            name = f"track_{tid:04d}{hints.get(tid, '')}"
-            folder = out_dir / name
-            kept = samples[::step][:args.max_samples]
-            tile_stride = max(1, len(kept) // sheet_samples)
-            for i, (frame_no, bbox) in enumerate(kept):
-                frame = reader.read_frame(int(frame_no))
-                if frame is None:
-                    continue
+        by_frame: dict[int, list] = {}
+        for frame_no, bbox, name in boxes:
+            by_frame.setdefault(int(frame_no), []).append((bbox, name))
+        for frame_no in sorted(by_frame):
+            frame = reader.read_frame(frame_no)
+            if frame is None:
+                continue
+            for bbox, name in by_frame[frame_no]:
                 crop = crop_player(frame, bbox)
-                if crop is None:
-                    continue
-                folder.mkdir(exist_ok=True)
-                cv2.imwrite(str(folder / f"{int(frame_no):06d}.jpg"), crop)
-                written += 1
-                if i % tile_stride == 0 and len(context.get(name, ())) < sheet_samples:
-                    context.setdefault(name, []).append(
-                        _context_tile(frame, bbox, args.context_pad, args.context_min)
-                    )
+                if crop is not None:
+                    crops.append(crop)
+                    names.append(name)
     finally:
         reader.close()
 
-    folders = sorted(p for p in out_dir.iterdir() if p.is_dir())
-    sheets = _write_index_sheets(out_dir, folders, context,
-                                 tile_h=getattr(args, "sheet_tile_height", TILE_H))
-    print(f"\nWrote {written} crops across {len(folders)} track folders → {out_dir}")
-    print(f"Review sheets ({len(sheets)}): {sheets[0].parent}/index_*.jpg")
-    print("Next: rename the folders you recognise to player names "
-          "(delete the rest), then:")
-    print(f"  soccer-vision enroll --run {run_dir} --from-crops {out_dir} "
-          f"--out {run_dir / 'gallery.npz'}")
+    embeddings = embedder.embed(crops) if crops else np.zeros((0, 512), dtype=np.float32)
+    _save_gallery(embeddings, names, out_path, args,
+                  next_hint=f"--run {run_dir} --method reid --gallery {out_path}")
+
+
+def _enroll_from_label_studio(args, profile):
+    """Enrol the players named in a Label Studio export.
+
+    The export is annotated against the frames ``--dump-frames`` wrote, and those
+    JPEGs sit beside it — so the crops come off disk at the exact pixels the
+    annotator drew, with no run directory and no video decode. A frame that
+    travelled without its image is read from ``--video`` (or the run's proxy)
+    instead, so an export moved on its own still enrols.
+
+    Boxes left ``unknown`` are skipped rather than banked: they are the opponents
+    and referees the annotator declined to name, and one enrolled under a shared
+    ``unknown`` identity would match everybody.
+    """
+    import cv2
+
+    from soccer_vision.identify.enroll import boxes_from_label_studio
+    from soccer_vision.identify.reid import ReIDEmbedder, crop_player
+
+    export_path = Path(args.from_label_studio)
+    if not export_path.exists():
+        print(f"No such export: {export_path}")
+        return
+    export = json.loads(export_path.read_text())
+
+    boxes = boxes_from_label_studio(export)
+    named, unresolved = named_boxes(boxes, profile)
+
+    frames_with_boxes = {f for f, _, _ in named}
+    print(f"Source: Label Studio — {len(named)} named boxes on "
+          f"{len(frames_with_boxes)} frames "
+          f"({len(boxes) - len(named)} left '{UNNAMED_LABEL}', skipped)")
+    if unresolved:
+        print("  Not on the roster, enrolled under the label as typed: "
+              + ", ".join(f"{k} ({v})" for k, v in unresolved.most_common()))
+        print("  A nickname belongs in the profile (`nickname: Mo`) so the gallery "
+              "is keyed by the player's full name and --player still resolves.")
+    if not named:
+        print("Nothing named in the export — nothing to enrol.")
+        return
+
+    frames = _labelled_frames(export_path, args)
+    print(f"Frames: {len(frames)} images beside the export"
+          if frames else "Frames: none on disk beside the export")
+
+    reader = None
+    missing = sorted(frames_with_boxes - set(frames))
+    if missing:
+        video = (Path(args.video) if args.video
+                 else Path(args.run) / "broadcast_proxy.mp4" if args.run else None)
+        if video and video.exists():
+            from soccer_vision.io.video import VideoReader
+            print(f"  {len(missing)} labelled frames not on disk — reading from {video}")
+            reader = VideoReader(video)
+        else:
+            print(f"  {len(missing)} labelled frames have no image and no --video "
+                  "to read them from; their boxes are skipped.")
+
+    out_path = Path(args.out) if args.out else export_path.parent / "gallery.npz"
+
+    print("Loading re-id backbone...")
+    embedder = ReIDEmbedder.from_pretrained(weights=args.weights, device=args.device)
+
+    by_frame: dict[int, list] = {}
+    for frame_no, bbox, name in named:
+        by_frame.setdefault(int(frame_no), []).append((bbox, name))
+
+    crops, names = [], []
+    try:
+        for frame_no in sorted(by_frame):
+            path = frames.get(frame_no)
+            image = cv2.imread(str(path)) if path else (
+                reader.read_frame(frame_no) if reader else None)
+            if image is None:
+                continue
+            for bbox, name in by_frame[frame_no]:
+                crop = crop_player(image, bbox)
+                if crop is not None:
+                    crops.append(crop)
+                    names.append(name)
+    finally:
+        if reader is not None:
+            reader.close()
+
+    import numpy as np
+
+    embeddings = embedder.embed(crops) if crops else np.zeros((0, 512), dtype=np.float32)
+    hint = f"--run runs/<match> --method reid --gallery {out_path}"
+    _save_gallery(embeddings, names, out_path, args, next_hint=hint)
+
+
+def named_boxes(boxes, profile):
+    """Split parsed export boxes into enrollable ones and a tally of odd labels.
+
+    Two things happen to a label here. Boxes left ``unknown`` are dropped — they
+    are the opponents, referees and sideline figures the annotator declined to
+    name, and banking them under one shared identity would produce a gallery
+    entry that matches everybody. Everything else is resolved through the roster
+    so the gallery is keyed by full names; a label that *doesn't* resolve is kept
+    (it may be a deliberately hand-typed opponent) but counted, because the
+    likelier cause is a nickname missing from the profile, which would silently
+    split one player into two gallery entries.
+    """
+    named, unresolved = [], Counter()
+    for frame_no, bbox, label in boxes:
+        if str(label).strip().lower() == UNNAMED_LABEL:
+            continue
+        name = roster_full_name(profile, label)
+        if profile and not _on_roster(profile, name):
+            unresolved[label] += 1
+        named.append((frame_no, bbox, name))
+    return named, unresolved
+
+
+FRAME_SUFFIXES = {".jpg", ".jpeg", ".png"}
+
+
+def _labelled_frames(export_path: Path, args) -> dict[int, Path]:
+    """``{frame number: image path}`` for the frames the export was drawn on.
+
+    Label Studio's export records its own server-side paths, which mean nothing
+    on the machine enrolling it. The frame number does travel (in ``data.frame``,
+    and in the filename ``--dump-frames`` chose), so images are matched by number
+    against ``frames/`` beside the export — the layout the export folder already
+    has when it comes back from a laptop.
+    """
+    roots = [Path(args.frames)] if getattr(args, "frames", None) else []
+    roots += [export_path.parent / "frames", export_path.parent]
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+        found: dict[int, Path] = {}
+        for img in sorted(root.iterdir()):
+            if img.suffix.lower() not in FRAME_SUFFIXES:
+                continue
+            digits = "".join(c for c in img.stem if c.isdigit())
+            if digits:
+                found.setdefault(int(digits), img)
+        if found:
+            return found
+    return {}
+
+
+def _on_roster(profile: dict | None, name: str) -> bool:
+    """Whether ``name`` is a roster full name — i.e. a label that resolved."""
+    from soccer_vision.profiles.loader import get_roster
+
+    key = (name or "").strip().lower()
+    return any((p.get("name") or "").strip().lower() == key for p in get_roster(profile or {}))
+
+
+def _dump_frames_from_video(video: Path, out_dir: Path, args):
+    """Export labelling frames straight from a video, detecting only on those frames.
+
+    Going through ``process`` to get boxes on two dozen frames means tracking,
+    team-clustering and ball-detecting every sampled frame of the match — on the
+    U14G footage that was still unfinished after 5 GPU-hours (job 38176317).
+    Detection alone is not the bottleneck: RF-DETR runs at ~0.1 s/frame on this
+    same video, so the frames we actually export cost seconds.
+
+    The tradeoff is no track ids and no kit colours, neither of which the
+    labelling pass uses — the annotator supplies identity, which is the point.
+    """
+    import cv2
+
+    from soccer_vision.annotate.label_studio import local_files_url
+    from soccer_vision.detection.field_filter import filter_spectators
+    from soccer_vision.io.video import VideoReader
+    from soccer_vision.profiles.loader import get_roster, load_profile
+
+    reader = VideoReader(video)
+    total = reader.total_frames or 0
+    if total <= 0:  # some containers don't report a count; fall back to duration
+        total = int((reader.fps or 30) * 60 * 10)
+
+    detector = _load_player_detector(args)
+
+    # Detect on a wider pool than we keep, then keep the busiest frame per time
+    # bin — same rule as the run-based path, which cannot be applied before
+    # detection here because there are no tracks to count.
+    pool = max(args.n_frames, args.n_frames * 3)
+    step = max(1, total // (pool + 1))
+    candidates = [step * (i + 1) for i in range(pool)]
+
+    print(f"Detecting players on {len(candidates)} candidate frames "
+          f"(keeping the busiest {args.n_frames})...")
+    found: dict[int, list] = {}
+    for frame_no in candidates:
+        frame = reader.read_frame(frame_no)
+        if frame is None:
+            continue
+        dets = detector(frame)
+        dets = filter_spectators(dets, frame.shape)
+        h, w = frame.shape[:2]
+        boxes = [b for b in _detection_boxes(dets) if _plausible_player_box(b, w, h)]
+        boxes = labellable_boxes(boxes, h)
+        if args.min_y_frac > 0:
+            boxes = boxes_below(boxes, h, args.min_y_frac)
+        if args.min_motion > 0:
+            later = reader.read_frame(frame_no + int((reader.fps or 30) * 0.5))
+            boxes = moving_boxes(boxes, frame, later, min_motion=args.min_motion)
+        if len(boxes) >= args.min_players:
+            found[frame_no] = boxes
+
+    if not found:
+        print(f"No frame had >= {args.min_players} players. Lower --min-players.")
+        reader.close()
+        return
+
+    lo, hi = min(found), max(found)
+    span = max(1, hi - lo + 1)
+    bins: dict[int, int] = {}
+    for f in sorted(found):
+        b = min(args.n_frames - 1, (f - lo) * args.n_frames // span)
+        if b not in bins or len(found[f]) > len(found[bins[b]]):
+            bins[b] = f
+    chosen = sorted(bins.values())
+
+    frames_dir = out_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    serve_root = Path(args.serve_root) if args.serve_root else out_dir.parent
+
+    names = label_names(get_roster(load_profile(args.profile)) if args.profile else [])
+
+    tasks, n_boxes = [], 0
+    try:
+        for frame_no in chosen:
+            frame = reader.read_frame(frame_no)
+            if frame is None:
+                continue
+            path = frames_dir / f"{frame_no:06d}.jpg"
+            cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            h, w = frame.shape[:2]
+            results = [_rect_result(b, w, h, -1) for b in found[frame_no]]
+            n_boxes += len(results)
+            tasks.append({
+                "data": {"image": local_files_url(path, serve_root),
+                         "frame": frame_no,
+                         "timestamp_s": round(frame_no / (reader.fps or 30), 2)},
+                "predictions": [{"model_version": "soccer-vision-detector",
+                                 "result": results}],
+            })
+    finally:
+        reader.close()
+
+    _write_frame_project(out_dir, tasks, names, n_boxes, serve_root)
+
+
+def _load_player_detector(args):
+    """Return ``frame -> sv.Detections`` for the player detector."""
+    device = args.device or "cpu"
+    from soccer_vision.detection.rfdetr import RFDETRSoccerDetector
+
+    det = RFDETRSoccerDetector.from_pretrained(device=device)
+    return det.predict_players
+
+
+def _detection_boxes(dets) -> list:
+    """Pixel boxes out of an ``sv.Detections``, empty list when there are none."""
+    xyxy = getattr(dets, "xyxy", None)
+    if xyxy is None or len(xyxy) == 0:
+        return []
+    return [tuple(float(v) for v in box) for box in xyxy]
+
+
+def boxes_below(boxes: list, frame_h: int, min_y_frac: float) -> list:
+    """Keep boxes whose feet are below ``min_y_frac`` of frame height.
+
+    At a multi-pitch complex the wide view contains *another match*, so the
+    extra detections are real soccer players and no appearance or motion cue
+    separates them (measured: the far band has 22-26 mean frame-to-frame
+    difference against 1.6-8 on the near pitch — the neighbours move more than
+    our own game). Which pitch is ours is purely spatial, so it has to be told,
+    not inferred. Feet, not centre: a player's feet locate them on the ground
+    plane, which is what decides the pitch they're standing on.
+    """
+    floor = min_y_frac * frame_h
+    return [b for b in boxes if b[3] >= floor]
+
+
+def moving_boxes(boxes: list, frame, later_frame, *, min_motion: float = 6.0) -> list:
+    """Boxes whose pixels changed between two frames — players, not spectators.
+
+    At a tournament complex the far touchline is lined with seated families and
+    the next pitch is in shot, and they outnumber the players badly: on the U14G
+    Veo footage ~40 of ~45 detections per frame were crowd. Neither box size nor
+    the centre-rectangle field filter separates them, because a seated row at
+    mid-distance renders the same 50px as a player.
+
+    Motion does. The Veo camera is fixed, so differencing two frames half a
+    second apart leaves the running players lit up and the crowd near zero. This
+    is a stand-in for the field-boundary mask the pipeline still lacks (see
+    "Field registration" in CLAUDE.md); it needs no model and no calibration.
+    """
+    import cv2
+    import numpy as np
+
+    if later_frame is None:
+        return boxes
+    a = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.int16)
+    b = cv2.cvtColor(later_frame, cv2.COLOR_BGR2GRAY).astype(np.int16)
+    diff = np.abs(a - b)
+    h, w = diff.shape
+    out = []
+    for box in boxes:
+        x1, y1, x2, y2 = (int(round(v)) for v in box)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            continue
+        if float(diff[y1:y2, x1:x2].mean()) >= min_motion:
+            out.append(box)
+    return out
+
+
+def labellable_boxes(boxes: list, frame_h: int, min_frac: float = 0.025) -> list:
+    """Boxes big enough for a human to put a name to.
+
+    Ranking candidate frames on raw detection count picks the wrong frames at a
+    tournament complex: the busiest views are the ones taking in a crowd and the
+    next pitch over, where every figure is 12px tall and unnameable. Counting
+    only boxes above a fraction of frame height favours play close to the camera,
+    which is where identity is actually readable — and the small boxes are
+    dropped from the export too, since they are clutter to click past.
+    """
+    floor = max(20.0, min_frac * frame_h)
+    return [b for b in boxes if (b[3] - b[1]) >= floor]
+
+
+def _write_frame_project(out_dir: Path, tasks: list, names: list[str], n_boxes: int,
+                         serve_root: Path):
+    """Write the config + tasks for a frame-labelling project and say what's next."""
+    config = out_dir / "labeling_config.xml"
+    config.write_text(_frame_labeling_config(names))
+    tasks_path = out_dir / "label_studio_tasks.json"
+    tasks_path.write_text(json.dumps(tasks, indent=2))
+
+    print(f"\nWrote {len(tasks)} frames ({n_boxes} pre-drawn boxes) → {out_dir / 'frames'}")
+    print(f"  config: {config}")
+    print(f"  tasks:  {tasks_path}")
+    if not names:
+        print("  NOTE: no --profile roster, so the label list is only "
+              f"'{UNNAMED_LABEL}' — pass --profile to get one label per player.")
+    print("\nNext: sync this folder to the machine running Label Studio, then")
+    print(f"  export LOCAL_FILES_DOCUMENT_ROOT={Path(serve_root).resolve()}")
+    print("  label-studio start   # create project → paste config → import tasks")
+    print(f"Then drop the export back in here ({out_dir}/annotations.json) and:")
+    print(f"  soccer-vision enroll --from-label-studio {out_dir / 'annotations.json'} "
+          "--out galleries/<team>.npz")
+
+
+def _dump_frames(run_dir: Path, tracks_path: Path, proxy_path: Path, out_dir: Path, args):
+    """Write whole frames + a Label Studio project for naming players on them.
+
+    The alternative to labelling track folders, and the better one when a lane's
+    crops are too small to recognise anyone from. Here you see the **full frame**
+    at native resolution and can zoom into it, so identity comes from the same
+    cues you'd use watching the match — where someone is, who they're beside,
+    which way play is going.
+
+    Boxes come pre-drawn from ``tracks.json`` and labelled ``unknown``, so the
+    job is renaming boxes rather than drawing them. The detector's pixel
+    coordinates survive the round trip (Label Studio stores percentages;
+    :func:`soccer_vision.identify.enroll.boxes_from_label_studio` converts back),
+    which is what lets the model crop at whatever size it wants later — the human
+    labels a person, not a thumbnail.
+    """
+    import cv2
+
+    from soccer_vision.annotate.label_studio import local_files_url
+    from soccer_vision.clips.halo import load_track_boxes
+    from soccer_vision.io.video import VideoReader
+    from soccer_vision.profiles.loader import get_roster, load_profile
+
+    tracks = [(t, s) for t, s in load_track_boxes(tracks_path).items()
+              if len(s) >= args.min_track_frames]
+    reader = VideoReader(proxy_path)
+
+    wanted = (args.team or "").strip().lower()
+    teams = _resolve_track_teams(run_dir, tracks_path, tracks, reader, args) if wanted else {}
+
+    by_frame: dict[int, list] = {}
+    for tid, samples in tracks:
+        if wanted and (teams.get(tid) or "").lower() != wanted:
+            continue
+        for frame_no, bbox in samples:
+            by_frame.setdefault(int(frame_no), []).append((tid, bbox))
+
+    # Diversity is the point: a gallery built from one passage of play sees one
+    # patch of pitch in one light. Spread the frames evenly over the whole match,
+    # and only keep frames showing enough of the squad to be worth annotating.
+    candidates = sorted(f for f, boxes in by_frame.items() if len(boxes) >= args.min_players)
+    if not candidates:
+        print(f"No frames with >= {args.min_players} "
+              f"{'“' + wanted + '” ' if wanted else ''}players. "
+              f"Lower --min-players, or check --team.")
+        reader.close()
+        return
+    # One frame per equal time bin, and within a bin the *busiest* frame. Even
+    # spacing alone lands on warm-ups and stoppages, where three players stand in
+    # one corner of the pitch and the frame teaches the gallery nothing.
+    lo, hi = candidates[0], candidates[-1]
+    span = max(1, hi - lo + 1)
+    bins: dict[int, int] = {}
+    for f in candidates:
+        b = min(args.n_frames - 1, (f - lo) * args.n_frames // span)
+        if b not in bins or len(by_frame[f]) > len(by_frame[bins[b]]):
+            bins[b] = f
+    chosen = sorted(bins.values())
+
+    frames_dir = out_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    serve_root = Path(args.serve_root) if args.serve_root else run_dir.parent
+
+    roster = get_roster(load_profile(args.profile)) if args.profile else []
+    names = label_names(roster)
+
+    tasks, n_boxes = [], 0
+    try:
+        for frame_no in chosen:
+            frame = reader.read_frame(frame_no)
+            if frame is None:
+                continue
+            path = frames_dir / f"{frame_no:06d}.jpg"
+            cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            h, w = frame.shape[:2]
+            results = [_rect_result(bbox, w, h, tid) for tid, bbox in by_frame[frame_no]
+                       if _plausible_player_box(bbox, w, h)]
+            n_boxes += len(results)
+            tasks.append({
+                "data": {"image": local_files_url(path, serve_root),
+                         "frame": frame_no,
+                         "timestamp_s": round(frame_no / (reader.fps or 30), 2)},
+                "predictions": [{"model_version": "soccer-vision-tracker", "result": results}],
+            })
+    finally:
+        reader.close()
+
+    _write_frame_project(out_dir, tasks, names, n_boxes, serve_root)
+
+
+UNNAMED_LABEL = "unknown"
+
+
+def label_names(roster: list[dict]) -> list[str]:
+    """Label-list names for annotators: first names, since that's how a squad is known.
+
+    A coach picking a player off a list wants "Morrighan", not "Morrighan
+    Wright" — the surname is noise in a dropdown you hit twenty times a frame.
+    Two players sharing a first name get a surname initial ("Morgan L."), so the
+    list stays unambiguous without spelling anyone out.
+
+    A roster ``nickname`` wins outright ("Mo", "Evie", "Izzy"). Teams call each
+    other by nicknames, and a label whose owner the annotator has to translate is
+    a label they will eventually mis-click; :func:`roster_full_name` maps it back
+    so the gallery is still keyed by the roster's full name.
+    """
+    firsts = [str(p.get("name", "")).split()[0] for p in roster if p.get("name")]
+    out = []
+    for player in roster:
+        name = str(player.get("name", "")).strip()
+        if not name:
+            continue
+        nickname = str(player.get("nickname") or "").strip()
+        if nickname:
+            out.append(nickname)
+            continue
+        parts = name.split()
+        if firsts.count(parts[0]) > 1 and len(parts) > 1:
+            out.append(f"{parts[0]} {parts[1][0]}.")
+        else:
+            out.append(parts[0])
+    return out
+
+
+def roster_full_name(profile: dict | None, label: str) -> str:
+    """Map a label the annotator picked back to the roster's full name.
+
+    The gallery is keyed by whatever this returns, so keeping it in step with the
+    profile is what lets `--player "Morrighan Wright"` and `--number 21` reach the
+    same person later. Full name, first name, "Morgan L." and the roster
+    ``nickname`` all land on the same player. An unrecognised label (an opponent
+    someone named by hand) passes through untouched rather than being dropped.
+    """
+    from soccer_vision.profiles.loader import get_roster
+
+    label = (label or "").strip()
+    if not profile or not label:
+        return label
+    wanted = label.rstrip(".").lower()
+    for player in get_roster(profile):
+        name = str(player.get("name", "")).strip()
+        if not name:
+            continue
+        parts = name.split()
+        aliases = {name.lower(), parts[0].lower()}
+        if len(parts) > 1:
+            aliases.add(f"{parts[0]} {parts[1][0]}".lower())
+        nickname = str(player.get("nickname") or "").strip().lower()
+        if nickname:
+            aliases.add(nickname)
+        if wanted in aliases:
+            return name
+    return label
+
+
+def _rect_result(bbox, frame_w: int, frame_h: int, track_id: int) -> dict:
+    """One pre-drawn Label Studio rectangle for a detected player.
+
+    Label Studio stores rectangles as percentages of the image, so the pixel box
+    is converted here and converted back by
+    :func:`soccer_vision.identify.enroll.boxes_from_label_studio` at enrolment —
+    the annotator names a person and the exact detector coordinates survive, to
+    be cropped at whatever size the model wants.
+    """
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    return {
+        "from_name": "player", "to_name": "image", "type": "rectanglelabels",
+        "original_width": frame_w, "original_height": frame_h, "image_rotation": 0,
+        "value": {"x": 100 * x1 / frame_w, "y": 100 * y1 / frame_h,
+                  "width": 100 * (x2 - x1) / frame_w, "height": 100 * (y2 - y1) / frame_h,
+                  "rotation": 0, "rectanglelabels": [UNNAMED_LABEL]},
+        "meta": {"text": [f"track {track_id}"]},
+    }
+
+
+def _plausible_player_box(bbox, frame_w: int, frame_h: int) -> bool:
+    """Whether a box could be a standing player, used to keep junk off the sheet.
+
+    The tracker occasionally emits a lane whose box balloons across most of the
+    frame. One of those in Label Studio covers every real player and has to be
+    clicked past on every task, so they're dropped here rather than annotated.
+    A player on this footage is upright and small: taller than wide, well under a
+    third of frame height.
+    """
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    w, h = x2 - x1, y2 - y1
+    if w < 3 or h < 6:
+        return False
+    if w > 0.15 * frame_w or h > 0.35 * frame_h:
+        return False
+    return h > w
+
+
+def _frame_labeling_config(names: list[str]) -> str:
+    """Label Studio config: one label per roster player, plus ``unknown``.
+
+    Every pre-drawn box arrives as ``unknown``; naming one is a two-click change,
+    and anything left ``unknown`` is skipped at enrolment rather than guessed at.
+    """
+    from xml.sax.saxutils import escape
+
+    labels = "\n".join(f'    <Label value="{escape(n)}"/>' for n in names)
+    return (
+        '<View>\n'
+        '  <Header value="Name each player on your squad. '
+        'Delete boxes for opponents, referees and anyone off the pitch."/>\n'
+        '  <Image name="image" value="$image" zoom="true" zoomControl="true" '
+        'rotateControl="false"/>\n'
+        '  <RectangleLabels name="player" toName="image">\n'
+        f'{labels}\n'
+        f'    <Label value="{UNNAMED_LABEL}" background="#888888"/>\n'
+        '  </RectangleLabels>\n'
+        '</View>\n'
+    )
 
 
 def _resolve_track_teams(run_dir: Path, tracks_path: Path, tracks, reader, args) -> dict:
@@ -284,8 +924,8 @@ def _resolve_track_teams(run_dir: Path, tracks_path: Path, tracks, reader, args)
 def _not_turf_mask(frame):
     """Boolean mask of the pixels that aren't pitch, for jersey colour sampling.
 
-    ``process`` masks the colour sample with SAM3's per-player segmentation; a
-    run without one leaves the rectangular torso patch, which on an overhead
+    The detector returns boxes, not masks, so the sample would otherwise be a
+    rectangular torso patch, which on an overhead
     camera is mostly grass — the median then drags every kit toward green and
     both clusters collapse to one colour (job 37877533 named both teams "blue").
     Dropping green pixels is the poor cousin of a real mask, but it removes the
@@ -298,115 +938,3 @@ def _not_turf_mask(frame):
     turf = (h >= 30) & (h <= 90) & (s >= 60) & (v >= 40)
     return ~turf
 
-
-TILE_H = 180          # crops are ~50px tall on an overhead camera; upscale to see them
-TRACKS_PER_SHEET = 12
-SHEET_MAX_PIXELS = 40_000_000   # keep a sheet openable in an ordinary image viewer
-LABEL_W = 260
-
-
-def _context_tile(frame, bbox, pad: float, min_px: int):
-    """A wide view around the player, with their box outlined.
-
-    The tight crop that feeds the model is useless for *recognising* who someone
-    is — an overhead camera renders a player in about 50x21 px with no
-    surroundings. Pulling back to a fixed window and marking the target lets you
-    use position on the pitch, who they're next to, and which way play is going,
-    which is how you actually tell youth players apart at this resolution.
-    """
-    import cv2
-    import numpy as np
-
-    x1, y1, x2, y2 = (float(v) for v in bbox)
-    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-    half_w = max((x2 - x1) * (0.5 + pad), min_px / 2)
-    half_h = max((y2 - y1) * (0.5 + pad), min_px / 2)
-
-    H, W = frame.shape[:2]
-    wx1, wy1 = int(max(0, cx - half_w)), int(max(0, cy - half_h))
-    wx2, wy2 = int(min(W, cx + half_w)), int(min(H, cy + half_h))
-    tile = frame[wy1:wy2, wx1:wx2].copy()
-    if tile.size == 0:
-        return np.zeros((min_px, min_px, 3), dtype=np.uint8)
-
-    # The marker has to scale with the window, not sit at a fixed 2px: pulled out
-    # to a full frame, a hairline box around a 29px-tall child is invisible, and
-    # a view you can't locate the player in is no more use than no view at all.
-    th, tw = tile.shape[:2]
-    thick = max(2, int(round(min(th, tw) / 260)))
-    px1, py1 = int(x1) - wx1, int(y1) - wy1
-    px2, py2 = int(x2) - wx1, int(y2) - wy1
-    cv2.rectangle(tile, (px1, py1), (px2, py2), (0, 255, 255), thick)
-
-    # Crosshair from the tile edges, stopping short of the box so it points at
-    # the player without covering them — findable at a glance on a wide view.
-    mx, my = (px1 + px2) // 2, (py1 + py2) // 2
-    gap_x = int((px2 - px1) * 3.0 + thick * 8)
-    gap_y = int((py2 - py1) * 1.8 + thick * 8)
-    for a, b in (((0, my), (mx - gap_x, my)), ((tw, my), (mx + gap_x, my)),
-                 ((mx, 0), (mx, my - gap_y)), ((mx, th), (mx, my + gap_y))):
-        cv2.line(tile, a, b, (0, 255, 255), thick, cv2.LINE_AA)
-    return tile
-
-
-def _write_index_sheets(out_dir: Path, folders: list[Path], context: dict,
-                        tile_h: int = TILE_H) -> list[Path]:
-    """One image per dozen tracks: a labelled strip of context views per track.
-
-    Without this the folders are unlabellable — the tight crops are ~50x21 px,
-    which no one can put a name to in a file browser.
-
-    ``tile_h`` has to grow with ``--context-pad``: every tile is scaled to this
-    height, so a wider window rendered at the same height just shrinks the player
-    back to where we started. Pulling the view out without raising it cancels
-    itself out.
-    """
-    import cv2
-    import numpy as np
-
-    strips = []
-    for folder in folders:
-        tiles = []
-        for c in context.get(folder.name, []):
-            if c is None or c.size == 0:
-                continue
-            scale = tile_h / c.shape[0]
-            tiles.append(cv2.resize(c, (max(1, int(c.shape[1] * scale)), tile_h)))
-        if not tiles:
-            continue
-        label = np.zeros((tile_h, LABEL_W, 3), dtype=np.uint8)
-        cv2.putText(label, folder.name[:22], (8, tile_h // 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
-        strips.append(np.hstack([label] + tiles))
-
-    if not strips:
-        return []
-
-    width = max(s.shape[1] for s in strips)
-    padded = [np.pad(s, ((0, 2), (0, width - s.shape[1]), (0, 0))) for s in strips]
-
-    # A dozen full-resolution rows makes a 100+ megapixel JPEG that image viewers
-    # choke on, so the row count follows the pixel budget rather than a constant.
-    per_sheet = max(1, min(TRACKS_PER_SHEET, int(SHEET_MAX_PIXELS // (width * (tile_h + 2)))))
-
-    paths = []
-    for i in range(0, len(padded), per_sheet):
-        sheet = np.vstack(padded[i:i + per_sheet])
-        path = out_dir / f"index_{i // per_sheet + 1:03d}.jpg"
-        cv2.imwrite(str(path), sheet, [cv2.IMWRITE_JPEG_QUALITY, 90])
-        paths.append(path)
-    return paths
-
-
-def _embed_boxes(boxes, embedder, reader, crop_player, np):
-    """Embed ``(frame, bbox, name)`` triples, dropping boxes too small to crop."""
-    crops, names = [], []
-    for frame_no, bbox, name in boxes:
-        frame = reader.read_frame(int(frame_no))
-        if frame is None:
-            continue
-        crop = crop_player(frame, bbox)
-        if crop is not None:
-            crops.append(crop)
-            names.append(name)
-    return (embedder.embed(crops) if crops else np.zeros((0, 512))), names

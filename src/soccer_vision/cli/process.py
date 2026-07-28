@@ -73,44 +73,26 @@ def run_pipeline(args):
 
     # Step 2: Virtual broadcast proxy (opt-in — most footage doesn't need it)
     device = args.device
-    detector_type = config.get("detector", {}).get("type", "rfdetr")
 
-    # RF-DETR is the fallback ball detector. It is very unreliable on overhead
-    # footage — on this match it "found" a ball in 71% of frames but with a p95
-    # frame-to-frame jump of 1260px on a 1920px-wide frame (job 37883252), i.e.
-    # mostly false positives in the trees and crowd. SAM3 prompted with
-    # "soccer ball" cuts that to 208px, so the sam3 path below overrides it.
+    # RF-DETR detects players and the ball: public weights (no HF gate), 0.045
+    # s/detection-frame at 1080p and flat in object count, and better where
+    # ground truth exists — F1 0.902 on FOOTPASS broadcast (job 38133841).
+    #
+    # Its weak spot is the ball on overhead footage: on the Saints match it
+    # "found" a ball in 71% of frames but with a p95 frame-to-frame jump of
+    # 1260px on a 1920px-wide frame (job 37883252) — mostly false positives in
+    # the trees and crowd. `soccer_vision.tracking.ball_kalman` exists to gate
+    # exactly that flicker; it is not applied here (trim-empty applies it when
+    # building its own track), so ball_track.json from this pipeline is raw.
     ball_detector = RFDETRSoccerDetector.from_pretrained(device=device)
 
-    # Player detection: SAM3 (text-prompted detect+track) or RF-DETR
-    sam3_tracker = None
-    sam3_ball = None
-    if detector_type == "sam3":
-        # SAM3 replaces BOTH the detector and ByteTrack: its video model returns
-        # a persistent object id per player from a text prompt alone.
-        from soccer_vision.tracking.sam3 import SAM3PlayerTracker
-        prompt = config.get("detector", {}).get("prompt", "soccer player")
-        print(f"  Detector: SAM3 text-prompt {prompt!r} (detect+track)")
-        sam3_tracker = SAM3PlayerTracker(device=device, prompt=prompt)
-        sam3_tracker.start()
-        player_detector = None
-
-        # Same model, second prompt: SAM3 tracks the ball far more reliably
-        # than RF-DETR here (p95 jump 208px vs 1260px). Set
-        # detector.ball_prompt: null to keep RF-DETR for the ball.
-        ball_prompt = config.get("detector", {}).get("ball_prompt", "soccer ball")
-        if ball_prompt:
-            sam3_ball = SAM3PlayerTracker.sharing(sam3_tracker, prompt=ball_prompt)
-            sam3_ball.start()
-            print(f"  Ball: SAM3 text-prompt {ball_prompt!r} (shared weights)")
-    else:
-        # RF-DETR player confidence threshold (config: detector.conf_threshold,
-        # default 0.3). Overhead cameras may need lower (e.g. 0.15) to recover
-        # small players.
-        conf_threshold = config.get("detector", {}).get("conf_threshold", 0.3)
-        player_detector = ball_detector  # Use RF-DETR for both
-        player_detector.conf_threshold = conf_threshold
-        print(f"  Detector: RF-DETR (conf_threshold: {conf_threshold})")
+    # RF-DETR player confidence threshold (config: detector.conf_threshold,
+    # default 0.3). Overhead cameras may need lower (e.g. 0.15) to recover
+    # small players.
+    conf_threshold = config.get("detector", {}).get("conf_threshold", 0.3)
+    player_detector = ball_detector  # Use RF-DETR for both
+    player_detector.conf_threshold = conf_threshold
+    print(f"  Detector: RF-DETR (conf_threshold: {conf_threshold})")
     if getattr(args, "broadcast", False):
         print("\n[Step 2] Generating broadcast proxy...")
         generate_broadcast_proxy(
@@ -147,39 +129,22 @@ def run_pipeline(args):
     team_clf = TeamClassifier()
 
     for fn, frame in proxy_reader.sample_frames(detect_interval):
-        if sam3_tracker is not None:
-            # SAM3 detects AND tracks in one pass — the returned detections
-            # already carry persistent tracker_ids, so ByteTrack is skipped.
-            # Spectators are filtered after tracking (the prompt finds people
-            # anywhere, including coaches/subs beyond the touchline).
-            tracked = sam3_tracker.track(frame)
-            tracked = filter_spectators(tracked, frame.shape)
-        else:
-            # Detect players and ball
-            person_dets = player_detector.predict(frame)
+        # Detect players and ball
+        person_dets = player_detector.predict(frame)
 
-            # RF-DETR returns mixed detections; separate ball from people by class_id
-            person_mask = np.isin(person_dets.class_id, list(ALL_PERSON_CLASS_IDS))
-            ball_dets = person_dets[~person_mask]
-            person_dets = person_dets[person_mask]
+        # RF-DETR returns mixed detections; separate ball from people by class_id
+        person_mask = np.isin(person_dets.class_id, list(ALL_PERSON_CLASS_IDS))
+        ball_dets = person_dets[~person_mask]
+        person_dets = person_dets[person_mask]
 
-            # Filter spectators: keep only field players
-            person_dets = filter_spectators(person_dets, frame.shape)
-            detections = sv.Detections.merge([ball_dets, person_dets])
+        # Filter spectators: keep only field players
+        person_dets = filter_spectators(person_dets, frame.shape)
+        detections = sv.Detections.merge([ball_dets, person_dets])
 
-            tracked = track_detections(tracker, detections)
+        tracked = track_detections(tracker, detections)
 
         # Ball
-        if sam3_ball is not None:
-            bdets = sam3_ball.track(frame)
-            if len(bdets):
-                k = int(np.argmax(bdets.confidence))
-                bx1, by1, bx2, by2 = bdets.xyxy[k]
-                ball = ((bx1 + bx2) / 2, (by1 + by2) / 2, float(bdets.confidence[k]))
-            else:
-                ball = None
-        else:
-            ball = detect_ball_position(frame, ball_detector)
+        ball = detect_ball_position(frame, ball_detector)
         # Record every sampled frame (visible or not) for the persisted ball
         # track. Kept separate from `ball_positions`, which the action engines
         # consume and which only carries frames where the ball was found.
@@ -214,11 +179,10 @@ def run_pipeline(args):
                     "pixel_y": float(foot_y),
                     "bbox": [float(x1), float(y1), float(x2), float(y2)],
                 }
-                # SAM3 supplies a per-player mask; sampling jersey colour inside
-                # it excludes turf, which otherwise collapses both teams to one
-                # colour on overhead footage.
-                pmask = tracked.mask[i] if tracked.mask is not None else None
-                team_clf.add_sample(tid, frame, (x1, y1, x2, y2), pmask)
+                # RF-DETR returns boxes, not masks, so kit colour is sampled
+                # from a torso window inside the box and judged against the
+                # turf around it — see `tracking.teams.lightness_split_kits`.
+                team_clf.add_sample(tid, frame, (x1, y1, x2, y2))
 
         if fn % 500 == 0:
             print(f"  Processing frame {fn}/{proxy_reader.total_frames}")
@@ -234,6 +198,7 @@ def run_pipeline(args):
     if team_names:
         src = "profile kits" if kits else "colour heuristic"
         print(f"  Teams ({src}): {', '.join(sorted(team_names.values()))}")
+        print(f"  Team split by: {team_clf.split_method()}")
     preview_path = run_dir.root / "teams_preview.png"
     if team_clf.build_team_preview(preview_path):
         print(f"  Team preview: {preview_path}")

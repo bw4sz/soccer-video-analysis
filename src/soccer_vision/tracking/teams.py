@@ -5,8 +5,8 @@ of their torso region, then map each cluster to a human colour name (blue, white
 red, ...) so events can be filtered by e.g. ``--team blue``.
 
 This needs no extra models — it runs on the RF-DETR player boxes and ByteTrack
-IDs already produced by the pipeline. Stable per-player identity (jersey OCR,
-sn-gamestate, SAM3 masklets) is a later phase; see ``tracking/sam3.py``.
+IDs already produced by the pipeline. Stable per-player identity is a separate
+step; see ``cli/identify.py`` (jersey OCR) and ``cli/enroll.py`` (re-id).
 """
 
 from __future__ import annotations
@@ -20,6 +20,44 @@ _TORSO_TOP = 0.20
 _TORSO_BOTTOM = 0.55
 _TORSO_SIDE = 0.20
 
+# Turf is identified by hue, not brightness. A low sun puts grass anywhere from
+# bright yellow-green to near-black shade (local turf L* ranged 50-101 across a
+# single U14G clip), so gating on value would classify shadowed grass as "not
+# turf" — and, worse, a black kit is genuinely dark and must never be mistaken
+# for shade. Hue plus a modest saturation floor is the part that holds up.
+_TURF_HUE_LO, _TURF_HUE_HI = 30, 95
+_TURF_SAT_MIN = 50
+_MIN_TORSO_PIXELS = 8
+_MIN_TURF_PIXELS = 20
+# Below this many successful illuminant reads across the whole match, shadow
+# correction is switched off rather than anchored to a noisy reference.
+_MIN_ILLUM_SAMPLES = 20
+# Fraction of tracks that must have at least one turf reading before the
+# grass-relative split is trusted for the match as a whole.
+_MIN_ILLUM_COVERAGE = 0.6
+
+
+def turf_pixels(patch_bgr: np.ndarray) -> np.ndarray:
+    """Boolean mask of grass-looking pixels in a BGR patch."""
+    hsv = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2HSV)
+    hue, sat = hsv[:, :, 0], hsv[:, :, 1]
+    return (hue >= _TURF_HUE_LO) & (hue <= _TURF_HUE_HI) & (sat >= _TURF_SAT_MIN)
+
+
+def _torso_window(frame: np.ndarray, bbox):
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    bw, bh = x2 - x1, y2 - y1
+    if bw < 4 or bh < 8:
+        return None
+    tx1 = max(0, int(round(x1 + bw * _TORSO_SIDE)))
+    tx2 = min(w, int(round(x2 - bw * _TORSO_SIDE)))
+    ty1 = max(0, int(round(y1 + bh * _TORSO_TOP)))
+    ty2 = min(h, int(round(y1 + bh * _TORSO_BOTTOM)))
+    if tx2 - tx1 < 2 or ty2 - ty1 < 2:
+        return None
+    return tx1, ty1, tx2, ty2
+
 
 def sample_jersey_bgr(
     frame: np.ndarray, bbox, mask: np.ndarray | None = None
@@ -29,38 +67,84 @@ def sample_jersey_bgr(
     ``bbox`` is (x1, y1, x2, y2) in pixel coordinates. Returns ``None`` when the
     box is too small or falls outside the frame.
 
-    ``mask`` is an optional full-frame boolean segmentation mask for this player
-    (SAM3 supplies one per track). When given, the median is taken over *player
+    ``mask`` is an optional full-frame boolean segmentation mask for this player,
+    for a segmentation detector that supplies one (RF-DETR does not). When given,
+    the median is taken over *player
     pixels only*. On overhead footage a player is small and the torso rectangle
-    is mostly turf, so the rectangular median drags every jersey toward green
+    is mostly turf, so a plain rectangular median drags every jersey toward green
     and the two team clusters collapse into one colour — job 37877642 named both
-    teams "blue". Masking the sample removes the background entirely.
+    teams "blue".
+
+    With no mask (the RF-DETR path) the grass is excluded by hue instead, which
+    recovers most of that benefit without a segmentation model. It is not the
+    whole fix: see :func:`estimate_local_illuminant` for the shadow problem,
+    which dominates on low-sun footage.
     """
-    h, w = frame.shape[:2]
-    x1, y1, x2, y2 = (float(v) for v in bbox)
-    bw = x2 - x1
-    bh = y2 - y1
-    if bw < 4 or bh < 8:
+    win = _torso_window(frame, bbox)
+    if win is None:
         return None
-
-    tx1 = int(round(x1 + bw * _TORSO_SIDE))
-    tx2 = int(round(x2 - bw * _TORSO_SIDE))
-    ty1 = int(round(y1 + bh * _TORSO_TOP))
-    ty2 = int(round(y1 + bh * _TORSO_BOTTOM))
-
-    tx1, tx2 = max(0, tx1), min(w, tx2)
-    ty1, ty2 = max(0, ty1), min(h, ty2)
-    if tx2 - tx1 < 2 or ty2 - ty1 < 2:
-        return None
-
+    tx1, ty1, tx2, ty2 = win
     patch = frame[ty1:ty2, tx1:tx2]
+
     if mask is not None:
         m = mask[ty1:ty2, tx1:tx2]
         # Need a few real player pixels to be meaningful; otherwise fall back
         # to the rectangular median rather than returning noise.
         if int(m.sum()) >= 4:
             return np.median(patch[m], axis=0)
+    else:
+        keep = ~turf_pixels(patch)
+        if int(keep.sum()) >= _MIN_TORSO_PIXELS:
+            return np.median(patch[keep], axis=0)
     return np.median(patch.reshape(-1, 3), axis=0)
+
+
+def estimate_local_illuminant(frame: np.ndarray, bbox) -> np.ndarray | None:
+    """Median BGR of the turf immediately around a player, or ``None``.
+
+    This is the lighting that player is standing in. It matters because kit
+    colour is judged by *lightness*, and lightness is exactly what a low sun
+    destroys: on the U14G clip a white kit in shade reads blue-grey and lands in
+    the same Lab neighbourhood as a black kit in sun, so absolute torso colour
+    put 174 of 188 tracks in one cluster. Grass around the player shares that
+    player's illumination, so it is a usable reference — normalising by it turns
+    "is this shirt bright?" into "is this shirt brighter than the grass it is
+    standing on?", which is stable under shadow and separates the kits at 0.
+
+    Returns ``None`` when too little grass is visible (indoor, snow, a synthetic
+    test frame), and callers must fall back to uncorrected colour.
+    """
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    bw, bh = x2 - x1, y2 - y1
+    if bw < 4 or bh < 8:
+        return None
+    # A ring one box-width to each side and 30% of box height above/below —
+    # wide enough to contain grass even when players are close together.
+    rx1, rx2 = max(0, int(x1 - bw)), min(w, int(x2 + bw))
+    ry1, ry2 = max(0, int(y1 - 0.3 * bh)), min(h, int(y2 + 0.3 * bh))
+    ring = frame[ry1:ry2, rx1:rx2]
+    if ring.size == 0:
+        return None
+    grass = turf_pixels(ring)
+    if int(grass.sum()) < _MIN_TURF_PIXELS:
+        return None
+    return np.median(ring[grass], axis=0)
+
+
+def correct_illumination(
+    colour_bgr: np.ndarray, local_illum: np.ndarray, reference_illum: np.ndarray
+) -> np.ndarray:
+    """Rescale a torso colour as if it were lit like ``reference_illum``.
+
+    Per-channel von Kries adaptation: ``colour * (reference / local)``. Dividing
+    channel-wise rather than scaling luminance also removes the *colour cast* —
+    a low sun is warm and its shadows are blue, which is why an unlit white kit
+    reads blue-grey in the first place.
+    """
+    local = np.maximum(np.asarray(local_illum, dtype=float), 1.0)
+    gain = np.asarray(reference_illum, dtype=float) / local
+    return np.clip(np.asarray(colour_bgr, dtype=float) * gain, 0, 255)
 
 
 def name_bgr_colour(bgr: np.ndarray) -> str:
@@ -124,6 +208,39 @@ def kit_reference_bgr(name: str) -> tuple[int, int, int] | None:
     return _KIT_REF_BGR.get(name.strip().lower())
 
 
+# Representative sunlit grass, used only to ask whether a declared kit is
+# lighter or darker than the pitch — never as a measurement.
+_TURF_REF_BGR = (50, 150, 50)
+
+
+def kit_lighter_than_turf(name: str) -> bool | None:
+    """Is this kit colour lighter than grass? ``None`` if the kit is unknown."""
+    ref = kit_reference_bgr(name)
+    if ref is None:
+        return None
+    return _bgr_to_lab(ref)[0] > _bgr_to_lab(_TURF_REF_BGR)[0]
+
+
+def lightness_split_kits(kits: list[str] | None) -> tuple[str, str] | None:
+    """``(darker_kit, lighter_kit)`` when two declared kits straddle the turf.
+
+    Returns ``None`` unless exactly one declared kit is darker than grass and
+    exactly one is lighter — the case where the *sign* of a player's lightness
+    relative to the grass they stand on identifies their team outright. Black vs
+    white and blue vs white qualify; red vs blue does not (both are darker than
+    grass), and there hue is the separator, so the caller falls back to
+    clustering.
+    """
+    known = [k for k in (kits or []) if kit_reference_bgr(k) is not None]
+    if len(known) != 2:
+        return None
+    lighter = [k for k in known if kit_lighter_than_turf(k)]
+    darker = [k for k in known if not kit_lighter_than_turf(k)]
+    if len(lighter) != 1 or len(darker) != 1:
+        return None
+    return darker[0], lighter[0]
+
+
 def _bgr_to_lab(bgr) -> np.ndarray:
     px = np.uint8([[[int(bgr[0]), int(bgr[1]), int(bgr[2])]]])
     return cv2.cvtColor(px, cv2.COLOR_BGR2Lab)[0, 0].astype(np.float32)
@@ -171,11 +288,15 @@ class TeamClassifier:
         self.min_samples = min_samples
         self.keep_crops = keep_crops
         self._samples: dict[int, list[np.ndarray]] = {}
+        self._illum: dict[int, list[np.ndarray | None]] = {}
         self._crops: dict[int, list[np.ndarray]] = {}
         self._track_team: dict[int, str] = {}
         self._team_names: dict[str, str] = {}
         self._centroids: dict[str, np.ndarray] = {}
         self._fitted = False
+        self._reference_illum: np.ndarray | None = None
+        self._split_method = "colour clustering"
+        self._forced_names: dict[str, str] = {}
 
     def add_sample(self, track_id: int, frame: np.ndarray, bbox,
                    mask: np.ndarray | None = None) -> None:
@@ -183,11 +304,18 @@ class TeamClassifier:
 
         ``mask`` (optional, from a segmentation detector) restricts the colour
         sample to player pixels — see :func:`sample_jersey_bgr`.
+
+        The local illuminant is recorded alongside each colour so :meth:`fit` can
+        normalise for shadow; it cannot be applied here because the reference it
+        normalises *to* is only known once every sample is in.
         """
         colour = sample_jersey_bgr(frame, bbox, mask)
         if colour is not None:
             tid = int(track_id)
             self._samples.setdefault(tid, []).append(colour)
+            self._illum.setdefault(tid, []).append(
+                estimate_local_illuminant(frame, bbox)
+            )
             crops = self._crops.setdefault(tid, [])
             if self.keep_crops and len(crops) < self.keep_crops:
                 x1, y1, x2, y2 = (int(round(float(v))) for v in bbox)
@@ -197,12 +325,78 @@ class TeamClassifier:
                 if x2 - x1 >= 2 and y2 - y1 >= 2:
                     crops.append(frame[y1:y2, x1:x2].copy())
 
+    def _fit_reference_illuminant(self) -> np.ndarray | None:
+        """Median turf colour across every sample — the lighting we normalise to.
+
+        Using the match's own median rather than a fixed constant keeps corrected
+        colours near their raw values, so the kit-naming references in
+        ``_KIT_REF_BGR`` stay meaningful.
+        """
+        seen = [i for lst in self._illum.values() for i in lst if i is not None]
+        if len(seen) < _MIN_ILLUM_SAMPLES:
+            return None
+        return np.median(np.stack(seen), axis=0)
+
+    def _track_relative_lightness(self) -> dict[int, float]:
+        """Per track: median (torso L*) - (local turf L*), where turf was found.
+
+        Positive means the player is lighter than the grass they are standing on.
+        Unlike absolute lightness this survives shadow, which is what makes it
+        usable on low-sun footage.
+        """
+        out: dict[int, float] = {}
+        for tid, samples in self._samples.items():
+            if len(samples) < self.min_samples:
+                continue
+            illums = self._illum.get(tid) or []
+            vals = [
+                float(_bgr_to_lab(c)[0] - _bgr_to_lab(il)[0])
+                for c, il in zip(samples, illums)
+                if il is not None
+            ]
+            if vals:
+                out[tid] = float(np.median(vals))
+        return out
+
+    @staticmethod
+    def _place_uncovered(labels: np.ndarray, colours: np.ndarray) -> np.ndarray:
+        """Assign tracks marked -1 to the nearer of the two group centroids.
+
+        These are the tracks with no turf reading, so the grass-relative sign is
+        unavailable and their illumination-corrected colour is the best remaining
+        evidence.
+        """
+        known = labels >= 0
+        if not known.any() or known.all():
+            return labels
+        lab = cv2.cvtColor(colours.reshape(-1, 1, 3).astype(np.uint8),
+                           cv2.COLOR_BGR2Lab).reshape(-1, 3).astype(np.float32)
+        out = labels.copy()
+        centroids = {}
+        for k in (0, 1):
+            members = lab[known & (labels == k)]
+            if len(members):
+                centroids[k] = members.mean(axis=0)
+        if not centroids:
+            return labels
+        for i in np.where(~known)[0]:
+            out[i] = min(centroids, key=lambda k: np.linalg.norm(lab[i] - centroids[k]))
+        return out
+
     def _track_colours(self) -> tuple[list[int], np.ndarray]:
+        ref = self._reference_illum
         ids, colours = [], []
         for tid, samples in self._samples.items():
-            if len(samples) >= self.min_samples:
-                ids.append(tid)
-                colours.append(np.median(np.stack(samples), axis=0))
+            if len(samples) < self.min_samples:
+                continue
+            illums = self._illum.get(tid) or [None] * len(samples)
+            if ref is not None:
+                samples = [
+                    correct_illumination(c, il, ref) if il is not None else c
+                    for c, il in zip(samples, illums)
+                ]
+            ids.append(tid)
+            colours.append(np.median(np.stack(samples), axis=0))
         return ids, (np.stack(colours) if colours else np.empty((0, 3)))
 
     def fit(self, kits: list[str] | None = None) -> "TeamClassifier":
@@ -216,6 +410,7 @@ class TeamClassifier:
         to ``name_bgr_colour`` per cluster when no kit matches (or ``kits`` is
         None), preserving the prior behaviour.
         """
+        self._reference_illum = self._fit_reference_illuminant()
         ids, colours = self._track_colours()
         self._fitted = True
         if len(ids) == 0:
@@ -229,11 +424,42 @@ class TeamClassifier:
             self._centroids = {"team_a": np.asarray(colours[0], dtype=float)}
             return self
 
-        lab = cv2.cvtColor(colours.reshape(-1, 1, 3).astype(np.uint8),
-                           cv2.COLOR_BGR2Lab).reshape(-1, 3).astype(np.float32)
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
-        _, labels, _ = cv2.kmeans(lab, 2, None, criteria, 5, cv2.KMEANS_PP_CENTERS)
-        labels = labels.ravel()
+        # Prefer the grass-relative split when the declared kits straddle the
+        # turf. Clustering cannot find this boundary: the two kits abut rather
+        # than separate — on the U14G clip the relative-lightness histogram is
+        # unimodal with a long sunlit-white tail, so both k-means and Otsu cut at
+        # +53 and isolate 12 bright shirts instead of the 73/115 the eye sees.
+        # The boundary is at zero for a physical reason, not a statistical one:
+        # a dark kit reflects less than the grass beside it, a light kit more.
+        labels = None
+        split = lightness_split_kits(kits)
+        if split is not None:
+            rel = self._track_relative_lightness()
+            covered = [t for t in ids if t in rel]
+            # Not every track ever stands on visible grass — one in a crowd of
+            # players, or at the frame edge, can go a whole lane without a clean
+            # turf ring. Requiring all of them would silently drop this path on
+            # any real match, so require most and place the rest by colour.
+            if len(covered) >= _MIN_ILLUM_COVERAGE * len(ids):
+                dark_kit, light_kit = split
+                labels = np.array([
+                    (0 if rel[t] <= 0 else 1) if t in rel else -1 for t in ids
+                ])
+                labels = self._place_uncovered(labels, colours)
+                self._split_method = (
+                    f"turf-relative lightness ({len(covered)}/{len(ids)} tracks;"
+                    f" rest by colour)"
+                )
+                self._forced_names = {"team_a": dark_kit, "team_b": light_kit}
+
+        if labels is None or len(np.unique(labels)) < 2:
+            lab = cv2.cvtColor(colours.reshape(-1, 1, 3).astype(np.uint8),
+                               cv2.COLOR_BGR2Lab).reshape(-1, 3).astype(np.float32)
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+            _, labels, _ = cv2.kmeans(lab, 2, None, criteria, 5, cv2.KMEANS_PP_CENTERS)
+            labels = labels.ravel()
+            self._split_method = "colour clustering"
+            self._forced_names = {}
 
         for tid, lbl in zip(ids, labels):
             self._track_team[tid] = "team_a" if lbl == 0 else "team_b"
@@ -250,6 +476,13 @@ class TeamClassifier:
         self._centroids = {k: np.asarray(v, dtype=float) for k, v in means.items()}
 
         ordered = [k for k in ("team_a", "team_b") if k in means]
+        if self._forced_names:
+            # The grass-relative split already knows which side is which kit;
+            # re-deriving the names from cluster colour would only reintroduce
+            # the shadow error it was chosen to avoid.
+            for key in ordered:
+                self._team_names[key] = self._forced_names[key]
+            return self
         mapping = assign_kits_to_clusters([means[k] for k in ordered], kits)
         for idx, key in enumerate(ordered):
             self._team_names[key] = mapping.get(idx) or name_bgr_colour(means[key])
@@ -265,6 +498,15 @@ class TeamClassifier:
     def team_names(self) -> dict[str, str]:
         """Map internal cluster keys (team_a/team_b) to colour names."""
         return dict(self._team_names)
+
+    def split_method(self) -> str:
+        """How the two teams were separated — for the run log.
+
+        Either ``"turf-relative lightness"`` (the declared kits straddle the
+        grass, so the sign of torso-minus-turf lightness decides) or
+        ``"colour clustering"`` (the general fallback).
+        """
+        return self._split_method
 
     def centroids(self) -> dict[str, np.ndarray]:
         """Mean torso BGR per team cluster (for previews / diagnostics)."""

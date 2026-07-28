@@ -8,8 +8,8 @@ viewer's eye lands on the right player.
 The pipeline produces bounding boxes, not segmentation masks, so
 ``sv.HaloAnnotator`` (which needs ``detections.mask``) is not usable yet. The
 box-only equivalent used by soccer broadcasts is a feet **ellipse**
-(``sv.EllipseAnnotator``); a ``circle`` variant is offered too. Once SAM3 masks
-land (``soccer_vision.tracking.sam3``) a true mask halo can be added here.
+(``sv.EllipseAnnotator``); a ``circle`` variant is offered too. A true mask halo
+could be added here if the pipeline ever gains a segmentation detector.
 
 Per-frame track boxes come from ``tracks.json`` written by the process
 pipeline. Tracking is sampled (≈5 fps), so boxes are interpolated up to the
