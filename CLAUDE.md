@@ -524,23 +524,37 @@ match, then name a player in a frame they were not enrolled from:
 nothing thrown away, so no threshold can do better, and it is not a tuning
 problem. Chance is 9%, so the embedding carries real signal and nowhere near
 enough of it. The abstention machinery is doing its job (5/6 at the default,
-protecting you from a 58% error rate) but 13% recall is not usable. Two causes,
-both worth attacking before anything clever:
-
-1. **Too few exemplars** — 2-8 per player, some players 1. The U11 numbers above
-   came from lanes carrying many crops each.
-2. **Hubness toward the players with the most exemplars** — 13 of the 26
-   nearest-neighbour errors name Morgan Lobey, and the three 8-exemplar players
-   absorb most of the rest. `match_track` scores a player by the mean of its
-   `top_k=3` best exemplar similarities, so a player with 8 exemplars can find
-   three good matches by chance where a player with 2 cannot. `build_gallery`
-   caps exemplars per player but never balances them.
+protecting you from a 58% error rate) but 13% recall is not usable.
 
 The deeper reason this is harder than the SoccerNet task the weights were trained
 on: re-ID normally separates people by **clothing**, and teammates wear an
 identical kit. At ~53x76 px all that's left is build, hair and gait. Expect this
 to need far more labelled frames than the broadcast literature implies — and
 measure with leave-one-frame-out before trusting a gallery on a new venue.
+
+**What's been ruled out, so nobody re-treads it** (all on the same 45 held-out
+crops, `slurm/validate_reid_frames.py`):
+
+- **Balancing exemplars per player does not help.** The errors *look* like
+  hubness — 13 of 26 name the same player, and the three 8-exemplar players
+  absorb most of the rest — but capping every player at 2 or 3 exemplars leaves
+  rank-1 unchanged (19/45 → 19/45 and 18/45) and costs precision. The imbalance
+  is not what's driving the confusions.
+- **`top_k` trades recall for precision, it doesn't add accuracy.** At
+  `min_margin` 0.05: `top_k=1` names 13 at 9/13, `top_k=2` names 11 at 9/11,
+  `top_k=3` (default) names 6 at 5/6. Zero-margin accuracy is 19/45 for all
+  three. Pick a point on that curve; there is no free win on it.
+- **Absolute brightness is not the problem** — dark and bright halves score
+  10/22 and 9/23.
+
+**Two leads that did survive.** Rank-1 is 42% but the correct player is in the
+**top 3 exemplars 62%** of the time, so there is signal the current scoring
+doesn't extract. And accuracy tracks **contrast and box size**, not brightness:
+the low-contrast half scores 7/22 against 12/23 for the high-contrast half, same
+for small vs large boxes, and the late backlit frames where the black kit
+silhouettes (83552-101456) manage 3/13 against 16/32 earlier in the match. On 45
+crops those splits are suggestive, not conclusive — worth re-checking on a bigger
+annotation set before building on them.
 
 **Caveat.** The gallery is kit- and season-specific. A team with two kits (Saints
 run black away / white home) needs both enrolled, or a home gallery will abstain
