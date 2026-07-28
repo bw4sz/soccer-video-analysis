@@ -1,0 +1,196 @@
+"""Render a run's tracks + ball back onto its video, to eyeball what a detector did.
+
+`process` writes tracks.json and ball_track.json but nothing you can watch, so
+judging a detector meant reading numbers. This draws them over the source video:
+one box per track (coloured by the team stamped in tracks.json), the ball with a
+short trail, and a HUD carrying the counts.
+
+Detections are sampled (``sample_interval`` in tracks.json — 6 frames, i.e. 5 fps
+at 30 fps video), so a box is *held* across the gap to the next sample rather
+than interpolated. The staircase you see is real: it is the rate the pipeline
+actually detects at, and smoothing it here would hide the flicker this view
+exists to show.
+
+Usage:
+    python scripts/preview_run.py --run runs/<match_id> --start-s 10 --dur-s 20
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from bisect import bisect_right
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+# BGR. The kit names ("black"/"white") are what the team classifier assigns; they
+# are useless as *drawing* colours on a dark pitch, so each maps to a legible hue.
+TEAM_COLOURS = {
+    "black": (0, 140, 255),    # orange
+    "white": (255, 255, 0),    # cyan
+    "blue": (255, 120, 0),
+    "red": (60, 60, 255),
+}
+UNKNOWN_COLOUR = (150, 150, 150)
+BALL_COLOUR = (0, 255, 255)    # yellow
+
+
+def load_run(run: Path):
+    tracks = json.loads((run / "tracks.json").read_text())
+    ball = json.loads((run / "ball_track.json").read_text())
+    interval = int(tracks.get("sample_interval") or 1)
+    teams = tracks.get("teams") or {}
+
+    # frame -> [(track_id, bbox, team)], so each rendered frame is one dict hit
+    by_frame: dict[int, list] = {}
+    for tid, rows in tracks["tracks"].items():
+        team = teams.get(str(tid))
+        for row in rows:
+            by_frame.setdefault(int(row["frame"]), []).append(
+                (int(tid), row["bbox"], team)
+            )
+
+    ball_by_frame = {int(s["frame"]): s for s in ball["samples"]}
+    return by_frame, ball_by_frame, interval, teams
+
+
+def nearest_sample(frame_no: int, keys: list[int], interval: int) -> int | None:
+    """The most recent sampled frame at or before frame_no, if within one interval."""
+    i = bisect_right(keys, frame_no) - 1
+    if i < 0:
+        return None
+    k = keys[i]
+    return k if frame_no - k < interval else None
+
+
+def draw_hud(img, frame_no, t_s, n_tracks, ball_vis, teams_seen, interval, fps):
+    h, w = img.shape[:2]
+    pad = 12
+    lines = [
+        f"frame {frame_no}   t={t_s:6.2f}s",
+        f"tracks in frame: {n_tracks}",
+        f"ball: {'detected' if ball_vis else 'NOT DETECTED'}",
+    ]
+    box_h = 26 * len(lines) + 2 * pad
+    box_w = 330
+    overlay = img.copy()
+    cv2.rectangle(overlay, (pad, pad), (pad + box_w, pad + box_h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
+    for i, line in enumerate(lines):
+        colour = (255, 255, 255)
+        if line.startswith("ball") and not ball_vis:
+            colour = (80, 80, 255)
+        cv2.putText(img, line, (pad + 12, pad + 26 + i * 26),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.62, colour, 2, cv2.LINE_AA)
+
+    # legend, bottom-left
+    y = h - pad - 12
+    items = [(name, TEAM_COLOURS.get(name, UNKNOWN_COLOUR)) for name in teams_seen]
+    items.append(("unassigned", UNKNOWN_COLOUR))
+    items.append(("ball", BALL_COLOUR))
+    lw = 200 * len(items) // 2 + 260
+    overlay = img.copy()
+    cv2.rectangle(overlay, (pad, y - 30), (pad + lw, y + 12), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
+    x = pad + 12
+    for name, colour in items:
+        cv2.rectangle(img, (x, y - 18), (x + 22, y - 2), colour, -1)
+        cv2.putText(img, name, (x + 30, y - 4), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        x += 40 + 12 * len(name)
+
+    caption = f"RF-DETR + ByteTrack | detections at {fps / interval:.1f} fps, held between samples"
+    cv2.putText(img, caption, (pad + 12, pad + box_h + 26), cv2.FONT_HERSHEY_SIMPLEX,
+                0.55, (200, 200, 200), 1, cv2.LINE_AA)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--run", required=True, type=Path)
+    ap.add_argument("--video", default=None,
+                    help="source video (default: the 'video' field in tracks.json)")
+    ap.add_argument("--start-s", type=float, default=10.0)
+    ap.add_argument("--dur-s", type=float, default=20.0)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--trail", type=int, default=8, help="ball trail length, in samples")
+    ap.add_argument("--scale", type=float, default=1.0, help="output scale (0.5 = 720p from 1080p)")
+    args = ap.parse_args()
+
+    run = args.run.resolve()
+    by_frame, ball_by_frame, interval, teams = load_run(run)
+    tracks_meta = json.loads((run / "tracks.json").read_text())
+    # tracks.json records the proxy by bare name ("broadcast_proxy.mp4"), which
+    # lives in the run dir and is a symlink to the source when --broadcast is off.
+    video = Path(args.video) if args.video else Path(tracks_meta.get("video", ""))
+    if not video.is_absolute() and not video.exists():
+        video = run / video.name
+    cap = cv2.VideoCapture(str(video))
+    if not cap.isOpened():
+        raise SystemExit(f"cannot open video: {video}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    start_f = int(round(args.start_s * fps))
+    n_frames = int(round(args.dur_s * fps))
+    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) * args.scale)
+    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) * args.scale)
+
+    out_path = Path(args.out) if args.out else run / f"preview_{int(args.start_s)}s.mp4"
+    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
+
+    track_keys = sorted(by_frame)
+    ball_keys = sorted(ball_by_frame)
+    teams_seen = sorted({t for t in teams.values() if t})
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
+    trail: list[tuple[int, int]] = []
+    n_vis = 0
+
+    for i in range(n_frames):
+        ok, frame = cap.read()
+        if not ok:
+            break
+        fn = start_f + i
+
+        k = nearest_sample(fn, track_keys, interval)
+        rows = by_frame.get(k, []) if k is not None else []
+        for tid, bbox, team in rows:
+            x1, y1, x2, y2 = (int(round(v)) for v in bbox)
+            colour = TEAM_COLOURS.get(team, UNKNOWN_COLOUR) if team else UNKNOWN_COLOUR
+            cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+            label = f"{tid}" + (f" {team}" if team else "")
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 6, y1), colour, -1)
+            cv2.putText(frame, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, (0, 0, 0), 1, cv2.LINE_AA)
+
+        bk = nearest_sample(fn, ball_keys, interval)
+        sample = ball_by_frame.get(bk) if bk is not None else None
+        ball_vis = bool(sample and sample["visible"])
+        if ball_vis:
+            bx, by = int(round(sample["pixel_x"])), int(round(sample["pixel_y"]))
+            if not trail or trail[-1] != (bx, by):
+                trail.append((bx, by))
+                trail[:] = trail[-args.trail:]
+            n_vis += 1
+            for j in range(1, len(trail)):
+                a = int(255 * j / len(trail))
+                cv2.line(frame, trail[j - 1], trail[j], (0, a, a), 2, cv2.LINE_AA)
+            cv2.circle(frame, (bx, by), 16, BALL_COLOUR, 2, cv2.LINE_AA)
+            cv2.drawMarker(frame, (bx, by), BALL_COLOUR, cv2.MARKER_CROSS, 12, 1)
+
+        draw_hud(frame, fn, fn / fps, len(rows), ball_vis, teams_seen, interval, fps)
+        if args.scale != 1.0:
+            frame = cv2.resize(frame, (W, H), interpolation=cv2.INTER_AREA)
+        writer.write(frame)
+
+    writer.release()
+    cap.release()
+    print(f"frames rendered : {i + 1}")
+    print(f"ball detected   : {n_vis}/{i + 1} ({100 * n_vis / max(1, i + 1):.1f}%)")
+    print(f"wrote           : {out_path}")
+
+
+if __name__ == "__main__":
+    main()

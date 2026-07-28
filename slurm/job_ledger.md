@@ -642,3 +642,35 @@ Next: (a) decide on ball_kalman-in-process + ball sample rate; (b) re-check
   enroll crop yield per player on an RF-DETR run before trusting a new gallery;
   (c) the seek-per-frame reader (see 38176330) is now the single biggest win
   left — 1.26h of RF-DETR's projected 1.57h full-match runtime is decoding.
+
+## 38180242 — 2026-07-28 00:16 — slurm/diag_rfdetr_u14g.py (what the preview revealed)
+Why: Rendered runs/u14g-smoke-rfdetr back onto its video with the new
+  scripts/preview_run.py, and it looked bad — 6-13 boxes where the eye counts
+  12-20 players, the ball circle sitting on background objects, and nearly every
+  box stamped "black". Needed to know whether the RF-DETR default is the cause or
+  whether the pipeline around it is losing them.
+Result: COMPLETED (35s). 40 frames, every 6th from 300. **The detector is not the
+  problem.** Per-frame medians:
+    RF-DETR raw (4 classes)      23      <- finds the players fine
+    person classes (1,2,3)       22
+    player+GK only (1,3)         21.5
+    after filter_spectators      14      <- drops 8 of 22 (36%)
+    after ByteTrack              11.5
+  This also independently buries the claim that motivated the SAM3 migration:
+  RF-DETR returns 22 people/frame on Veo footage, not 5-6.
+**Three real problems, none of them detection quality:**
+  (1) `detection/field_filter.py::filter_spectators` drops 36% of detected people.
+      It is the crude central-rectangle hull CLAUDE.md already flags, and in the
+      preview it keeps actual spectators along the far touchline while cutting
+      real players near frame edges. This is the turf-mask work (issues #7/#20).
+  (2) Team assignment has collapsed: 624 'black' vs 38 'white'. Jersey colour
+      sampled from the bbox (no mask) averages kit with turf and shadow — mean
+      BGR [68,70,70], std ~20, i.e. neutral grey for *both* kits, so the two
+      clusters are not separable. This is the regression predicted when SAM3's
+      per-player mask went away; `sample_jersey_bgr(frame, bbox, mask=None)` needs
+      a mask-free way to isolate torso pixels (centre-crop + turf-hue rejection).
+  (3) Ball latches onto background objects — visually confirmed at t=11s and
+      t=16s, consistent with the p95 905px jump measured in 38178685.
+Next: (2) is the cheapest and most valuable — team colour is what `--team` and
+  every kit-aware clip query depend on, and it is currently wrong. Then (1).
+  Neither argues for reverting to SAM3: it was masking these bugs, not fixing them.
