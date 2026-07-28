@@ -100,3 +100,59 @@ def test_labeling_config_offers_every_roster_name_plus_unknown():
     assert '<Label value="Ada Lovelace"/>' in xml
     assert f'value="{UNNAMED_LABEL}"' in xml
     assert 'zoomControl="true"' in xml
+
+
+# --- first-name labels ------------------------------------------------------
+
+def test_labels_are_first_names():
+    """A coach picks "Morrighan" off a dropdown, not "Morrighan Wright"."""
+    from soccer_vision.cli.enroll import label_names
+
+    roster = [{"name": "Morrighan Wright", "jersey": 21},
+              {"name": "Iris McDonald", "jersey": 50}]
+
+    assert label_names(roster) == ["Morrighan", "Iris"]
+
+
+def test_shared_first_names_get_a_surname_initial():
+    from soccer_vision.cli.enroll import label_names
+
+    roster = [{"name": "Morgan Lobey"}, {"name": "Morgan Kelly"}, {"name": "Iris McDonald"}]
+
+    assert label_names(roster) == ["Morgan L.", "Morgan K.", "Iris"]
+
+
+def test_picked_label_maps_back_to_the_roster_name():
+    """The gallery is keyed by the full name, so --player/--number still resolve."""
+    from soccer_vision.cli.enroll import roster_full_name
+
+    profile = {"roster": [{"name": "Morrighan Wright", "jersey": 21},
+                          {"name": "Morgan Lobey"}, {"name": "Morgan Kelly"}]}
+
+    assert roster_full_name(profile, "Morrighan") == "Morrighan Wright"
+    assert roster_full_name(profile, "Morgan L.") == "Morgan Lobey"
+    assert roster_full_name(profile, "Morrighan Wright") == "Morrighan Wright"
+    # An opponent typed in by hand is kept, not silently dropped.
+    assert roster_full_name(profile, "Rangers keeper") == "Rangers keeper"
+
+
+def test_only_nameable_boxes_are_kept():
+    """Distant crowd is what makes a frame look 'busy'; it can't be labelled."""
+    from soccer_vision.cli.enroll import labellable_boxes
+
+    near = (800, 400, 830, 470)      # 70px tall — a player near the camera
+    far = (300, 350, 310, 362)       # 12px tall — someone by the next pitch
+    kept = labellable_boxes([near, far], frame_h=1080)
+
+    assert kept == [near]
+
+
+def test_boxes_below_keeps_the_near_pitch():
+    """At a complex the frame holds another match; only position separates them."""
+    from soccer_vision.cli.enroll import boxes_below
+
+    near = (900, 700, 930, 800)      # feet at y=800
+    far = (400, 300, 420, 360)       # feet at y=360, the next pitch over
+
+    assert boxes_below([near, far], frame_h=1080, min_y_frac=0.45) == [near]
+    assert boxes_below([near, far], frame_h=1080, min_y_frac=0.0) == [near, far]

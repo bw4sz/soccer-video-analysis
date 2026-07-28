@@ -517,9 +517,15 @@ for footage with no gallery, or where it abstains.
 # corners off it (a VLM does this well), pass them back.
 soccer-vision pitch-region --video match.mp4 --at 30 --export-frame ref.jpg
 
+# Usually one line is enough: our far touchline, with the next match beyond it.
+# --below extends the region past the frame edges, which matters (see below).
 soccer-vision pitch-region --video match.mp4 --frame 899 \
-    --points '0.00,0.40 1.00,0.36 1.00,1.00 0.00,1.00' \
-    --out pitch_region.json --preview region.jpg
+    --below '0.00,0.40 1.00,0.36' \
+    --out pitch_region.json --preview region.jpg --check
+
+# Or name the full polygon:
+soccer-vision pitch-region --video match.mp4 --frame 899 \
+    --points '0.00,0.40 1.00,0.36 1.00,1.00 0.00,1.00' --out pitch_region.json
 
 # With a display: click the corners instead.
 soccer-vision pitch-region --video match.mp4 --interactive --out pitch_region.json
@@ -530,33 +536,46 @@ soccer-vision enroll --video match.mp4 --dump-frames frames/ --pitch-region pitc
 ```
 
 Coordinates are stored **normalised** (0-1), so a region drawn on a 1080p still
-applies to a 720p proxy of the same footage. Values >1 in `--points` are read as
-pixels. `--check` runs the detector on the reference frame and colours which
-players the region keeps (green) and drops (red) — cheap validation before
-committing GPU hours.
+applies to a 720p proxy of the same footage. Values outside 0-1 in `--points`
+are read as pixels unless `--coords normalized` says otherwise. `--check` runs
+the detector on the reference frame and colours which players the region keeps
+(green) and drops (red) — cheap validation before committing GPU hours. On the
+U14G Veo frame it kept 18 and dropped 10 (the crowd row and the match behind it).
 
-**Following the pan.** XbotGo/Veo cameras pan but don't travel, so two options,
-usable together:
+**Draw it wider than the frame** — that is what `--below` does. A polygon that
+stopped at the frame edge when it was drawn cuts off our *own* players as soon
+as the camera zooms out, and these cameras zoom constantly. Only the boundary
+that separates us from the neighbours needs to be accurate; left and right
+should run off into space.
 
-- **Keyframes** — repeat `--frame`/`--points` and the polygon is linearly
-  interpolated between them (held, not extrapolated, outside their range). Fully
-  manual and predictable; the only option when naming coordinates off a still.
+**Following the pan.** Two mechanisms, usable together:
+
+- **Keyframes** — repeat `--frame`/`--below`/`--points` and the region is
+  linearly interpolated between them (held, not extrapolated, outside their
+  range). Manual and predictable.
 - **Pan tracking** (on by default, `--no-pitch-pan` to disable) — ORB + RANSAC
-  estimates a similarity transform from the keyframe's reference frame to the
-  current one and carries the polygon through it. It always measures against the
-  *nearest keyframe*, never chaining frame to frame, so error can't accumulate
-  over a match; implausible transforms (>¼-frame jump, >±25% zoom, <12 inliers)
+  estimates a similarity transform between frames and carries the polygon
+  through it. Implausible transforms (>¼-frame jump, >±25% zoom, <12 inliers)
   are rejected and the last good transform is held, so a failed match leaves the
   polygon put instead of teleporting it off-pitch. `process` reports how many
   frames aligned.
+
+**Pan tracking chains, because matching back to one reference does not work.**
+Measured on our own footage, matching each frame directly against the keyframe
+fails after about **5 s** — XbotGo Falcon pans ~130 px/s (262 px in 2 s, no
+match at 5 s), Veo is static for ~2 s then loses it by 5-30 s. So the transform
+is carried frame to frame, where consecutive detection samples (0.2 s apart)
+match easily, and re-anchored to the keyframe whenever that match lands again
+(every 25 calls). Over 60 s of Veo footage at 5 fps: 600/600 frames tracked, 0
+held, and the tracked touchline stayed glued to the real one through a
+substantial zoom-out. Cost is ~2 ORB matches/frame at 640 px wide.
 
 `--margin 0.03` grows the polygon about its centre if feet on the touchline are
 being dropped. In `enroll` this replaces `--min-y-frac`, which was the same idea
 as a horizontal cut.
 
-**Untested at scale.** The region has been validated on single frames, not
-across a full match — the open question is how far a single keyframe carries
-before pan tracking loses its reference (GitHub issue below).
+**Not yet validated over a full match**, only over 60-second spans — chained
+drift between re-anchors is the thing to watch (GitHub issue #24).
 
 ---
 
