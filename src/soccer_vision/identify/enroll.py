@@ -1,40 +1,31 @@
 """Where the labelled crops for a gallery come from.
 
-Three ways to tell the gallery "this appearance is Simon":
+Two ways to tell the gallery "this appearance is Simon":
 
-**Dump and label folders** — the quickest to do by hand. ``enroll --dump-crops``
-writes a folder of crops per ByteTrack lane; you rename the folders you recognise
-to player names, delete the rest, and ``--from-crops`` enrols what's left. The
-tracker has already done the cropping, so labelling is just reading folder names.
+**Annotate frames in Label Studio** — the recommended one. ``enroll
+--dump-frames`` exports whole frames with every detected player pre-boxed; you
+name the boxes that are your squad and delete the rest. Ground truth, and the
+only option for a player OCR never reads (a keeper in a different kit, a number
+that faces away all match). Identity is judged on the full frame while the model
+still crops at the size it trains on, which is why this beat labelling the crops
+themselves — a player is ~29 px tall on overhead footage and unrecognisable in
+isolation at any zoom.
 
 **Bootstrap from OCR** — reuse the jersey numbers `identify` already voted. Only
 high-confidence tracks are taken, so the gallery is seeded from the reads OCR got
 *right* and then generalises to the many crops it couldn't read at all. Costs no
-annotation, which is why it's the default; its ceiling is that a confident-but-
-wrong vote enrols the wrong player, so the confidence floor is deliberately high.
+annotation, but a confident-but-wrong vote enrols the wrong player, so the
+confidence floor is deliberately high.
 
-**Annotate a few frames** — draw boxes on a handful of frames in Label Studio and
-label each with a player's name. Slower to produce but ground truth, and it's the
-only option for a player OCR never reads (a keeper in a different kit, a number
-that faces away all match).
-
-Both paths end at ``(frame, bbox, name)`` triples that the CLI embeds. Pure
-parsing, no model or video, so it stays testable.
+Parsing here ends at ``(frame, bbox, name)`` triples that the CLI embeds. No
+model and no video, so it stays testable.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 
 from soccer_vision.profiles.loader import get_player
-
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
-# Folders `--dump-crops` created and you haven't labelled yet. Enrolling these
-# would bank a ByteTrack lane id as if it were a person, which is the whole
-# confusion this module exists to avoid.
-UNLABELLED_PREFIX = "track_"
 
 
 def names_from_jerseys(
@@ -65,28 +56,6 @@ def names_from_jerseys(
             continue
         player = get_player(profile, jersey) if profile else None
         out[int(tid)] = (player or {}).get("name") or f"#{jersey}"
-    return out
-
-
-def crops_from_directory(root: str | Path) -> list[tuple[Path, str]]:
-    """``(image_path, player_name)`` for every labelled crop folder under ``root``.
-
-    One folder per player, named after them::
-
-        crops/Simon Weinstein/000420.jpg
-        crops/Ada Lovelace/001180.jpg
-        crops/track_0034/...          <- still unlabelled, skipped
-
-    Folders still carrying the ``track_`` prefix that ``--dump-crops`` wrote are
-    ignored, so a half-finished labelling pass enrols only what you've named.
-    """
-    out: list[tuple[Path, str]] = []
-    for folder in sorted(Path(root).iterdir()):
-        if not folder.is_dir() or folder.name.startswith(UNLABELLED_PREFIX):
-            continue
-        for img in sorted(folder.iterdir()):
-            if img.suffix.lower() in IMAGE_SUFFIXES:
-                out.append((img, folder.name))
     return out
 
 

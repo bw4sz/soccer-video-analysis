@@ -27,3 +27,12 @@ slurm/logs/
 
 # Local datasets / harvest downloads (large, regenerable — keep out of git)
 data/
+
+# Real squad rosters — other people's children, in a public repo. Keep the
+# committed profiles to your own team's example (saints-u11.yaml) and leave
+# full rosters untracked.
+examples/profiles/saints-u14g.yaml
+
+# Re-id galleries: real children's appearance embeddings, keyed by their names.
+# Same reasoning as the rosters — regenerable from an annotation export anyway.
+galleries/

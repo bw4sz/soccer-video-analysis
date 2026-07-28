@@ -8,11 +8,7 @@ back ``None`` and falls through to OCR rather than getting a confident wrong nam
 import numpy as np
 import pytest
 
-from soccer_vision.identify.enroll import (
-    boxes_from_label_studio,
-    crops_from_directory,
-    names_from_jerseys,
-)
+from soccer_vision.identify.enroll import boxes_from_label_studio, names_from_jerseys
 from soccer_vision.identify.gallery import (
     build_gallery,
     load_gallery,
@@ -95,23 +91,6 @@ def test_enrols_only_confident_ocr_tracks_and_honours_exclusions():
 
     # No roster entry still enrols, under the number.
     assert names_from_jerseys(doc, None, exclude={1}) == {1: "#6"}
-
-
-def test_crop_folders_enrol_only_once_renamed(tmp_path):
-    for folder, files in [
-        ("Simon Weinstein", ["000420.jpg", "000900.png"]),
-        ("track_0034__ocr20", ["000100.jpg"]),  # dumped but not yet labelled
-    ]:
-        (tmp_path / folder).mkdir()
-        for f in files:
-            (tmp_path / folder / f).touch()
-    (tmp_path / "Simon Weinstein" / "notes.txt").touch()
-
-    got = crops_from_directory(tmp_path)
-    assert [(p.name, n) for p, n in got] == [
-        ("000420.jpg", "Simon Weinstein"),
-        ("000900.png", "Simon Weinstein"),
-    ]
 
 
 def test_parses_label_studio_boxes_to_pixels():

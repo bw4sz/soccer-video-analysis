@@ -173,12 +173,11 @@ def main():
                           help="Detector for --video frame export (default: rfdetr, "
                                "~0.1 s/frame; sam3 is ~13x slower for the same job)")
     p_enroll.add_argument("--profile", help="Project profile YAML (maps jersey → name)")
-    p_enroll.add_argument("--out", help="Gallery path (default: <run>/gallery.npz)")
+    p_enroll.add_argument("--out",
+                          help="Gallery path (default: gallery.npz beside the run, or "
+                               "beside a --from-label-studio export)")
     p_enroll.add_argument("--append", action="store_true",
                           help="Merge into the existing gallery instead of replacing it")
-    p_enroll.add_argument("--dump-crops", metavar="DIR",
-                          help="Write a folder of crops per track for hand labelling, "
-                               "then exit (rename folders to players, re-run --from-crops)")
     p_enroll.add_argument("--dump-frames", metavar="DIR",
                           help="Write whole frames + a Label Studio project for naming "
                                "players on them, then exit. Boxes come pre-drawn from "
@@ -204,18 +203,15 @@ def main():
     p_enroll.add_argument("--serve-root",
                           help="Label Studio LOCAL_FILES_DOCUMENT_ROOT the frame paths are "
                                "written relative to (default: the runs/ base)")
-    p_enroll.add_argument("--from-crops", metavar="DIR",
-                          help="Enrol from crop folders named after players")
-    p_enroll.add_argument("--from-label-studio",
-                          help="Enrol from a Label Studio rectanglelabels export "
-                               "(default: bootstrap from jerseys.json OCR votes)")
+    p_enroll.add_argument("--from-label-studio", metavar="JSON",
+                          help="Enrol from a Label Studio rectanglelabels export — the "
+                               "labelled frames beside it are the crops, so no run or "
+                               "video is needed (default: bootstrap from jerseys.json)")
+    p_enroll.add_argument("--frames", metavar="DIR",
+                          help="Where the frames a --from-label-studio export was drawn "
+                               "on live (default: frames/ beside the export)")
     p_enroll.add_argument("--min-track-frames", type=int, default=20,
                           help="Skip tracks shorter than this when dumping (default: 20)")
-    p_enroll.add_argument("--context-pad", type=float, default=3.0,
-                          help="Review-sheet view: box sizes of context around the "
-                               "player (default: 3.0). Does not affect enrolled crops")
-    p_enroll.add_argument("--context-min", type=int, default=384,
-                          help="Review-sheet view: minimum window in pixels (default: 384)")
     p_enroll.add_argument("--team",
                           help="Only dump lanes on this kit colour (e.g. black) — usually "
                                "you enrol one squad, not both. Uses the `teams` block of "
@@ -223,16 +219,6 @@ def main():
     p_enroll.add_argument("--team-frames", type=int, default=300,
                           help="Frames sampled to classify kit colour when tracks.json "
                                "carries no `teams` block (default: 300)")
-    p_enroll.add_argument("--sheet-samples", type=int, default=6,
-                          help="Review-sheet view: tiles per track (default: 6). Independent "
-                               "of --max-samples, which sets how many crops are enrolled")
-    p_enroll.add_argument("--sheet-tile-height", type=int, default=180,
-                          help="Review-sheet view: rendered height per tile (default: 180). "
-                               "Raise it alongside --context-pad — a wider window drawn at "
-                               "the same height just shrinks the player again")
-    p_enroll.add_argument("--max-tracks", type=int, default=60,
-                          help="Dump only the N longest tracks (default: 60) — a match "
-                               "fragments into hundreds of lanes, more than anyone labels")
     p_enroll.add_argument("--weights", help="Re-id checkpoint (default: sportsreid OSNet_x1_0)")
     p_enroll.add_argument("--device", default=None, help="PyTorch device: cpu / cuda")
     p_enroll.add_argument("--max-samples", type=int, default=20,

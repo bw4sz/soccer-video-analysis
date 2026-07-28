@@ -218,9 +218,9 @@ ground truth exists. If a run comes back thin, try `conf_threshold: 0.15`
    detection-frames (~1.4 s), only 32 lanes reaching 50 frames. SAM3 gave 55
    lanes over 600 frames on comparable footage (job 38162552). This is the
    fragmentation `enroll`/`identify` already exist to paper over — merging lanes
-   per player — but `enroll --dump-crops --max-tracks 60` now samples from a much
-   shorter-lived pool, so check crop yield per player before trusting a gallery
-   built this way.
+   per player. It costs enrolment nothing now that the gallery is built from
+   labelled *frames* rather than from whole lanes, but it does mean OCR
+   bootstrapping (`enroll` off `jerseys.json`) has fewer long lanes to vote on.
 
 Neither is a reason to go back to SAM3 by default; both are worth fixing on the
 RF-DETR path, where the fixes are cheap and reusable.
@@ -405,11 +405,13 @@ that to a ~9 MB backbone and cache it, since those identities aren't our players
 `identify` extra isn't needed for the re-id path, only for the OCR fallback.
 
 ```bash
-# Label a squad by hand: dump crops per track, rename the folders, enrol.
-soccer-vision enroll --run runs/<match> --dump-crops crops/
-#   → crops/track_0021__ocr20/*.jpg ; rename to crops/Simon Weinstein/, drop the rest
-soccer-vision enroll --run runs/<match> --from-crops crops/ \
-                     --out galleries/saints-u11.npz
+# Label a squad by hand — export frames, name the boxes in Label Studio, enrol.
+soccer-vision enroll --video data/<match>.mp4 --dump-frames label_frames/ \
+                     --profile team.yaml --n-frames 24
+#   → label_frames/{frames/,labeling_config.xml,label_studio_tasks.json}
+#   label on a laptop, drop the export back beside the frames, then:
+soccer-vision enroll --from-label-studio label_frames/annotations.json \
+                     --profile team.yaml --out galleries/saints-u11.npz
 
 # Or cold start from OCR: read numbers once, enrol from the reads it got right.
 soccer-vision identify --run runs/<match> --method ocr --profile team.yaml
@@ -424,25 +426,41 @@ soccer-vision identify --run runs/<next> --method reid \
 soccer-vision enroll --run runs/<next> --append --out galleries/saints-u11.npz
 ```
 
-**Three enrolment sources.**
+**Two enrolment sources.**
 
-1. **Dump and label folders** (`--dump-crops` → rename → `--from-crops`) — the
-   tracker does the cropping, you do the naming. Folders come out as
-   `track_0021__ocr20/`; rename the ones you recognise to the player, delete the
-   rest, re-run with `--from-crops`. Folders still carrying the `track_` prefix
-   are skipped, so a half-finished pass enrols only what you named. Merging
-   several lanes into one player's folder is encouraged — more poses, better
-   gallery entry. Only the `--max-tracks 60` longest lanes are dumped (a match
-   fragments into ~2,000), and `index_*.jpg` review sheets are written alongside:
-   an overhead camera renders a player in about 50×21 px, unlabellable in a file
-   browser, so the sheets upscale each track's crops into a captioned strip.
-2. **Bootstrap from OCR** (default) — reuse the high-confidence votes in
-   `jerseys.json` (`--min-confidence 0.8 --min-obs 5`). Free, but a
+1. **Label Studio frames** (`--dump-frames` → label → `--from-label-studio`) —
+   the way to do this. Every detected player arrives pre-boxed and labelled
+   `unknown`; you name the ones who are yours and delete the rest. Labelling
+   happens on the **full frame**, which is the whole point: an overhead camera
+   renders a player in about 50×21 px, so a crop in isolation is unnameable at
+   any zoom, while on the frame you have position, neighbours and the direction
+   of play to go on. The box round-trips as percentages and converts back to the
+   detector's exact pixels, so the model still crops at the size it trains on.
+   Enrolment reads the JPEGs sitting beside the export, so it needs **no
+   processed run and no video** — `--dump-frames` works straight off `--video`.
+   Boxes left `unknown` are skipped rather than banked under a shared identity.
+2. **Bootstrap from OCR** (`--run`, no other source) — reuse the high-confidence
+   votes in `jerseys.json` (`--min-confidence 0.8 --min-obs 5`). Free, but a
    confident-wrong read enrols the wrong player, so pass `--exclude-jersey 1`
    (PARSeq's hallucination class on this footage).
-3. **Label Studio** (`--from-label-studio export.json`) — `rectanglelabels`
-   named after players, for when you want boxes drawn on frames rather than
-   whole tracks accepted or rejected.
+
+Labelling folders of track crops (`--dump-crops` / `--from-crops`, with
+`index_*.jpg` review sheets) was the third route and is **gone** — deleted
+2026-07-28. It asked people to name a player from a contact sheet of wide
+context tiles instead of from the picture itself, and every knob added to make
+those tiles readable (`--context-pad`, `--sheet-tile-height`) was working around
+the fact that the crop is the wrong thing to look at. Label Studio on frames
+does the same job better; don't reintroduce it.
+
+**Nicknames.** A roster entry may carry `nickname: Mo`, which replaces the first
+name in the annotator's label list — a squad clicking "Mo" twenty times a frame
+shouldn't have to translate "Morrighan" each time. Enrolment maps it back to the
+full name, so the gallery is keyed consistently and `--player Mo`,
+`--player Morrighan` and `--number 21` all reach the same person. A label that
+resolves to nobody on the roster is still enrolled (it may be a hand-typed
+opponent) but is **reported at enrolment** — usually it means a nickname is
+missing from the profile, which would otherwise split one player into two
+gallery entries.
 
 **Config / fallback.** `identify --method` takes `auto` (default — `reid+ocr`
 when a gallery is present, else `ocr`), `ocr`, `reid`, or `reid+ocr`. `reid+ocr`
