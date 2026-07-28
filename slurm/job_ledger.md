@@ -763,3 +763,88 @@ Side note: the rfdetr err log advertises `model.optimize_for_inference(dtype=
   *unoptimized*, so the speed lever is untouched on the default path.
 Next: nothing argues for revisiting the default. If SAM3 is wanted for a domain-
   shift check, budget ~8 h/match and raise the wall.
+
+### Job 38223804 — TAAD on U14G footage (first run on this camera)
+**Date:** 2026-07-28
+**Script:** `slurm/submit_footpass_ours_u14g.sh`
+**Why:** Every TAAD-on-our-footage smoke so far (36450376, 36460253, 36500443,
+  38162552) used the *same* video — `match-saints-16b-pre-mls-next-2026-04-26.mp4`,
+  the XbotGo camera. The block+shot class collapse has therefore been measured
+  four times on one camera and zero times on U14G, which is a different camera
+  (Veo), venue (shared multi-pitch) and sun angle (low, long shadows, flare).
+  Before committing to annotation + fine-tuning (FOOTPASS.md section B), find
+  out whether we are fighting one domain gap or two.
+**Design:** Protocol identical to 36500443 so the runs are comparable —
+  600 frames, stride 1, RF-DETR+ByteTrack, `--conf 0.3 --ball-conf 0.2
+  --ref-filter vote`, TAAD at `--conf 0.15 --nms 15 --ball-gate soft`, same
+  `taad_03072026_1113/best_model.pt`. Only the video and window change.
+  Window = frames 2700-3300 of `data/u14g_smoke180.mp4`, picked off
+  `runs/u14g-smoke-rfdetr/ball_track.json` as live open play (92-95% ball
+  visibility, 56-120 px median ball motion). 36450376 was invalidated by landing
+  in a dead-ball span; this avoids that.
+  RF-DETR not SAM3 because 38162552 showed the front end does not move TAAD's
+  class distribution, and RF-DETR is 33x faster on this exact footage (38180242).
+**Baseline to compare against (in-domain FOOTPASS val prior, 6070 events):**
+  pass 50.4%, drive 40.7%, header 2.7%, cross 1.8%, throw-in 1.6%, block 1.3%,
+  shot 1.1%, tackle 0.4%. XbotGo runs inverted it to block+shot 71-75%,
+  pass+drive 14-17%.
+**Known caveat:** `--field-mask auto` takes the largest green blob, and this is a
+  multi-pitch complex, so the neighbouring match is turf too and is NOT excluded.
+  The `--pitch-region` flag that would have fixed it was removed in 24557ed.
+  Check the tracking preview before reading anything into the class counts.
+**Result:** COMPLETED (exit 0, ~4 min). **The block+shot collapse does NOT
+  reproduce on U14G.** 14 events: drive 5, throw-in 3, shot 2, pass 1, cross 1,
+  header 1, tackle 1, **block 0**.
+    class         in-domain   XbotGo(SAM3)   U14G(this)
+    block+shot        2.4%        71%           14%   (2/14)
+    pass+drive       91.1%        17%           43%   (6/14)
+  block+shot 25/35 -> 2/14 is Fisher p=0.0004. pass+drive 6/35 -> 6/14 is
+  p=0.076 (suggestive, underpowered). So the *specific* pathology the four
+  XbotGo runs measured is camera-specific, not a universal TAAD failure — but
+  U14G is still far off the in-domain prior (pass+drive 43% vs 91%, throw-in
+  21% vs 1.6%).
+**Read it narrowly — three real weaknesses:**
+  (1) n=14 events. Small, and the event *rate* is a third of XbotGo's (14 vs
+      35-36 on the same 600-frame budget), so TAAD is also much less confident
+      here.
+  (2) **Only 4/14 events are near-ball** (ball_dist <= 0.135); the other 10 run
+      out to ball_dist 0.78 and are almost certainly false positives whatever
+      their class. The 4 near-ball ones are drive / shot / tackle / pass — a
+      plausible mix, which is the encouraging part of this run.
+  (3) The multi-pitch confound fired exactly as predicted. Turf polygon = 69% of
+      frame and **dropped 0 off-field detections**; the mask did nothing.
+      Keyframe kf_05_f3236 shows `t97` is an adult coach in a light-blue polo on
+      the sideline and `t101` is the bench row — both tracked, and t97 produced
+      the f2884 throw-in (ball_dist 0.779). 3 of the 14 longest tracks are
+      near-camera sideline figures (t1/t97/t101, box heights 142/177/213 px
+      against a 57 px median), which is exactly what TAAD's top-13-longest
+      selection favours.
+**Also:** team split named `orange`/`gray` where the profile declares
+  black/white. The red/blue box assignment looks broadly right in the keyframes
+  (red=light kit, blue=dark), so the *split* works and only the colour *names*
+  are wrong — `footpass_extract_tracklets.py` calls `TeamClassifier` directly
+  and so misses the turf-relative lightness fix that `process` got in 59c396a.
+**Artifacts:** `/blue/.../footpass/ours/taad_smoke_u14g/` (predictions.json,
+  annotated.mp4, 8 keyframes), tracklets
+  `/blue/.../footpass/ours/our_u14g_rfdetr_u14g.h5` (+ manifest),
+  preview `/blue/.../footpass/ours/tracking_preview_u14g.mp4`.
+**Next:** Do NOT size the annotation budget off the XbotGo runs — they measured
+  a failure mode this camera does not have. Two cheap things before annotating:
+  (a) re-run this window with the sideline/bench figures excluded, to see how
+  much of the off-ball noise is non-participants (needs a spatial gate; the
+  `--pitch-region` flag was removed in 24557ed, so this needs a decision, not
+  just a flag); (b) the zero-annotation calibration check — `footpass_infer_ours.py`
+  does softmax+argmax at conf 0.15, so reweight by the FOOTPASS val class prior
+  and see whether pass/drive recover on the XbotGo window. Only then scope
+  FOOTPASS.md section B.
+
+## 38225019 — 2026-07-28 — slurm/submit_process.sh (smoke after deleting SAM3)
+Why: Removing SAM3 touched the hot path in cli/process.py — the detector setup
+  and the per-frame detect/track branch both lost their `if sam3_tracker` arm.
+  Tests pass but none of them exercise that loop, so this re-runs the same 3-min
+  U14G clip job 38178685 used, to prove the RF-DETR path is behaviourally
+  unchanged rather than merely importable.
+Result: COMPLETED (exit 0, 5m10s). **Byte-identical counts to 38178685**:
+  856 tracks, 662 kit-stamped, ball 760/899 visible (84.5%), teams black/white,
+  0 events (expected — no action engine). Run runs/u14g-smoke-postsam3.
+Next: none. SAM3 removal is behaviour-preserving on this footage.

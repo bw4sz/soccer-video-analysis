@@ -5,24 +5,16 @@ jersey-colour team clustering (`tracking/teams.py`) — and writes a tactical HD
 in the schema the FOOTPASS TAAD dataloader expects, so a trained TAAD can predict
 actions on our footage.
 
-``--detector`` picks the front end:
+The front end is RF-DETR (`detection/rfdetr.py`) + ByteTrack
+(`tracking/bytetrack.py`).
 
-- ``rfdetr`` (default) — RF-DETR (`detection/rfdetr.py`) + ByteTrack
-  (`tracking/bytetrack.py`). What the July 2026 smoke runs used.
-- ``sam3`` — SAM3 text-prompted concept segmentation (`tracking/sam3.py`), one
-  session per concept ("soccer player" / "soccer ball" / "referee") sharing one
-  copy of the weights. Detects and tracks in a single pass, so ByteTrack is not
-  involved and object ids come from SAM3's masklet memory.
-
-**Why the choice matters here.** TAAD is *track-aware*: tracklets are its input,
-not the raw video, and it scores only the top-13 longest tracks per team. On our
-Veo footage RF-DETR finds 5-6 players/frame against SAM3's 20-22, so the July
-runs fed TAAD a pitch with most of the players missing. The in-domain detector
-eval (job 38133841) showed RF-DETR is *not* a weak detector — 0.977 recall on
-broadcast, better than SAM3's 0.925 — which means its Veo behaviour is domain
-shift, and the tracklets it produced there cannot be assumed adequate. Swapping
-to SAM3 separates "the action head doesn't transfer" from "the input was
-incomplete"; the two were confounded before.
+**Why the front end matters here.** TAAD is *track-aware*: tracklets are its
+input, not the raw video, and it scores only the top-13 longest tracks per team,
+so a thin detector would starve it. It does not: the in-domain eval (job
+38133841) puts RF-DETR at 0.977 recall on broadcast, and job 38162552 measured
+20.4 detections/frame on our own Veo footage. Three different tracklet
+configurations have now produced the same inverted class distribution, which
+points at the action head rather than the input.
 
 Schema (one row per (player, frame), matching `utils/TAAD_Dataset.py`):
     FRAME, PLAYER_ID, LEFT_TO_RIGHT(team 0/1), SHIRT_NUMBER, ROLE_ID,
@@ -151,35 +143,10 @@ def main() -> int:
                          "own lifespan — flickery tracks are usually supporters/referees")
     ap.add_argument("--min-track-frames", type=int, default=10,
                     help="drop tracks seen in fewer than this many frames total")
-    ap.add_argument("--detector", choices=["rfdetr", "sam3"], default="rfdetr",
-                    help="rfdetr: RF-DETR + ByteTrack; sam3: SAM3 text-prompt detect+track")
-    ap.add_argument("--sam3-chunk", type=int, default=30,
-                    help="SAM3 session rotation length. Each session's masklet memory grows "
-                         "~0.12GB/frame and three concepts run at once, so keep this well "
-                         "below the single-tracker default of 60 or the GPU runs out.")
     args = ap.parse_args()
 
-    det = tracker = None
-    players_tr = ball_tr = ref_tr = None
-    if args.detector == "sam3":
-        if args.stride != 1:
-            return print("ERROR: --detector sam3 needs --stride 1 (tracking needs "
-                         "consecutive frames to keep object ids)") or 2
-        from soccer_vision.tracking.sam3 import SAM3PlayerTracker
-
-        players_tr = SAM3PlayerTracker(device=args.device, prompt="soccer player",
-                                       chunk_frames=args.sam3_chunk)
-        # One model, driven by text: extra concepts need only their own session,
-        # not another ~3GB of weights.
-        ball_tr = SAM3PlayerTracker.sharing(players_tr, "soccer ball")
-        ref_tr = (SAM3PlayerTracker.sharing(players_tr, "referee")
-                  if args.ref_filter != "off" else None)
-        for tr in (players_tr, ball_tr, ref_tr):
-            if tr is not None:
-                tr.start()
-    else:
-        det = RFDETRSoccerDetector.from_pretrained(device=args.device)
-        tracker = create_tracker()
+    det = RFDETRSoccerDetector.from_pretrained(device=args.device)
+    tracker = create_tracker()
     teams = TeamClassifier()
 
     cap = cv2.VideoCapture(args.video)
@@ -221,49 +188,32 @@ def main() -> int:
             break
         if (t - f0) % args.stride:
             continue
-        if args.detector == "sam3":
-            # SAM3 detects and tracks in one pass per concept, so there is no
-            # class-id split and no ByteTrack. Note --conf is not applied here:
-            # SAM3 scores an object once at birth and keeps that value for its
-            # life, so a per-frame confidence gate is inert (job 38133841 —
-            # identical metrics at 0.2/0.3/0.5). Filtering happens via the
-            # tracker's own min_score.
-            tracked = players_tr.track(frame)
-            ball_dets = ball_tr.track(frame)
-            ref_boxes = (np.asarray(ref_tr.track(frame).xyxy)
-                         if ref_tr is not None else np.empty((0, 4)))
-            ball_cands = [
-                ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0, float(c))
-                for b, c in zip(np.asarray(ball_dets.xyxy), np.asarray(ball_dets.confidence))
-            ] if len(ball_dets) else []
-            n_ref_objs.append(len(ref_boxes))
-        else:
-            dets = det.predict(frame, conf_threshold=min(args.ball_conf, args.conf))
-            if len(dets) == 0:
-                continue
-            cid = np.asarray(dets.class_id)
-            conf = np.asarray(dets.confidence)
-            xyxy_all = np.asarray(dets.xyxy)
+        dets = det.predict(frame, conf_threshold=min(args.ball_conf, args.conf))
+        if len(dets) == 0:
+            continue
+        cid = np.asarray(dets.class_id)
+        conf = np.asarray(dets.confidence)
+        xyxy_all = np.asarray(dets.xyxy)
 
-            # --- ball: every ball detection above threshold, best-first below ---
-            bmask = np.isin(cid, list(BALL_CLASS_IDS)) & (conf >= args.ball_conf)
-            ball_cands = [
-                (float((xyxy_all[i][0] + xyxy_all[i][2]) / 2.0),
-                 float((xyxy_all[i][1] + xyxy_all[i][3]) / 2.0), float(conf[i]))
-                for i in np.where(bmask)[0]
-            ]
+        # --- ball: every ball detection above threshold, best-first below ---
+        bmask = np.isin(cid, list(BALL_CLASS_IDS)) & (conf >= args.ball_conf)
+        ball_cands = [
+            (float((xyxy_all[i][0] + xyxy_all[i][2]) / 2.0),
+             float((xyxy_all[i][1] + xyxy_all[i][3]) / 2.0), float(conf[i]))
+            for i in np.where(bmask)[0]
+        ]
 
-            # --- referees: RF-DETR often also emits a spurious 'player' box on the
-            # same official, so referee boxes veto overlapping player boxes below ---
-            ref_boxes = (xyxy_all[cid == REFEREE_CLASS_ID] if args.ref_filter != "off"
-                         else np.empty((0, 4)))
-            n_ref_objs.append(len(ref_boxes))
+        # --- referees: RF-DETR often also emits a spurious 'player' box on the
+        # same official, so referee boxes veto overlapping player boxes below ---
+        ref_boxes = (xyxy_all[cid == REFEREE_CLASS_ID] if args.ref_filter != "off"
+                     else np.empty((0, 4)))
+        n_ref_objs.append(len(ref_boxes))
 
-            # --- players (+ goalkeepers), tracked ---
-            pmask = np.isin(cid, list(PLAYER_CLASS_IDS)) & (conf >= args.conf)
-            keep = list(np.where(pmask)[0])
-            players = dets[np.array(keep, dtype=int)] if keep else dets[np.zeros(len(dets), bool)]
-            tracked = track_detections(tracker, players)
+        # --- players (+ goalkeepers), tracked ---
+        pmask = np.isin(cid, list(PLAYER_CLASS_IDS)) & (conf >= args.conf)
+        keep = list(np.where(pmask)[0])
+        players = dets[np.array(keep, dtype=int)] if keep else dets[np.zeros(len(dets), bool)]
+        tracked = track_detections(tracker, players)
 
         # --- ball: highest-confidence candidate that is on the field ---
         for cx_b, cy_b, cb in sorted(ball_cands, key=lambda c: -c[2]):
@@ -274,9 +224,9 @@ def main() -> int:
 
         if tracked is None or len(tracked) == 0 or tracked.tracker_id is None:
             continue
-        # SAM3 carries a per-player mask; sampling jersey colour inside it instead
-        # of over the whole box is what turned the team split from "blue, blue"
-        # into "black, blue" on this footage (overhead boxes are mostly turf).
+        # A segmentation detector would carry a per-player mask here; RF-DETR
+        # does not, so the colour sample falls back to a torso window judged
+        # against the surrounding turf (see `tracking/teams.py`).
         masks = getattr(tracked, "mask", None)
         for k, (xyxy, tid) in enumerate(zip(tracked.xyxy, tracked.tracker_id)):
             x1, y1, x2, y2 = [float(v) for v in xyxy]
@@ -399,8 +349,7 @@ def main() -> int:
     if args.preview:
         _render_preview(args.video, arr, W, H, fps, f0, f1, args.preview, tname, field_poly,
                         {int(r[0]): (r[1], r[2]) for r in ball_rows},
-                        stack="SAM3+team" if args.detector == "sam3"
-                        else "RF-DETR+ByteTrack+team")
+                        stack="RF-DETR+ByteTrack+team")
     return 0
 
 

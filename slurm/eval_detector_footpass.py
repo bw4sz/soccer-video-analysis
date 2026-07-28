@@ -1,9 +1,9 @@
 """In-domain player-detection evaluation on FOOTPASS broadcast video.
 
-Every SAM3 number we have ("20-22 players/frame, 21/22 ids stable") was measured
-on Veo youth footage that has **no ground truth at all** — it's a count, not an
-accuracy. This script produces the missing baseline: precision/recall against
-real per-player boxes, on broadcast footage the detectors were trained for.
+Detection counts on our own Veo youth footage have **no ground truth at all** —
+they are counts, not accuracies. This script produces the missing baseline:
+precision/recall against real per-player boxes, on broadcast footage the
+detector was trained for.
 
 Ground truth is the FOOTPASS/SN-PCBAS-2026 tactical data (`val_tactical_data.h5`),
 whose ROI_* columns are per-frame player boxes in **fullHD** coordinates. The
@@ -19,16 +19,14 @@ output:
 2. A median GT player is 38x79 px in fullHD -> **13x26 px** on the local 640x352
    video, *smaller* than a player on our Veo footage. So a low score here may be
    resolution rather than domain, and this script cannot separate the two.
-   Naively upsampling the frame would not answer it: ``Sam3VideoProcessor``
-   resizes every input to 1008x1008 anyway, so the model already sees the frame
-   stretched ~3x, and cubic interpolation adds no information. Settling the
-   resolution question needs either the fullHD videos (on HuggingFace, never
-   downloaded here) or SAHI-style tiling, where each tile spends the model's
-   full 1008px budget on a quarter of the pitch.
+   Naively upsampling the frame would not answer it — cubic interpolation adds
+   no information. Settling the resolution question needs either the fullHD
+   videos (on HuggingFace, never downloaded here) or SAHI-style tiling, where
+   each tile spends the model's full input budget on a quarter of the pitch.
 
 The GT counts only the ~22 outfield players + keepers — **not referees, coaches
-or crowd** — all of which "soccer player" and RF-DETR's player class happily
-return on a broadcast frame. So raw precision is pessimistic by construction; we
+or crowd** — all of which RF-DETR's player class happily
+returns on a broadcast frame. So raw precision is pessimistic by construction; we
 also report precision restricted to the field envelope (the bounding box of that
 frame's GT, expanded), which is the closer analogue of how the pipeline uses a
 field mask downstream.
@@ -141,34 +139,6 @@ def read_window(cap, start: int, n: int) -> list[tuple[int, np.ndarray]]:
 # detectors — each returns, per frame, an (M,4) xyxy array + (M,) scores,
 # already mapped back to native 640x352 coordinates.
 # --------------------------------------------------------------------------
-
-
-class Sam3Arm:
-    name = "sam3"
-
-    def __init__(self, prompt: str, min_score: float = 0.0):
-        sys.path.insert(0, "/orange/ewhite/b.weinstein/soccer-video-analysis/src")
-        from soccer_vision.tracking.sam3 import SAM3PlayerTracker
-
-        # min_score 0 here: we keep every detection with its score and sweep the
-        # threshold afterwards, so one run answers "what is the best operating
-        # point" instead of only "how good is the default".
-        self.tracker = SAM3PlayerTracker(
-            device="cuda", prompt=prompt, min_score=min_score, chunk_frames=60
-        )
-
-    def start_window(self) -> None:
-        import torch
-
-        self.tracker.close()
-        torch.cuda.empty_cache()
-        self.tracker.start()
-
-    def detect(self, bgr: np.ndarray):
-        dets = self.tracker.track(bgr)
-        if len(dets) == 0:
-            return np.zeros((0, 4)), np.zeros(0)
-        return np.asarray(dets.xyxy, dtype=float), np.asarray(dets.confidence, dtype=float)
 
 
 class RFDetrArm:
@@ -367,7 +337,7 @@ def main() -> None:
     for name in [s.strip() for s in args.arms.split(",") if s.strip()]:
         print(f"--- {name} ---")
         try:
-            arm = Sam3Arm(args.prompt) if name == "sam3" else RFDetrArm()
+            arm = RFDetrArm()
         except Exception as exc:
             print(f"  !! could not build {name}: {type(exc).__name__}: {exc}")
             continue
@@ -412,8 +382,7 @@ if __name__ == "__main__":
     p.add_argument("--game", default="game_24_H1", help="val h5 key")
     p.add_argument("--windows", type=int, default=10)
     p.add_argument("--window-frames", type=int, default=40)
-    p.add_argument("--arms", default="sam3,rfdetr", help="comma list of detectors")
-    p.add_argument("--prompt", default="soccer player")
+    p.add_argument("--arms", default="rfdetr", help="comma list of detectors")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
     main()

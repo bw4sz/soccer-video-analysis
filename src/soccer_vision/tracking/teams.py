@@ -5,8 +5,8 @@ of their torso region, then map each cluster to a human colour name (blue, white
 red, ...) so events can be filtered by e.g. ``--team blue``.
 
 This needs no extra models — it runs on the RF-DETR player boxes and ByteTrack
-IDs already produced by the pipeline. Stable per-player identity (jersey OCR,
-sn-gamestate, SAM3 masklets) is a later phase; see ``tracking/sam3.py``.
+IDs already produced by the pipeline. Stable per-player identity is a separate
+step; see ``cli/identify.py`` (jersey OCR) and ``cli/enroll.py`` (re-id).
 """
 
 from __future__ import annotations
@@ -67,8 +67,9 @@ def sample_jersey_bgr(
     ``bbox`` is (x1, y1, x2, y2) in pixel coordinates. Returns ``None`` when the
     box is too small or falls outside the frame.
 
-    ``mask`` is an optional full-frame boolean segmentation mask for this player
-    (SAM3 supplies one per track). When given, the median is taken over *player
+    ``mask`` is an optional full-frame boolean segmentation mask for this player,
+    for a segmentation detector that supplies one (RF-DETR does not). When given,
+    the median is taken over *player
     pixels only*. On overhead footage a player is small and the torso rectangle
     is mostly turf, so a plain rectangular median drags every jersey toward green
     and the two team clusters collapse into one colour — job 37877642 named both

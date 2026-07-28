@@ -16,14 +16,10 @@
 # Process any match. Every squad needs its own run before `enroll` can dump
 # crops or frames for it, so this takes the video and match id as arguments.
 #
-# Defaults to RF-DETR (examples/process_match.yaml): public weights, no HF gate,
-# ~26x faster than SAM3, and better where we have ground truth — see that file.
-# A full 60-min match is ~1.6h, which is what the 4h wall is sized for. SAM3 on
-# the same match needs 9.4h and used to silently blow an 8h wall (job 38162800).
-#
-# To opt into SAM3 instead, pass its config as the 4th argument:
-#   sbatch slurm/submit_process.sh <video> <id> <profile> examples/saints-u11-sam3.yaml
-# and raise --time to 12:00:00, or it will not finish.
+# Detection is RF-DETR (examples/process_match.yaml): public weights, no HF gate,
+# 0.045 s/detection-frame, and better where we have ground truth — see that file.
+# A full 60-min match is ~1.6h, which is what the 4h wall is sized for; most of
+# that is video decoding, not detection.
 #
 # Usage: sbatch slurm/submit_process.sh <video> <match_id> [profile] [config]
 
@@ -39,14 +35,11 @@ PROFILE="${3:-}"
 CONFIG="${4:-$REPO/examples/process_match.yaml}"   # detector config, not team-specific
 RUN_DIR="$REPO/runs/$MATCH_ID"
 
-# Both RF-DETR and SAM3 weights are already in this cache, so the job loads
-# fully offline (no token, and no HF gate to trip on a compute node).
+# RF-DETR weights are already in this cache, so the job loads fully offline.
 export HF_HOME=/blue/ewhite/b.weinstein/.cache/huggingface
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export TORCH_HOME=/blue/ewhite/b.weinstein/soccer-vision/torch_cache
-# reclaim fragmentation from SAM3's chunked-session rotations (inert for RF-DETR)
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Unbuffered: SLURM redirects stdout to a file, so Python buffers it and a job
 # killed at the wall limit leaves a log showing only step 1 — indistinguishable
 # from a hang. Progress must land in the log as it happens (job 38162799).

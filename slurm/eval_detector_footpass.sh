@@ -19,7 +19,7 @@ REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
 PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
-# Both facebook/sam3 and julianzu9612/RFDETR-Soccernet are already cached here
+# julianzu9612/RFDETR-Soccernet is already cached here
 # and past their gates, so the job loads fully offline (no token, no network).
 export HF_HOME=/blue/ewhite/b.weinstein/.cache/huggingface
 export HF_HUB_OFFLINE=1
@@ -35,7 +35,7 @@ $PY -u "$REPO/slurm/eval_detector_footpass.py" \
     --game "${1:-game_24_H1}" \
     --windows 10 \
     --window-frames 40 \
-    --arms sam3,rfdetr
+    --arms rfdetr
 RC=$?
 echo "done:  $(date) (rc=$RC)"
 exit $RC
