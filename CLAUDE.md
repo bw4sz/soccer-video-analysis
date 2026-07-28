@@ -504,9 +504,43 @@ Tune `min_margin`, not `min_similarity`. And **the abstentions are not noise** �
 raising the margin costs recall fast without buying precision, because at 0.05
 precision is already 100%. Leave it at 0.05 and let OCR pick up the rest.
 
-Untested and worth knowing before trusting this: everything above is *within one
-match*, so same kit, light and camera position. Cross-match generalisation — the
-actual reason to carry a gallery — needs a second processed match to measure.
+Read those numbers narrowly. That test holds out a *lane* and matches it against
+other lanes of the same player minutes away in the same match — one player
+against 7, with a mean over many crops each.
+
+**The harder test, and it does not pass yet.** On the U14G gallery built from a
+Label Studio export (`galleries/saints-u14g.npz`, 47 exemplars over 11 players,
+2026-07-28) leave-one-**frame**-out — build the gallery from the rest of the
+match, then name a player in a frame they were not enrolled from:
+
+| min_margin | named of 45 | correct when named |
+|---|---|---|
+| 0.00 (no abstention) | 45 | **19/45 (42%)** |
+| 0.02 | 24 | 12/24 |
+| 0.05 (default) | 6 | 5/6 |
+| 0.10 | 2 | 2/2 |
+
+**42% at zero margin is the ceiling** — that is pure nearest neighbour with
+nothing thrown away, so no threshold can do better, and it is not a tuning
+problem. Chance is 9%, so the embedding carries real signal and nowhere near
+enough of it. The abstention machinery is doing its job (5/6 at the default,
+protecting you from a 58% error rate) but 13% recall is not usable. Two causes,
+both worth attacking before anything clever:
+
+1. **Too few exemplars** — 2-8 per player, some players 1. The U11 numbers above
+   came from lanes carrying many crops each.
+2. **Hubness toward the players with the most exemplars** — 13 of the 26
+   nearest-neighbour errors name Morgan Lobey, and the three 8-exemplar players
+   absorb most of the rest. `match_track` scores a player by the mean of its
+   `top_k=3` best exemplar similarities, so a player with 8 exemplars can find
+   three good matches by chance where a player with 2 cannot. `build_gallery`
+   caps exemplars per player but never balances them.
+
+The deeper reason this is harder than the SoccerNet task the weights were trained
+on: re-ID normally separates people by **clothing**, and teammates wear an
+identical kit. At ~53x76 px all that's left is build, hair and gait. Expect this
+to need far more labelled frames than the broadcast literature implies — and
+measure with leave-one-frame-out before trusting a gallery on a new venue.
 
 **Caveat.** The gallery is kit- and season-specific. A team with two kits (Saints
 run black away / white home) needs both enrolled, or a home gallery will abstain
