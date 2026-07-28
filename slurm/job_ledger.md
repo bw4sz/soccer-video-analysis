@@ -710,3 +710,56 @@ Result: **419 black / 243 white** (was 624/38), on 662 stamped tracks; visually
   to discover. store/db.py should upsert rather than insert.
 Next: `filter_spectators` still drops 36% of detected people and remains the
   largest quality gap; that is the turf-mask work (issues #7/#20).
+
+## 38223174 / 38223284 — 2026-07-28 — is the SAM3-vs-RF-DETR gap video-dependent?
+Why: We had four speed ratios from three scripts (38133841, 38176330, 38186278)
+  that disagreed — 13x, 23x, 26x, 29x — and that spread was being read as "it
+  depends on the footage". Two known methodology defects were in there: 38186278
+  timed 6 frames with **no warm-up** (first-frame cuDNN autotune lands in the
+  mean) and counted only SAM3's *player* session, while production runs a player
+  and a ball session per frame. New script slurm/bench_detector_speed_multivideo.py
+  sweeps every distinct camera we own plus 4 harvested youth clips (unfamiliar
+  cameras), identical protocol for both detectors.
+**First run (38223174) had a flaw I introduced and it is instructive.** Sampling
+  frames *evenly* across a video is right for a stateless detector and wrong for
+  SAM3, which is a stateful video tracker — frames a minute apart are scene cuts,
+  masklets churn, and it re-detects from scratch. SAM3 measured 2.5-3.1 s/frame
+  on the long matches but **1.26-1.48 s/frame on the 10-second youth clips**,
+  where even spacing still lands frames <1 s apart. That internal contrast is the
+  tell. RF-DETR scored 0.038-0.048 either way, which is what makes the artefact
+  attributable to statefulness rather than to the videos.
+Result (38223284, COMPLETED 7m54s, corrected to 3 bursts x 15 **consecutive**
+  frames at the 5 fps process stride, session reset per burst, 5 warm-up frames
+  discarded per burst per detector):
+
+  video                    rfdetr s/fr   sam3 s/fr   ratio   rfdetr obj  sam3 obj
+  u14g-veo-multipitch         0.046        1.540     33.7x      29.7      22.9
+  u11-xbotgo                  0.045        1.652     36.5x      19.8      24.3
+  saints-16b-sideline         0.045        1.702     38.8x      19.4      19.8
+  youth-wA5HoPCvIps           0.037        1.292     34.9x      18.7      17.8
+  youth-Q0xJibkjQas           0.037        1.075     28.7x      15.7      13.0
+  youth-pW8Safa0khM           0.038        1.381     36.7x      25.6      23.3
+  youth-zGPP8c0sPb8           0.038        1.195     31.8x      15.6      15.5
+
+**The gap is a property of the models, not the footage.** RF-DETR is 0.045-0.046
+  s/frame on every 1080p video and 0.037-0.038 on every 720p one — flat in object
+  count (15.6 to 29.7 objects) exactly as 38176330's scaling study predicted. SAM3
+  is 28.7-38.8x slower everywhere; the residual spread tracks resolution and
+  object count, not venue. 1.540 s/frame on u14g reproduces 38176330's 1.623 on
+  consecutive frames, which validates the burst protocol.
+**The earlier "mixed results" were two artefacts, now both explained.** The 13x
+  from 38186278 was warm-up inflating RF-DETR to 0.10 (true value 0.046) *and*
+  omitting SAM3's ball session. There was never a video where SAM3 was
+  competitive on speed.
+**Object counts genuinely do flip, and that is the real cross-video finding** —
+  RF-DETR finds more on u14g (29.7 vs 22.9), SAM3 more on u11 (24.3 vs 19.8).
+  Neither is ground-truthed, so this is a count not an accuracy; the only
+  ground-truthed comparison we have is still 38133841 (FOOTPASS, RF-DETR ahead:
+  F1 0.902 vs 0.835, recall 0.977 vs 0.925).
+**Projected 60-min match, detector only:** RF-DETR 0.19-0.23 h vs SAM3 5.4-8.5 h.
+  SAM3 exceeds the 4 h wall in submit_process.sh on every single video.
+Side note: the rfdetr err log advertises `model.optimize_for_inference(dtype=
+  float16)` for "~8x on T4 via FP16 Tensor Cores" — every RF-DETR number here is
+  *unoptimized*, so the speed lever is untouched on the default path.
+Next: nothing argues for revisiting the default. If SAM3 is wanted for a domain-
+  shift check, budget ~8 h/match and raise the wall.
