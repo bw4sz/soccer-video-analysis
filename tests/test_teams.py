@@ -105,3 +105,104 @@ def test_track_below_min_samples_is_unknown():
     clf.add_sample(1, blue, (10, 10, 90, 90))
     clf.fit()
     assert clf.predict(1) is None
+
+
+# --- illumination handling -------------------------------------------------
+#
+# Regression tests for the shadow failure on low-sun overhead footage: a white
+# kit photographed in shade is darker than a black kit in sun, so absolute torso
+# lightness put 174 of 188 U14G tracks in one cluster (job 38180242). Grass beside
+# a player shares that player's lighting, so the *sign* of torso-minus-turf
+# lightness identifies the kit where absolute lightness cannot.
+
+def _pitch_frame(turf_bgr, player_bgr, box=(40, 30, 60, 70), size=100):
+    """Turf everywhere, with one solid player rectangle standing on it."""
+    frame = np.zeros((size, size, 3), dtype=np.uint8)
+    frame[:, :] = turf_bgr
+    x1, y1, x2, y2 = box
+    frame[y1:y2, x1:x2] = player_bgr
+    return frame
+
+
+SUN_TURF = (60, 170, 70)     # brightly lit grass
+SHADE_TURF = (30, 80, 35)    # the same grass in shadow
+
+
+def test_turf_pixels_finds_grass_not_kit():
+    from soccer_vision.tracking.teams import turf_pixels
+
+    patch = np.zeros((10, 10, 3), dtype=np.uint8)
+    patch[:, :5] = SUN_TURF
+    patch[:, 5:] = (240, 240, 240)  # white shirt
+    mask = turf_pixels(patch)
+    assert mask[:, :5].all()
+    assert not mask[:, 5:].any()
+
+
+def test_local_illuminant_none_without_turf():
+    from soccer_vision.tracking.teams import estimate_local_illuminant
+
+    frame = _player_frame((200, 50, 50))
+    assert estimate_local_illuminant(frame, (10, 10, 90, 90)) is None
+
+
+def test_local_illuminant_tracks_lighting():
+    from soccer_vision.tracking.teams import estimate_local_illuminant
+
+    box = (40, 30, 60, 70)
+    sun = estimate_local_illuminant(_pitch_frame(SUN_TURF, (240, 240, 240)), box)
+    shade = estimate_local_illuminant(_pitch_frame(SHADE_TURF, (240, 240, 240)), box)
+    assert sun is not None and shade is not None
+    # It reports the grass it saw, so the two differ by the lighting.
+    assert sun[1] > shade[1]
+
+
+def test_lightness_split_only_when_kits_straddle_turf():
+    from soccer_vision.tracking.teams import lightness_split_kits
+
+    assert lightness_split_kits(["black", "white"]) == ("black", "white")
+    assert lightness_split_kits(["white", "black"]) == ("black", "white")
+    assert lightness_split_kits(["blue", "white"]) == ("blue", "white")
+    # both darker than grass -> hue is the separator, so no lightness split
+    assert lightness_split_kits(["red", "blue"]) is None
+    assert lightness_split_kits(["black"]) is None
+    assert lightness_split_kits(None) is None
+
+
+def test_white_kit_in_shadow_is_not_called_black():
+    """The exact failure this machinery exists for.
+
+    A white kit in shade (BGR ~110) is *darker* than a black kit in sun (~120),
+    so any absolute-lightness split misassigns it. Judged against the grass each
+    player stands on, the white kit is still the lighter of the two.
+    """
+    clf = TeamClassifier(min_samples=2)
+    box = (40, 30, 60, 70)
+    white_in_shade = _pitch_frame(SHADE_TURF, (110, 110, 110))
+    black_in_sun = _pitch_frame(SUN_TURF, (120, 120, 120))
+
+    for _ in range(3):
+        clf.add_sample(1, white_in_shade, box)
+        clf.add_sample(2, white_in_shade, box)
+        clf.add_sample(3, black_in_sun, box)
+        clf.add_sample(4, black_in_sun, box)
+    clf.fit(kits=["black", "white"])
+
+    assert clf.predict(1) == clf.predict(2) == "white"
+    assert clf.predict(3) == clf.predict(4) == "black"
+
+
+def test_falls_back_to_clustering_without_turf():
+    """No grass in view -> no illuminant -> the original clustering path runs."""
+    clf = TeamClassifier(min_samples=2)
+    box = (10, 10, 90, 90)
+    for _ in range(3):
+        clf.add_sample(1, _player_frame((20, 20, 20)), box)
+        clf.add_sample(2, _player_frame((20, 20, 20)), box)
+        clf.add_sample(3, _player_frame((240, 240, 240)), box)
+        clf.add_sample(4, _player_frame((240, 240, 240)), box)
+    clf.fit(kits=["black", "white"])
+
+    assert set(clf.team_names().values()) == {"black", "white"}
+    assert clf.predict(1) == "black"
+    assert clf.predict(3) == "white"

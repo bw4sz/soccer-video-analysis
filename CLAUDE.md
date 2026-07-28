@@ -225,6 +225,40 @@ ground truth exists. If a run comes back thin, try `conf_threshold: 0.15`
 Neither is a reason to go back to SAM3 by default; both are worth fixing on the
 RF-DETR path, where the fixes are cheap and reusable.
 
+### Team colour without a segmentation mask — fixed, and how
+
+A third cost showed up on the same clip and has been dealt with, but the reasoning
+is worth keeping because it will resurface on any new venue.
+
+Dropping SAM3 also dropped its per-player mask, which `sample_jersey_bgr` had been
+using to sample kit colour from player pixels only. The bbox fallback averaged
+kit with turf and shadow and stamped **624 tracks `black` against 38 `white`** —
+`--team` and every kit-aware query were simply wrong. Two things were going on,
+and only the second one matters:
+
+1. **Turf contamination** — real, and fixed by rejecting grass-hued pixels
+   (`turf_pixels`) inside the torso window. Worth doing, but it was the minor part.
+2. **Shadow** — the actual cause. Under a low sun the local turf ranges over
+   L\* 50–101, so **a white kit in shade is darker than a black kit in sun**. No
+   amount of turf rejection helps: absolute lightness is not the kit's property.
+
+The fix is to judge a player against the grass they are standing on
+(`estimate_local_illuminant` samples a turf ring around the box). A dark kit
+reflects less than that grass, a light kit more, so the *sign* of
+torso-minus-turf lightness names the team. That gave **419 black / 243 white**
+where the old path gave 624/38.
+
+**Clustering cannot find this boundary, so don't try.** The relative-lightness
+histogram is unimodal with a long sunlit-white tail — the two kits abut rather
+than separate — and both k-means and Otsu cut at +53, isolating 12 bright shirts
+out of 188. Zero is the boundary for a physical reason, not a statistical one.
+
+It applies only when the profile's declared kits **straddle** the turf in
+lightness (`lightness_split_kits`): black/white and blue/white qualify, red/blue
+does not, and there the code falls back to colour clustering, where hue separates
+them. Tracks that never see grass (about 1 in 662) are placed by nearest cluster
+colour. `process` prints which route it took as `Team split by:`.
+
 ---
 
 ## Trim empty — cut dead time into a shorter clip
@@ -459,6 +493,70 @@ actual reason to carry a gallery — needs a second processed match to measure.
 **Caveat.** The gallery is kit- and season-specific. A team with two kits (Saints
 run black away / white home) needs both enrolled, or a home gallery will abstain
 on every away track — enrol from one match of each and `--append`.
+
+---
+
+## Pitch region — tell it which pitch is ours
+
+At a multi-field complex the detector finds every player on every pitch, and no
+geometry in the frame says which match is ours. The central-rectangle hull in
+`detection/field_filter.py` is a guess; turf segmentation would find *a* field
+but still not say which one; line-based registration is dead here (below).
+Measured on the U14G Veo footage: ~40 of ~45 detections per frame were the
+neighbouring match and the crowd behind our far touchline.
+
+So ask. Someone names the corners of our pitch once per match, and
+`soccer_vision.detection.pitch_region` replays the polygon for every frame.
+
+**Re-id supersedes this.** Once a gallery names our players (`enroll`), our
+pitch is wherever our players are and no polygon is needed. This is the fallback
+for footage with no gallery, or where it abstains.
+
+```bash
+# Headless (no display): export a still with a labelled 0-1 grid, read the
+# corners off it (a VLM does this well), pass them back.
+soccer-vision pitch-region --video match.mp4 --at 30 --export-frame ref.jpg
+
+soccer-vision pitch-region --video match.mp4 --frame 899 \
+    --points '0.00,0.40 1.00,0.36 1.00,1.00 0.00,1.00' \
+    --out pitch_region.json --preview region.jpg
+
+# With a display: click the corners instead.
+soccer-vision pitch-region --video match.mp4 --interactive --out pitch_region.json
+
+# Then:
+soccer-vision process match.mp4 --pitch-region pitch_region.json
+soccer-vision enroll --video match.mp4 --dump-frames frames/ --pitch-region pitch_region.json
+```
+
+Coordinates are stored **normalised** (0-1), so a region drawn on a 1080p still
+applies to a 720p proxy of the same footage. Values >1 in `--points` are read as
+pixels. `--check` runs the detector on the reference frame and colours which
+players the region keeps (green) and drops (red) — cheap validation before
+committing GPU hours.
+
+**Following the pan.** XbotGo/Veo cameras pan but don't travel, so two options,
+usable together:
+
+- **Keyframes** — repeat `--frame`/`--points` and the polygon is linearly
+  interpolated between them (held, not extrapolated, outside their range). Fully
+  manual and predictable; the only option when naming coordinates off a still.
+- **Pan tracking** (on by default, `--no-pitch-pan` to disable) — ORB + RANSAC
+  estimates a similarity transform from the keyframe's reference frame to the
+  current one and carries the polygon through it. It always measures against the
+  *nearest keyframe*, never chaining frame to frame, so error can't accumulate
+  over a match; implausible transforms (>¼-frame jump, >±25% zoom, <12 inliers)
+  are rejected and the last good transform is held, so a failed match leaves the
+  polygon put instead of teleporting it off-pitch. `process` reports how many
+  frames aligned.
+
+`--margin 0.03` grows the polygon about its centre if feet on the touchline are
+being dropped. In `enroll` this replaces `--min-y-frac`, which was the same idea
+as a horizontal cut.
+
+**Untested at scale.** The region has been validated on single frames, not
+across a full match — the open question is how far a single keyframe carries
+before pan tracking loses its reference (GitHub issue below).
 
 ---
 

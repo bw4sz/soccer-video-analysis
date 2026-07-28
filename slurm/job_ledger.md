@@ -674,3 +674,39 @@ Result: COMPLETED (35s). 40 frames, every 6th from 300. **The detector is not th
 Next: (2) is the cheapest and most valuable — team colour is what `--team` and
   every kit-aware clip query depend on, and it is currently wrong. Then (1).
   Neither argues for reverting to SAM3: it was masking these bugs, not fixing them.
+
+## 38207124 / 38207619 — 2026-07-28 10:2x — team colour without a SAM3 mask
+Why: 38180242 found team assignment had collapsed to 624 'black' / 38 'white' on
+  runs/u14g-smoke-rfdetr, because dropping SAM3 dropped the per-player mask that
+  `sample_jersey_bgr` used to isolate kit pixels. `--team` and every kit-aware
+  clip query were wrong.
+**The obvious diagnosis was wrong.** Turf contamination is real but minor. The
+  actual cause is **shadow**: local turf L* ranges 50-101 under this low sun, so a
+  white kit in shade is *darker* than a black kit in sun. Measured on 188 tracks —
+  absolute torso L* put 174/188 in one cluster; the contact sheet
+  (crops sorted by torso-minus-turf lightness) showed the kits separating cleanly
+  at zero.
+**And clustering cannot find that boundary.** The relative-lightness histogram is
+  unimodal with a long sunlit-white tail; k-means cut at +53.2 and Otsu at +53.2,
+  both isolating 12 bright shirts. Zero is the boundary for a physical reason (a
+  dark kit reflects less than the grass beside it, a light kit more), not a
+  statistical one — so the split is thresholded, not clustered.
+Implemented in tracking/teams.py: `turf_pixels` (hue-gated grass, no value gate —
+  a black kit is legitimately dark), `estimate_local_illuminant` (turf ring around
+  each box), `correct_illumination` (per-channel von Kries, which also removes the
+  warm-sun/blue-shade colour cast), `lightness_split_kits` (only when the declared
+  kits straddle the turf — black/white and blue/white yes, red/blue no), and a
+  nearest-centroid placement for tracks that never see grass. `process` now prints
+  `Team split by:`. 6 new tests, incl. white-in-shade vs black-in-sun, which the
+  old clustering path cannot separate at all (it names both "gray").
+Result: **419 black / 243 white** (was 624/38), on 662 stamped tracks; visually
+  confirmed in runs/u14g-smoke-teamfix/preview_10s.mp4 — light-kit players that
+  were uniformly orange are now correctly cyan, and the large foreground dark-kit
+  player stays black. Illuminant coverage is 661/662 tracks (99.8%), 99.9% of
+  samples. 216 tests pass.
+**Unrelated bug found:** re-running `process` with an existing --match-id crashes
+  at Step 8 with `sqlite3.IntegrityError: UNIQUE constraint failed: matches.id`
+  (job 38207619), *after* every artefact is written. Costs a full re-run's compute
+  to discover. store/db.py should upsert rather than insert.
+Next: `filter_spectators` still drops 36% of detected people and remains the
+  largest quality gap; that is the turf-mask work (issues #7/#20).

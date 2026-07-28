@@ -141,6 +141,27 @@ def run_pipeline(args):
     proxy_fps = proxy_reader.fps
     detect_interval = max(1, int(round(proxy_fps / 5)))  # 5 fps detection
 
+    # "Our pitch", if someone drew it. At a multi-field complex the detector
+    # finds every player on every pitch and no geometry says which match is
+    # ours; a hand-drawn polygon does. Re-id makes this unnecessary once a
+    # gallery names our players — see soccer_vision.detection.pitch_region.
+    region_tracker = None
+    region_spec = getattr(args, "pitch_region", None) or config.get("pitch_region")
+    if region_spec:
+        from soccer_vision.detection.pitch_region import load_tracker
+        if isinstance(region_spec, dict):
+            region_path = region_spec.get("path")
+            track_pan = region_spec.get("track_pan")
+        else:
+            region_path, track_pan = region_spec, None
+        if getattr(args, "pitch_pan", None) is not None:
+            track_pan = args.pitch_pan
+        region_tracker = load_tracker(region_path, video_path=run_dir.broadcast_proxy,
+                                      track_pan=track_pan)
+        n_kf = len(region_tracker.region.keyframes)
+        print(f"  Pitch region: {region_path} ({n_kf} keyframe(s), "
+              f"pan tracking {'on' if region_tracker.track_pan else 'off'})")
+
     ball_positions = []
     ball_samples: list[dict] = []
 
@@ -161,7 +182,9 @@ def run_pipeline(args):
             # Spectators are filtered after tracking (the prompt finds people
             # anywhere, including coaches/subs beyond the touchline).
             tracked = sam3_tracker.track(frame)
-            tracked = filter_spectators(tracked, frame.shape)
+            tracked = filter_spectators(tracked, frame.shape,
+                                        region_tracker=region_tracker,
+                                        frame_no=fn, frame=frame)
         else:
             # Detect players and ball
             person_dets = player_detector.predict(frame)
@@ -172,7 +195,9 @@ def run_pipeline(args):
             person_dets = person_dets[person_mask]
 
             # Filter spectators: keep only field players
-            person_dets = filter_spectators(person_dets, frame.shape)
+            person_dets = filter_spectators(person_dets, frame.shape,
+                                            region_tracker=region_tracker,
+                                            frame_no=fn, frame=frame)
             detections = sv.Detections.merge([ball_dets, person_dets])
 
             tracked = track_detections(tracker, detections)
@@ -233,6 +258,11 @@ def run_pipeline(args):
 
     proxy_reader.close()
 
+    if region_tracker is not None and region_tracker.track_pan:
+        total_est = region_tracker.n_tracked + region_tracker.n_failed
+        print(f"  Pitch region pan: aligned on {region_tracker.n_tracked}/{total_est} "
+              f"frames ({region_tracker.n_failed} held the last good transform)")
+
     # Assign players to teams by jersey colour. Fitted before tracks.json is
     # written so each track can be stamped with its team there — that is what
     # lets `--team` filter the on-ball spans, which are derived from tracks.json
@@ -242,6 +272,7 @@ def run_pipeline(args):
     if team_names:
         src = "profile kits" if kits else "colour heuristic"
         print(f"  Teams ({src}): {', '.join(sorted(team_names.values()))}")
+        print(f"  Team split by: {team_clf.split_method()}")
     preview_path = run_dir.root / "teams_preview.png"
     if team_clf.build_team_preview(preview_path):
         print(f"  Team preview: {preview_path}")
