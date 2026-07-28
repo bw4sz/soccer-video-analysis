@@ -575,7 +575,7 @@ being dropped. In `enroll` this replaces `--min-y-frac`, which was the same idea
 as a horizontal cut.
 
 **Not yet validated over a full match**, only over 60-second spans — chained
-drift between re-anchors is the thing to watch (GitHub issue #24).
+drift between re-anchors is the thing to watch (GitHub issue #21).
 
 ---
 
