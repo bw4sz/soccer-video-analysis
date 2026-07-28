@@ -311,15 +311,6 @@ def _dump_frames_from_video(video: Path, out_dir: Path, args):
     if total <= 0:  # some containers don't report a count; fall back to duration
         total = int((reader.fps or 30) * 60 * 10)
 
-    # A hand-drawn "our pitch" polygon supersedes --min-y-frac: same job (say
-    # which of a complex's pitches is ours), but a real region instead of a
-    # horizontal cut, and it follows the camera's pan.
-    region_tracker = None
-    if getattr(args, "pitch_region", None):
-        from soccer_vision.detection.pitch_region import load_tracker
-        region_tracker = load_tracker(args.pitch_region, video_path=video)
-        print(f"Pitch region: {args.pitch_region}")
-
     detector = _load_player_detector(args)
 
     # Detect on a wider pool than we keep, then keep the busiest frame per time
@@ -337,8 +328,7 @@ def _dump_frames_from_video(video: Path, out_dir: Path, args):
         if frame is None:
             continue
         dets = detector(frame)
-        dets = filter_spectators(dets, frame.shape, region_tracker=region_tracker,
-                                 frame_no=frame_no, frame=frame)
+        dets = filter_spectators(dets, frame.shape)
         h, w = frame.shape[:2]
         boxes = [b for b in _detection_boxes(dets) if _plausible_player_box(b, w, h)]
         boxes = labellable_boxes(boxes, h)

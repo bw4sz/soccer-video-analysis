@@ -62,70 +62,6 @@ def main():
              "it on a clip before turning it on here.",
     )
 
-    p_process.add_argument(
-        "--pitch-region", metavar="JSON",
-        help="Hand-drawn 'our pitch' polygon from `soccer-vision pitch-region`. "
-             "Replaces the central-rectangle hull — the only way to exclude a "
-             "neighbouring pitch's match at a multi-field complex.")
-    p_process.add_argument(
-        "--no-pitch-pan", dest="pitch_pan", action="store_false", default=None,
-        help="Don't follow the camera's pan with the pitch region (hold the "
-             "polygon where it was drawn / interpolated between keyframes).")
-
-    # pitch-region
-    p_pitch = subparsers.add_parser(
-        "pitch-region",
-        help="Name which pitch is ours (polygon in pixel space) for a multi-field venue",
-    )
-    p_pitch.add_argument("--video", help="Video the region is drawn on")
-    p_pitch.add_argument("--frame", type=int, action="append", metavar="N",
-                         help="Frame the polygon applies to (default: 0). Repeat "
-                              "alongside --points to key the region at several times; "
-                              "it is interpolated between them, which is how a "
-                              "panning camera is followed without motion tracking.")
-    p_pitch.add_argument("--at", type=float, metavar="SEC",
-                         help="Pick the reference frame by timestamp instead of number")
-    p_pitch.add_argument("--points", action="append", metavar="'x,y x,y ...'",
-                         help="Polygon corners, clockwise or anticlockwise. Values in "
-                              "0-1 are normalised frame coordinates; anything larger is "
-                              "read as pixels. At least 3 corners.")
-    p_pitch.add_argument("--below", action="append", metavar="'x1,y1 x2,y2'",
-                         help="Shorthand for the usual case: two points on our far "
-                              "touchline, and the region is everything on our side of "
-                              "it, extended past the frame edges so a zoom-out doesn't "
-                              "cut off our own players. Repeat with --frame like --points.")
-    p_pitch.add_argument("--coords", choices=["auto", "normalized", "pixels"],
-                         default="auto",
-                         help="How to read --points/--below (default: auto — all values "
-                              "within 0-1 are normalised, anything else is pixels)")
-    p_pitch.add_argument("--interactive", action="store_true",
-                         help="Click the corners in an OpenCV window (needs a display)")
-    p_pitch.add_argument("--export-frame", metavar="OUT.jpg",
-                         help="Write a still with a labelled 0-1 coordinate grid, to read "
-                              "corner coordinates off on a headless machine, then exit")
-    p_pitch.add_argument("--grid-step", type=float, default=0.05,
-                         help="Grid spacing for --export-frame (default: 0.05)")
-    p_pitch.add_argument("--no-grid", action="store_true",
-                         help="Export the reference frame without the coordinate grid")
-    p_pitch.add_argument("--out", help="Region JSON path (default: pitch_region.json)")
-    p_pitch.add_argument("--region", metavar="JSON",
-                         help="Existing region to inspect, preview, or add a keyframe to")
-    p_pitch.add_argument("--preview", metavar="OUT.jpg",
-                         help="Render the region over the reference frame to check it")
-    p_pitch.add_argument("--check", action="store_true",
-                         help="With --preview, run the detector and colour which players "
-                              "the region keeps (green) and drops (red)")
-    p_pitch.add_argument("--conf-threshold", type=float, default=0.3,
-                         help="Detector confidence for --check (default: 0.3)")
-    p_pitch.add_argument("--margin", type=float, default=None, metavar="FRAC",
-                         help="Grow the polygon about its centre by this fraction, so feet "
-                              "on the touchline aren't dropped (e.g. 0.03)")
-    p_pitch.add_argument("--no-track-pan", dest="track_pan", action="store_false",
-                         default=None,
-                         help="Record that the region should NOT follow the camera's pan")
-    p_pitch.add_argument("--notes", help="Free-text note stored in the region file")
-    p_pitch.add_argument("--device", default=None, help="PyTorch device for --check")
-
     # broadcast
     p_broadcast = subparsers.add_parser("broadcast", help="Generate broadcast proxy only")
     p_broadcast.add_argument("video", help="Path to input video file")
@@ -192,10 +128,6 @@ def main():
                           help="Keep only detections whose feet are below this fraction of "
                                "frame height — the way to exclude a neighbouring pitch's "
                                "match at a multi-field complex (e.g. 0.45; 0 keeps all)")
-    p_enroll.add_argument("--pitch-region", metavar="JSON",
-                          help="Hand-drawn 'our pitch' polygon from `soccer-vision "
-                               "pitch-region` — the region-shaped version of "
-                               "--min-y-frac, and it follows the camera's pan")
     p_enroll.add_argument("--min-motion", type=float, default=6.0,
                           help="Drop detections that barely move between frames half a "
                                "second apart — the seated crowd and the next pitch over "
@@ -381,9 +313,6 @@ def main():
     if args.command == "process":
         from soccer_vision.cli.process import run_pipeline
         run_pipeline(args)
-    elif args.command == "pitch-region":
-        from soccer_vision.cli.pitch import run_pitch_region
-        run_pitch_region(args)
     elif args.command == "broadcast":
         from soccer_vision.cli.process import run_broadcast_only
         run_broadcast_only(args)
