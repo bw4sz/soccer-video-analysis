@@ -105,9 +105,6 @@ def main():
                           help="Export labelling frames straight from a video, detecting "
                                "only on the exported frames — no `process` run needed "
                                "(with --dump-frames)")
-    p_enroll.add_argument("--detector", default="rfdetr", choices=["rfdetr", "sam3"],
-                          help="Detector for --video frame export (default: rfdetr, "
-                               "~0.1 s/frame; sam3 is ~13x slower for the same job)")
     p_enroll.add_argument("--profile", help="Project profile YAML (maps jersey → name)")
     p_enroll.add_argument("--out",
                           help="Gallery path (default: gallery.npz beside the run, or "
@@ -118,6 +115,27 @@ def main():
                           help="Write whole frames + a Label Studio project for naming "
                                "players on them, then exit. Boxes come pre-drawn from "
                                "tracks.json; enrol the export with --from-label-studio")
+    p_enroll.add_argument("--dump-tracklets", metavar="DIR",
+                          help="Write windows of play as clips with every tracked "
+                               "player ringed and numbered, plus a Label Studio "
+                               "project naming them. One decision per lane harvests "
+                               "every crop in it; enrol with --from-tracklets")
+    p_enroll.add_argument("--from-tracklets", metavar="JSON",
+                          help="Enrol from a --dump-tracklets export (needs the "
+                               "tracklets.json manifest beside it, and --run for the "
+                               "video the crops are cut from)")
+    p_enroll.add_argument("--manifest", metavar="JSON",
+                          help="tracklets.json for --from-tracklets, if it isn't "
+                               "beside the export")
+    p_enroll.add_argument("--window", type=float, default=20.0, metavar="SEC",
+                          help="Seconds per tracklet window (default: 20)")
+    p_enroll.add_argument("--n-windows", type=int, default=8,
+                          help="Windows to render, spread across the match (default: 8). "
+                               "Spread beats length — a gallery wants varied views, and "
+                               "one lane's crops are 1.4s of near-duplicates")
+    p_enroll.add_argument("--max-lanes", type=int, default=12,
+                          help="Lanes ringed per window, longest first (default: 12). "
+                               "Fixes the number of dropdowns in the config")
     p_enroll.add_argument("--n-frames", type=int, default=20,
                           help="Frames to export for labelling, spread across the match "
                                "(default: 20)")

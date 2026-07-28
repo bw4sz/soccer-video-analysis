@@ -46,9 +46,7 @@ sbatch slurm/submit_process.sh data/<match>.mp4 <team>-<date> \
   examples/profiles/<team>.yaml
 ```
 
-That defaults to RF-DETR (~1.6 h for a 60-min match). See
-[Detector](../CLAUDE.md#detector--rf-detr-by-default-sam3-opt-in) for when to
-opt into SAM3 instead — it is ~6x slower and HF-gated.
+Detection is RF-DETR (~1.6 h for a 60-min match, most of it video decoding).
 
 ---
 
@@ -59,9 +57,23 @@ The goal is a `gallery.npz` per squad: each player's appearance banked once, so
 (OCR only manages ~34% of crops on overhead footage). Full background:
 [Enroll](../CLAUDE.md#enroll--carry-a-teams-appearances-instead-of-re-reading-jerseys).
 
-Labelling is **naming boxes on whole frames in Label Studio** — one route, not a
-choice. (Renaming folders of track crops used to be an alternative; it was
-removed on 2026-07-28, see the note at the end of this section.)
+**Two routes, and which one depends on whether the match is processed.**
+
+| | Tracklets (1d) | Frames (1a-1c) |
+|---|---|---|
+| You see | a 20s clip, every player ringed and numbered | one still frame, boxes pre-drawn |
+| You do | pick a name per number | pick a name per box |
+| One decision buys | every crop in that lane (~7-30) | one crop |
+| Cues available | position, motion, who they're next to | position, neighbours |
+| Needs | a `process` run (`tracks.json`) | nothing — runs off raw video |
+| Sync size | ~15 MB per window | ~1 MB for 24 frames |
+
+Use **tracklets** when the match is processed — it is far higher yield, and the
+motion is what makes a child recognisable. Use **frames** for a match you haven't
+processed, or when you want a gallery started in the next ten minutes.
+
+(Renaming folders of track crops used to be a third route; it was removed on
+2026-07-28, see the note at the end of this section.)
 
 ### 1a. Export frames to label (HPC)
 

@@ -66,6 +66,15 @@ def run_enroll(args):
         _dump_frames(run_dir, tracks_path, proxy_path, Path(args.dump_frames), args)
         return
 
+    if args.dump_tracklets:
+        _dump_tracklets(run_dir, tracks_path, proxy_path,
+                        Path(args.dump_tracklets), args, profile)
+        return
+
+    if args.from_tracklets:
+        _enroll_from_tracklets(run_dir, tracks_path, proxy_path, out_path, args, profile)
+        return
+
     jerseys_path = run_dir / "jerseys.json"
     if not jerseys_path.exists():
         print(f"No jerseys.json in {run_dir} — run `soccer-vision identify` "
@@ -134,6 +143,149 @@ def _save_gallery(embeddings, names: list[str], out_path: Path, args, *, next_hi
         print(f"  {name:<24} {n} exemplars")
     print(f"Saved: {out_path}")
     print(f"Next: soccer-vision identify {next_hint}")
+
+
+def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
+                    out_dir: Path, args, profile):
+    """Render windows of play with every lane ringed, plus the Label Studio project.
+
+    One decision per lane instead of one per box, and the annotator sees motion
+    and pitch position — the cues people actually use to tell youth players
+    apart, and ones no still frame carries.
+    """
+    from soccer_vision.annotate.label_studio import local_files_url
+    from soccer_vision.annotate.tracklets import (
+        build_tasks,
+        choose_windows,
+        labeling_config,
+        render_window_clip,
+        write_manifest,
+    )
+    from soccer_vision.clips.halo import load_track_boxes
+    from soccer_vision.profiles.loader import get_roster
+
+    doc = json.loads(tracks_path.read_text())
+    fps = float(doc.get("fps") or 30.0)
+    teams = {int(k): v for k, v in (doc.get("teams") or {}).items()}
+    track_samples = load_track_boxes(tracks_path)
+
+    windows = choose_windows(
+        track_samples, fps=fps, window_s=args.window,
+        n_windows=args.n_windows, min_track_frames=args.min_track_frames,
+        max_lanes=args.max_lanes, teams=teams, team=args.team,
+    )
+    if not windows:
+        print(f"No lane lasted {args.min_track_frames} frames"
+              f"{f' on team {args.team}' if args.team else ''}. "
+              "Lower --min-track-frames, or drop --team.")
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    clips_dir = out_dir / "clips"
+    serve_root = Path(args.serve_root) if args.serve_root else out_dir.parent
+
+    total_lanes = sum(len(w["lanes"]) for w in windows)
+    crops = sum(lane["n_frames"] for w in windows for lane in w["lanes"])
+    print(f"{len(windows)} windows x {args.window:.0f}s, {total_lanes} lanes ringed "
+          f"({crops} crops behind them, {crops / max(1, total_lanes):.0f} per lane)")
+
+    urls = {}
+    for w in windows:
+        path = clips_dir / f"window_{w['window']:03d}_{int(w['start_s'])}s.mp4"
+        print(f"  window {w['window']}/{len(windows)} at {w['start_s']:.0f}s "
+              f"— {len(w['lanes'])} lanes", flush=True)
+        render_window_clip(proxy_path, path, window=w,
+                           track_samples=track_samples, fps=fps)
+        urls[w["window"]] = local_files_url(path, serve_root)
+
+    names = label_names(get_roster(profile) if profile else [])
+    config = out_dir / "labeling_config.xml"
+    config.write_text(labeling_config(names, args.max_lanes))
+    tasks_path = out_dir / "label_studio_tasks.json"
+    tasks_path.write_text(json.dumps(build_tasks(windows, urls, fps), indent=2))
+    manifest = write_manifest(out_dir / "tracklets.json", run_dir=run_dir,
+                              video=proxy_path, fps=fps, windows=windows,
+                              max_lanes=args.max_lanes)
+
+    size_mb = sum(p.stat().st_size for p in clips_dir.glob("*.mp4")) / 1e6
+    print(f"\nWrote {len(windows)} clips ({size_mb:.0f} MB) → {clips_dir}")
+    print(f"  config:   {config}")
+    print(f"  tasks:    {tasks_path}")
+    print(f"  manifest: {manifest}  (slot → track id; keep it, enrolment needs it)")
+    if not names:
+        print("  NOTE: no --profile roster, so the dropdowns offer only "
+              f"'{'not ours'}'/'unsure' — pass --profile for one option per player.")
+    print("\nNext: sync this folder to the machine running Label Studio, then")
+    print(f"  export LOCAL_FILES_DOCUMENT_ROOT={Path(serve_root).resolve()}")
+    print("  label-studio start   # create project → paste config → import tasks")
+    print(f"Then drop the export back here as {out_dir / 'annotations.json'} and:")
+    print(f"  soccer-vision enroll --run {run_dir} "
+          f"--from-tracklets {out_dir / 'annotations.json'} --out galleries/<team>.npz")
+
+
+def _enroll_from_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
+                           out_path: Path, args, profile):
+    """Enrol every crop in each lane the annotator put a name to."""
+    import numpy as np
+
+    from soccer_vision.annotate.tracklets import boxes_from_tracklet_export
+    from soccer_vision.clips.halo import load_track_boxes
+    from soccer_vision.identify.reid import ReIDEmbedder, crop_player
+    from soccer_vision.io.video import VideoReader
+
+    export_path = Path(args.from_tracklets)
+    manifest_path = (Path(args.manifest) if args.manifest
+                     else export_path.parent / "tracklets.json")
+    if not export_path.exists():
+        print(f"No such export: {export_path}")
+        return
+    if not manifest_path.exists():
+        print(f"No tracklets.json beside the export ({manifest_path}). It carries the "
+              "slot → track id map, which the export doesn't; point at it with "
+              "--manifest.")
+        return
+
+    manifest = json.loads(manifest_path.read_text())
+    track_samples = load_track_boxes(tracks_path)
+    boxes, summary = boxes_from_tracklet_export(
+        json.loads(export_path.read_text()), manifest, track_samples,
+        max_samples_per_lane=args.max_samples,
+    )
+    boxes = [(f, b, roster_full_name(profile, n)) for f, b, n in boxes]
+
+    print(f"Source: tracklets — {summary['lanes_named']} lanes named across "
+          f"{summary['windows']} windows ({summary['lanes_skipped']} skipped as "
+          f"not-ours/unsure), {len(boxes)} crops")
+    for name, n in sorted(summary["per_player"].items(), key=lambda kv: -kv[1]):
+        print(f"  {roster_full_name(profile, name):<24} {n} crops")
+    if not boxes:
+        print("Nothing named in the export — nothing to enrol.")
+        return
+
+    print("Loading re-id backbone...")
+    embedder = ReIDEmbedder.from_pretrained(weights=args.weights, device=args.device)
+
+    reader = VideoReader(proxy_path)
+    crops, names = [], []
+    try:
+        by_frame: dict[int, list] = {}
+        for frame_no, bbox, name in boxes:
+            by_frame.setdefault(int(frame_no), []).append((bbox, name))
+        for frame_no in sorted(by_frame):
+            frame = reader.read_frame(frame_no)
+            if frame is None:
+                continue
+            for bbox, name in by_frame[frame_no]:
+                crop = crop_player(frame, bbox)
+                if crop is not None:
+                    crops.append(crop)
+                    names.append(name)
+    finally:
+        reader.close()
+
+    embeddings = embedder.embed(crops) if crops else np.zeros((0, 512), dtype=np.float32)
+    _save_gallery(embeddings, names, out_path, args,
+                  next_hint=f"--run {run_dir} --method reid --gallery {out_path}")
 
 
 def _enroll_from_label_studio(args, profile):
@@ -385,15 +537,8 @@ def _dump_frames_from_video(video: Path, out_dir: Path, args):
 
 
 def _load_player_detector(args):
-    """Return ``frame -> sv.Detections`` for the requested detector."""
+    """Return ``frame -> sv.Detections`` for the player detector."""
     device = args.device or "cpu"
-    if args.detector == "sam3":
-        from soccer_vision.tracking.sam3 import SAM3PlayerTracker
-
-        tracker = SAM3PlayerTracker(device=device, prompt="soccer player")
-        tracker.start()
-        return tracker.track
-
     from soccer_vision.detection.rfdetr import RFDETRSoccerDetector
 
     det = RFDETRSoccerDetector.from_pretrained(device=device)
@@ -779,8 +924,8 @@ def _resolve_track_teams(run_dir: Path, tracks_path: Path, tracks, reader, args)
 def _not_turf_mask(frame):
     """Boolean mask of the pixels that aren't pitch, for jersey colour sampling.
 
-    ``process`` masks the colour sample with SAM3's per-player segmentation; a
-    run without one leaves the rectangular torso patch, which on an overhead
+    The detector returns boxes, not masks, so the sample would otherwise be a
+    rectangular torso patch, which on an overhead
     camera is mostly grass — the median then drags every kit toward green and
     both clusters collapse to one colour (job 37877533 named both teams "blue").
     Dropping green pixels is the poor cousin of a real mask, but it removes the

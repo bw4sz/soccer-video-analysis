@@ -155,82 +155,85 @@ python extract_clips.py \
 
 ---
 
-## Detector — RF-DETR by default, SAM3 opt-in
+## Detector — RF-DETR
 
 `process` detects players and the ball with **RF-DETR**
-(`julianzu9612/RFDETR-Soccernet`, wired in `detection/rfdetr.py`). SAM3
-(`tracking/sam3.py`) is available behind `detector.type: sam3` but is not the
-default. Submit a match with `slurm/submit_process.sh`, which defaults to
+(`julianzu9612/RFDETR-Soccernet`, wired in `detection/rfdetr.py`). It is the only
+detector; SAM3 was evaluated and **removed on 2026-07-28** (see below). Submit a
+match with `slurm/submit_process.sh`, which defaults to
 `examples/process_match.yaml`.
 
 ```bash
-# default — RF-DETR
 sbatch slurm/submit_process.sh data/<match>.mp4 <match-id> examples/profiles/<team>.yaml
-
-# opt into SAM3 (raise --time to 12:00:00 first, or it will not finish)
-sbatch slurm/submit_process.sh data/<match>.mp4 <match-id> <profile> examples/saints-u11-sam3.yaml
 ```
 
-**Why RF-DETR is the default.** Three reasons, in order of how much they matter:
+**Measured behaviour**, across all four of our cameras plus four harvested youth
+clips (jobs 38223174 / 38223284):
 
-| | RF-DETR | SAM3 |
-|---|---|---|
-| Weights | public | **HF-gated** (`facebook/sam3`) |
-| s/detection-frame, 1080p, L4 | **0.062** | 1.623 |
-| Full 60-min match | **~1.6 h** | ~9.4 h |
-| FOOTPASS broadcast F1 @IoU 0.5 | **0.902** | 0.835 |
-| FOOTPASS broadcast recall | **0.977** | 0.925 |
+| | RF-DETR |
+|---|---|
+| Weights | public, no HF gate |
+| s/detection-frame, 1080p / 720p | **0.045** / 0.038 |
+| Scaling in object count | flat from 15 to 30 objects/frame |
+| Full 60-min match | ~1.6 h, **mostly video decoding** (~0.2 h is detection) |
+| FOOTPASS broadcast F1 @IoU 0.5 | 0.902 |
+| FOOTPASS broadcast recall | 0.977 |
 
-The gate is the practical one: it makes a fresh clone or a new collaborator's
-setup fail in a way no amount of caching fixes, against an ethos of *quick,
-dirty and easy*. The speed is the operational one — 9.4 h silently overran an
-8 h wall (job 38162800). The quality row is the surprising one: **RF-DETR is
-not the weaker detector.** SAM3 was adopted on a Veo player *count* (5-6/frame
-vs 20-22) that was never ground-truthed and has since failed to reproduce —
-job 38162552 measured RF-DETR at 20.4 detections/frame against SAM3's 13.3 on
-the same clip, and the speed profiling saw 22-27/frame on U14G Veo footage.
+If a run comes back thin, try `conf_threshold: 0.15`
+(`examples/saints-u11-0.15-threshold.yaml`). RF-DETR is also **fine-tunable**
+(`rfdetr`'s `train()`; our checkpoint is already a SoccerNet fine-tune), which is
+the real lever for overhead/Veo footage — the labelled frames from `enroll` are
+training data. Its numbers above are unoptimized; `optimize_for_inference(
+dtype=float16)` is an untouched speed lever.
 
-Speed numbers are jobs 38176330 / 38177148; quality is job 38133841. SAM3's
-cost is `0.205s + 38.7ms x n_masklets` — nearly all per-tracked-object, so
-resolution is not a lever (640x360 is only 1.2x faster than 1080p) but prompt
-choice is, because it changes how many objects get tracked.
+### Why SAM3 was removed — do not reintroduce it without new evidence
 
-**When to reach for SAM3 anyway.** Its real advantage is robustness to domain
-shift, not detection quality — RF-DETR is a strong *broadcast* detector, and
-the open question is how far it degrades on overhead/Veo footage where no
-ground truth exists. If a run comes back thin, try `conf_threshold: 0.15`
-(`examples/saints-u11-0.15-threshold.yaml`) **before** switching models.
+SAM3 (`facebook/sam3`) was briefly the default and is now deleted from the repo.
+The case for it collapsed on every axis:
 
-**Two known costs of the default**, both measured on a 3-min U14G Veo clip
-(job 38178685, `runs/u14g-smoke-rfdetr`, 2m45s where SAM3 timed out at 60 min):
+- **The count that motivated it never reproduced.** It was adopted on a Veo
+  player *count* (5-6/frame for RF-DETR vs 20-22 for SAM3) that was never
+  ground-truthed. Job 38162552 measured RF-DETR at 20.4 detections/frame against
+  SAM3's 13.3 on the same clip; the figure had conflated two different videos.
+- **RF-DETR is the better detector where ground truth exists** — F1 0.902 vs
+  0.835, recall 0.977 vs 0.925 on FOOTPASS broadcast (job 38133841).
+- **It cost 29-39x per frame on every video tested**, 1.08-1.70 s/frame against
+  RF-DETR's 0.038-0.046, projecting to 5.4-8.5 h per match against ~0.2 h. The
+  gap is a property of the models, not the footage.
+- **The weights are HF-gated**, so a fresh clone or a new collaborator fails in a
+  way no caching fixes — against an ethos of *quick, dirty and easy*.
+
+Its one genuine advantage was a steadier ball track (p95 jump 208px vs RF-DETR's
+905px, job 37883252) and longer-lived object ids. Both are worth fixing on the
+RF-DETR path rather than paying 30x compute for.
+
+**Two known costs of the RF-DETR path**, both measured on a 3-min U14G Veo clip
+(job 38178685, `runs/u14g-smoke-rfdetr`, 2m45s):
 
 1. **Ball jitter.** RF-DETR's ball is flickery on overhead footage: 84.5% of
    frames detected, but median frame-to-frame jump 54px and **p95 905px** on a
-   1920px-wide frame. SAM3's `"soccer ball"` prompt gives p95 208px (job
-   37883252). `process` writes `ball_track.json` **raw**, so on-ball spans — the
-   only working selection pathway — inherit that jitter.
+   1920px-wide frame. `process` writes `ball_track.json` **raw**, so on-ball
+   spans — the only working selection pathway — inherit that jitter.
    `soccer_vision.tracking.ball_kalman` exists for exactly this and is *not*
    wired into `process`; see *Trim empty* below, including the caveat that it
    over-rejects at the 5 fps `process` samples at.
 
-2. **Track fragmentation.** ByteTrack ids are far more ephemeral than SAM3's
-   masklet ids: **856 lanes** in three minutes, median lane length 7
-   detection-frames (~1.4 s), only 32 lanes reaching 50 frames. SAM3 gave 55
-   lanes over 600 frames on comparable footage (job 38162552). This is the
-   fragmentation `enroll`/`identify` already exist to paper over — merging lanes
-   per player. It costs enrolment nothing now that the gallery is built from
-   labelled *frames* rather than from whole lanes, but it does mean OCR
-   bootstrapping (`enroll` off `jerseys.json`) has fewer long lanes to vote on.
+2. **Track fragmentation.** ByteTrack ids are ephemeral: **856 lanes** in three
+   minutes, median lane length 7 detection-frames (~1.4 s), only 32 lanes
+   reaching 50 frames. This is the fragmentation `enroll`/`identify` already
+   exist to paper over — merging lanes per player. It costs enrolment nothing now
+   that the gallery is built from labelled *frames* rather than from whole lanes,
+   but it does mean OCR bootstrapping (`enroll` off `jerseys.json`) has fewer
+   long lanes to vote on.
 
-Neither is a reason to go back to SAM3 by default; both are worth fixing on the
-RF-DETR path, where the fixes are cheap and reusable.
+Both are worth fixing on the RF-DETR path, where the fixes are cheap and reusable.
 
 ### Team colour without a segmentation mask — fixed, and how
 
 A third cost showed up on the same clip and has been dealt with, but the reasoning
 is worth keeping because it will resurface on any new venue.
 
-Dropping SAM3 also dropped its per-player mask, which `sample_jersey_bgr` had been
+RF-DETR returns boxes, not the per-player mask `sample_jersey_bgr` had been
 using to sample kit colour from player pixels only. The bbox fallback averaged
 kit with turf and shadow and stamped **624 tracks `black` against 38 `white`** —
 `--team` and every kit-aware query were simply wrong. Two things were going on,
@@ -426,10 +429,20 @@ soccer-vision identify --run runs/<next> --method reid \
 soccer-vision enroll --run runs/<next> --append --out galleries/saints-u11.npz
 ```
 
-**Two enrolment sources.**
+**Three enrolment sources.**
 
+0. **Label Studio tracklets** (`--dump-tracklets` → label → `--from-tracklets`) —
+   the highest-yield route, and the one to reach for when a gallery is thin.
+   Renders windows of play with every tracked player ringed and numbered, and
+   asks for a name per number; **one decision harvests every crop in that lane**
+   instead of one crop per box. It also gives the annotator motion and pitch
+   position, which is how people actually tell youth players apart ("Morgan
+   plays centre mid") and which no still frame carries. Needs a `process` run
+   for `tracks.json`. See *Tracklet labelling* below for the two things that
+   bite: slot numbers are per window, and a lane's crops are near-duplicates.
 1. **Label Studio frames** (`--dump-frames` → label → `--from-label-studio`) —
-   the way to do this. Every detected player arrives pre-boxed and labelled
+   the no-tracking route: works straight off a raw video with no `process` run,
+   which is why it exists. Every detected player arrives pre-boxed and labelled
    `unknown`; you name the ones who are yours and delete the rest. Labelling
    happens on the **full frame**, which is the whole point: an overhead camera
    renders a player in about 50×21 px, so a crop in isolation is unnameable at
@@ -451,6 +464,39 @@ context tiles instead of from the picture itself, and every knob added to make
 those tiles readable (`--context-pad`, `--sheet-tile-height`) was working around
 the fact that the crop is the wrong thing to look at. Label Studio on frames
 does the same job better; don't reintroduce it.
+
+### Tracklet labelling — one decision per lane
+
+```bash
+# Render windows of play with every lane of our squad ringed and numbered:
+soccer-vision enroll --run runs/<match> --dump-tracklets runs/<match>/tracklets \
+    --profile examples/profiles/<team>.yaml --team black \
+    --window 20 --n-windows 8 --max-lanes 12
+
+# Label in Label Studio, drop the export back beside the manifest, then:
+soccer-vision enroll --run runs/<match> \
+    --from-tracklets runs/<match>/tracklets/annotations.json \
+    --out galleries/<team>.npz --append
+```
+
+**Slot numbers are per window, and the manifest is not optional.** Label Studio
+fixes its labelling config for a whole project, but ByteTrack ids differ in every
+window — so a config naming real track ids cannot exist. Each window ranks its
+lanes and hands out slots 1..N, the config declares N dropdowns once, and
+`tracklets.json` records what each slot meant. Lose that file and the export is
+uninterpretable; `--manifest` points at it if it isn't beside the export.
+
+**A lane is worth many crops but few *views*.** Median lane on the U14G RF-DETR
+run is 7 detection-frames (~1.4 s), so its crops are one pose in one light —
+`--max-samples` caps how many are taken per lane, because 129 near-duplicates
+from one lane would swamp a gallery built from a dozen genuine views. The answer
+to a thin gallery is **more windows and more videos**, not longer ones, which is
+why `--n-windows` spreads evenly across the match rather than seeking out busy
+passages.
+
+`not ours` and `unsure` are first-class options in every dropdown and enrol
+nothing. Both exist so an annotator clearing a form never has to guess — a guess
+banks the wrong appearance under a real player's name, which is worse than a gap.
 
 **Nicknames.** A roster entry may carry `nickname: Mo`, which replaces the first
 name in the annotator's label list — a squad clicking "Mo" twenty times a frame
