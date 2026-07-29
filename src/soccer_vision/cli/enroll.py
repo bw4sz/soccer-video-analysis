@@ -202,7 +202,8 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
     config = out_dir / "labeling_config.xml"
     config.write_text(labeling_config(names, args.max_lanes))
     tasks_path = out_dir / "label_studio_tasks.json"
-    tasks_path.write_text(json.dumps(build_tasks(windows, urls, fps), indent=2))
+    tasks_path.write_text(json.dumps(
+        build_tasks(windows, urls, fps, max_lanes=args.max_lanes), indent=2))
     manifest = write_manifest(out_dir / "tracklets.json", run_dir=run_dir,
                               video=proxy_path, fps=fps, windows=windows,
                               max_lanes=args.max_lanes)

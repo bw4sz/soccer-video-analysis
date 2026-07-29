@@ -1,16 +1,17 @@
 """Label whole tracklets from one clip, instead of one box per still frame.
 
 The frame workflow costs a decision per box and yields one crop from it. This
-one plays a window of the match with every tracked player ringed and lettered,
-and asks for a name per letter — so one decision harvests every crop in that
+one plays a window of the match with every tracked player ringed and numbered,
+and asks for a name per number — so one decision harvests every crop in that
 lane, and the annotator gets the cues they actually identify children by:
 where someone is on the pitch, who they are next to, how they move.
 
-**Letters are per window, not per track.** Label Studio's labelling config is
-fixed for a project while ByteTrack ids differ in every window, so a config
-naming real track ids is impossible. Each window instead ranks its lanes and
-assigns slots A..N; the config declares N dropdowns once, and the manifest
-records which track id each slot meant. Enrolment joins them back.
+**Numbers are per window, not per track, and they are not jersey numbers.**
+Label Studio's labelling config is fixed for a project while ByteTrack ids differ
+in every window, so a config naming real track ids is impossible. Each window
+instead picks its longest lanes and numbers them 1..N *in the order they first
+appear*; the config declares N dropdowns once, and the manifest records which
+track id each slot meant. Enrolment joins them back.
 
 **What a lane is worth.** On the U14G RF-DETR run a lane runs 7 detection-frames
 (~1.4 s) at the median, so its crops are near-duplicates: one pose, one patch of
@@ -40,20 +41,15 @@ UNSURE = "unsure"
 
 
 def slot_label(slot: int) -> str:
-    """Slot 1 → "A", 2 → "B", … — letters, deliberately not digits.
+    """What goes on the chip in the clip. Digits, matching the form's "Player N".
 
-    The first version drew slot *numbers*, and the first person to look at a clip
-    read them as jersey numbers: a chip saying "9" over a player is exactly what
-    a squad number looks like, so it invites the annotator to confirm what they
-    think they already know. Letters carry no such meaning — "who is C?" has only
-    one reading.
+    Letters were tried, to stop a chip reading as a jersey number. They cost more
+    than they saved: the form lists "Player 1..N", so a clip showing "J" makes the
+    annotator translate on every decision. Whatever is drawn must be the same
+    token the dropdown is named after — that matters more than the ambiguity
+    with squad numbers, which the instruction header can address instead.
     """
-    label = ""
-    n = int(slot)
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        label = chr(ord("A") + rem) + label
-    return label or "A"
+    return str(int(slot))
 
 
 def choose_windows(
@@ -113,11 +109,21 @@ def choose_windows(
                 present.append((len(inside), tid, inside))
         if not present:
             continue
+        # Pick the longest lanes — they yield the most crops and are the easiest
+        # to follow — but *number* them in the order they first appear. Numbering
+        # by length scatters the sequence across the clip: on the U14G run that
+        # put slot 10 on screen at 0.0s and slot 1 at 1.8s, so an annotator
+        # scrubbing through met "2, 10, 3" and reasonably concluded the numbering
+        # was broken. Chronological order means playing the clip once walks the
+        # form from top to bottom.
         present.sort(reverse=True, key=lambda x: (x[0], -x[1]))
+        chosen = sorted(present[:max_lanes], key=lambda x: (x[2][0][0], -x[0]))
         lanes = [
             {"slot": i + 1, "track_id": tid, "n_frames": n,
-             "first_frame": inside[0][0], "last_frame": inside[-1][0]}
-            for i, (n, tid, inside) in enumerate(present[:max_lanes])
+             "first_frame": inside[0][0], "last_frame": inside[-1][0],
+             "enters_s": round((inside[0][0] - start) / fps, 1),
+             "leaves_s": round((inside[-1][0] - start) / fps, 1)}
+            for i, (n, tid, inside) in enumerate(chosen)
         ]
         windows.append({
             "window": w + 1,
@@ -139,7 +145,7 @@ def render_window_clip(
     fps: float,
     max_gap_frames: int = 20,
 ) -> Path:
-    """Write the window with each lane ringed in its slot colour and lettered.
+    """Write the window with each lane ringed in its slot colour and numbered.
 
     Encoded through ffmpeg to H.264: OpenCV's ``mp4v`` writes a file most
     browsers refuse to play, and this clip exists to be played in one.
@@ -203,11 +209,11 @@ def render_window_clip(
 
 
 def _draw_slot(cv2, frame, bbox, slot: int):
-    """Ring the player and put the slot letter in a chip above them.
+    """Ring the player and put the slot number in a chip above them.
 
     Sized against the **frame**, not the box. A label scaled to a 50 px player
     is unreadable the moment a browser fits 1080p into half a screen, and the
-    letter is the only thing the annotator has to answer against — it has to
+    number is the only thing the annotator has to answer against — it has to
     survive that downscale. A filled chip rather than outlined text for the same
     reason: solid colour holds up under video compression where thin strokes
     smear into the turf.
@@ -259,11 +265,14 @@ def labeling_config(names: list[str], max_lanes: int) -> str:
     )
     return (
         '<View>\n'
-        '  <Header value="Name each ringed player. The letters match the chips in '
-        'the clip. Use &quot;not ours&quot; for opponents, referees and spectators, '
-        'and &quot;unsure&quot; when you can\'t tell — both are skipped, never '
-        'guessed."/>\n'
+        '  <Header value="Name each ringed player. The number on the chip is the '
+        '&quot;Player N&quot; below it — it is NOT a jersey number. Players are '
+        'numbered in the order they first appear, and each is only on screen for '
+        'part of the clip (see the list under the video). Use &quot;not ours&quot; '
+        'for opponents, referees and spectators, and &quot;unsure&quot; when you '
+        'can\'t tell — both are skipped, never guessed."/>\n'
         '  <Video name="video" value="$video"/>\n'
+        '  <Text name="onscreen" value="$onscreen"/>\n'
         f'  <View style="display:flex; flex-wrap:wrap">{blocks}\n  </View>\n'
         '</View>\n'
     )
@@ -285,13 +294,34 @@ def clip_url(clip_path: Path, serve_root: Path, base_url: str | None) -> str:
     return f"/data/local-files/?d={rel}"
 
 
-def build_tasks(windows: list[dict], clip_urls: dict[int, str], fps: float) -> list[dict]:
+def onscreen_guide(window: dict, max_lanes: int) -> str:
+    """"Player 3: 4.8-19.8s" per slot — when to look for each one.
+
+    A 20s window holds ten lanes but rarely more than three at once, so an
+    annotator who plays it once sees a couple of chips and cannot tell whether
+    the rest are missing or merely elsewhere in time. Spelling out each slot's
+    span turns that into a scrub target. Slots the window doesn't use are named
+    too, because a form with ten dropdowns and six players otherwise looks
+    broken.
+    """
+    parts = [f"Player {lane['slot']}: {lane['enters_s']:.0f}-{lane['leaves_s']:.0f}s"
+             for lane in window["lanes"]]
+    unused = [str(s) for s in range(len(window["lanes"]) + 1, max_lanes + 1)]
+    if unused:
+        parts.append(f"(Players {', '.join(unused)} are not in this clip "
+                     f"— leave them blank)")
+    return "On screen —  " + "  ·  ".join(parts)
+
+
+def build_tasks(windows: list[dict], clip_urls: dict[int, str], fps: float,
+                max_lanes: int = 12) -> list[dict]:
     """One task per window, carrying the slot→track map the export won't."""
     tasks = []
     for w in windows:
         tasks.append({
             "data": {
                 "video": clip_urls[w["window"]],
+                "onscreen": onscreen_guide(w, max_lanes),
                 "window": w["window"],
                 "start_frame": w["start_frame"],
                 "start_s": w["start_s"],
