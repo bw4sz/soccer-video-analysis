@@ -1,15 +1,15 @@
 """Label whole tracklets from one clip, instead of one box per still frame.
 
 The frame workflow costs a decision per box and yields one crop from it. This
-one plays a window of the match with every tracked player ringed and numbered,
-and asks for a name per number — so one decision harvests every crop in that
+one plays a window of the match with every tracked player ringed and lettered,
+and asks for a name per letter — so one decision harvests every crop in that
 lane, and the annotator gets the cues they actually identify children by:
 where someone is on the pitch, who they are next to, how they move.
 
-**Numbers are per window, not per track.** Label Studio's labelling config is
+**Letters are per window, not per track.** Label Studio's labelling config is
 fixed for a project while ByteTrack ids differ in every window, so a config
 naming real track ids is impossible. Each window instead ranks its lanes and
-assigns slots 1..N; the config declares N dropdowns once, and the manifest
+assigns slots A..N; the config declares N dropdowns once, and the manifest
 records which track id each slot meant. Enrolment joins them back.
 
 **What a lane is worth.** On the U14G RF-DETR run a lane runs 7 detection-frames
@@ -37,6 +37,23 @@ SLOT_COLORS = [
 
 NOT_OURS = "not ours"
 UNSURE = "unsure"
+
+
+def slot_label(slot: int) -> str:
+    """Slot 1 → "A", 2 → "B", … — letters, deliberately not digits.
+
+    The first version drew slot *numbers*, and the first person to look at a clip
+    read them as jersey numbers: a chip saying "9" over a player is exactly what
+    a squad number looks like, so it invites the annotator to confirm what they
+    think they already know. Letters carry no such meaning — "who is C?" has only
+    one reading.
+    """
+    label = ""
+    n = int(slot)
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        label = chr(ord("A") + rem) + label
+    return label or "A"
 
 
 def choose_windows(
@@ -122,7 +139,7 @@ def render_window_clip(
     fps: float,
     max_gap_frames: int = 20,
 ) -> Path:
-    """Write the window with each lane ringed in its slot colour and numbered.
+    """Write the window with each lane ringed in its slot colour and lettered.
 
     Encoded through ffmpeg to H.264: OpenCV's ``mp4v`` writes a file most
     browsers refuse to play, and this clip exists to be played in one.
@@ -163,19 +180,34 @@ def render_window_clip(
         writer.release()
         cap.release()
 
-    ffmpeg_run(["ffmpeg", "-y", "-i", str(raw_path),
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-pix_fmt", "yuv420p", "-an", str(out_path)])
+    ffmpeg_run([
+        "ffmpeg", "-y",
+        "-i", str(raw_path),
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        # `main` profile and yuv420p are what every browser decodes without
+        # argument; the default `high` profile buys nothing on footage nobody is
+        # grading.
+        "-profile:v", "main", "-level", "4.0", "-pix_fmt", "yuv420p",
+        # No audio. A silent AAC track was tried on the theory that Label
+        # Studio's documented "H.264 + AAC" meant it needed one; it does not —
+        # these clips play video-only — and `anullsrc` is an infinite input that
+        # `-shortest` failed to bound, so the encode ran away.
+        "-an",
+        # Puts the moov atom first so a player can start on the first bytes
+        # instead of fetching all 15 MB.
+        "-movflags", "+faststart",
+        str(out_path),
+    ])
     raw_path.unlink(missing_ok=True)
     return out_path
 
 
 def _draw_slot(cv2, frame, bbox, slot: int):
-    """Ring the player and put the slot number in a chip above them.
+    """Ring the player and put the slot letter in a chip above them.
 
-    Sized against the **frame**, not the box. A number scaled to a 50 px player
+    Sized against the **frame**, not the box. A label scaled to a 50 px player
     is unreadable the moment a browser fits 1080p into half a screen, and the
-    number is the only thing the annotator has to type against — it has to
+    letter is the only thing the annotator has to answer against — it has to
     survive that downscale. A filled chip rather than outlined text for the same
     reason: solid colour holds up under video compression where thin strokes
     smear into the turf.
@@ -190,7 +222,7 @@ def _draw_slot(cv2, frame, bbox, slot: int):
     cv2.ellipse(frame, (cx, y2), (max(8, w // 2), max(4, w // 4)),
                 0, -30, 210, colour, max(2, fh // 400), cv2.LINE_AA)
 
-    label = str(slot)
+    label = slot_label(slot)
     scale = max(0.75, fh / 1300.0)
     thick = max(2, int(round(fh / 540.0)))
     (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, scale, thick)
@@ -219,7 +251,7 @@ def labeling_config(names: list[str], max_lanes: int) -> str:
     )
     blocks = "".join(
         f'\n    <View style="display:inline-block; width:210px; padding:4px">'
-        f'\n      <Header value="Player {slot}" size="6"/>'
+        f'\n      <Header value="Player {slot_label(slot)}" size="6"/>'
         f'\n      <Choices name="p{slot}" toName="video" choice="single" '
         f'layout="select" showInline="false">{options}\n      </Choices>'
         f'\n    </View>'
@@ -227,13 +259,30 @@ def labeling_config(names: list[str], max_lanes: int) -> str:
     )
     return (
         '<View>\n'
-        '  <Header value="Name each ringed player. Numbers match the rings in the '
-        'clip. Use &quot;not ours&quot; for opponents, referees and spectators, and '
-        '&quot;unsure&quot; when you can\'t tell — both are skipped, never guessed."/>\n'
+        '  <Header value="Name each ringed player. The letters match the chips in '
+        'the clip. Use &quot;not ours&quot; for opponents, referees and spectators, '
+        'and &quot;unsure&quot; when you can\'t tell — both are skipped, never '
+        'guessed."/>\n'
         '  <Video name="video" value="$video"/>\n'
         f'  <View style="display:flex; flex-wrap:wrap">{blocks}\n  </View>\n'
         '</View>\n'
     )
+
+
+def clip_url(clip_path: Path, serve_root: Path, base_url: str | None) -> str:
+    """URL for a clip: a plain HTTP one when ``base_url`` is given, else local-files.
+
+    Label Studio's ``/data/local-files/`` endpoint needs two environment variables
+    set before the server starts and a document root at exactly the right level,
+    and when any of that is off the player reports "cannot open video" — which
+    looks like a codec problem and isn't. Serving the folder with
+    ``python -m http.server`` sidesteps the whole mechanism, so ``--serve-url``
+    exists for when the built-in route is fighting you.
+    """
+    rel = clip_path.resolve().relative_to(Path(serve_root).resolve()).as_posix()
+    if base_url:
+        return f"{base_url.rstrip('/')}/{rel}"
+    return f"/data/local-files/?d={rel}"
 
 
 def build_tasks(windows: list[dict], clip_urls: dict[int, str], fps: float) -> list[dict]:

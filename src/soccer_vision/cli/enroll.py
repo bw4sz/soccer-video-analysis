@@ -153,10 +153,10 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
     and pitch position — the cues people actually use to tell youth players
     apart, and ones no still frame carries.
     """
-    from soccer_vision.annotate.label_studio import local_files_url
     from soccer_vision.annotate.tracklets import (
         build_tasks,
         choose_windows,
+        clip_url,
         labeling_config,
         render_window_clip,
         write_manifest,
@@ -196,7 +196,7 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
               f"— {len(w['lanes'])} lanes", flush=True)
         render_window_clip(proxy_path, path, window=w,
                            track_samples=track_samples, fps=fps)
-        urls[w["window"]] = local_files_url(path, serve_root)
+        urls[w["window"]] = clip_url(path, serve_root, args.serve_url)
 
     names = label_names(get_roster(profile) if profile else [])
     config = out_dir / "labeling_config.xml"
@@ -216,8 +216,15 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
         print("  NOTE: no --profile roster, so the dropdowns offer only "
               f"'{'not ours'}'/'unsure' — pass --profile for one option per player.")
     print("\nNext: sync this folder to the machine running Label Studio, then")
-    print(f"  export LOCAL_FILES_DOCUMENT_ROOT={Path(serve_root).resolve()}")
-    print("  label-studio start   # create project → paste config → import tasks")
+    if args.serve_url:
+        print(f"  cd {Path(serve_root).resolve()} && python -m http.server "
+              f"{args.serve_url.rsplit(':', 1)[-1].rstrip('/') or 8000}")
+        print("  label-studio start   # in another shell")
+    else:
+        print("  export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true")
+        print(f"  export LOCAL_FILES_DOCUMENT_ROOT={Path(serve_root).resolve()}")
+        print("  label-studio start")
+    print("  # create project → paste config → import tasks")
     print(f"Then drop the export back here as {out_dir / 'annotations.json'} and:")
     print(f"  soccer-vision enroll --run {run_dir} "
           f"--from-tracklets {out_dir / 'annotations.json'} --out galleries/<team>.npz")

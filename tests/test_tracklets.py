@@ -16,6 +16,7 @@ from soccer_vision.annotate.tracklets import (
     build_tasks,
     choose_windows,
     labeling_config,
+    slot_label,
 )
 
 
@@ -64,12 +65,19 @@ def test_team_filter_keeps_only_our_squad(tracks):
     assert [x["track_id"] for x in windows[0]["lanes"]] == [1]
 
 
+def test_slots_are_lettered_so_they_read_as_ids_not_jersey_numbers():
+    """A chip saying "9" over a player is exactly what a squad number looks like."""
+    assert [slot_label(i) for i in (1, 2, 12, 26, 27)] == ["A", "B", "L", "Z", "AA"]
+
+
 def test_config_declares_one_dropdown_per_slot():
     xml = labeling_config(["Mo", "Evie"], max_lanes=3)
     for slot in (1, 2, 3):
         assert f'name="p{slot}"' in xml
     assert 'name="p4"' not in xml
     assert '<Choice value="Mo"/>' in xml
+    assert '<Header value="Player A"' in xml
+    assert '<Header value="Player 1"' not in xml
     # Abstaining has to be as easy as naming, or people guess to clear the form.
     assert f'<Choice value="{NOT_OURS}"/>' in xml
     assert f'<Choice value="{UNSURE}"/>' in xml

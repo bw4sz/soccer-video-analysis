@@ -127,6 +127,12 @@ def main():
     p_enroll.add_argument("--manifest", metavar="JSON",
                           help="tracklets.json for --from-tracklets, if it isn't "
                                "beside the export")
+    p_enroll.add_argument("--serve-url", metavar="BASE",
+                          help="Write absolute clip URLs against this base (e.g. "
+                               "http://localhost:8000) instead of Label Studio's "
+                               "/data/local-files/ endpoint — serve the folder with "
+                               "`python -m http.server` when local-files serving "
+                               "won't cooperate")
     p_enroll.add_argument("--window", type=float, default=20.0, metavar="SEC",
                           help="Seconds per tracklet window (default: 20)")
     p_enroll.add_argument("--n-windows", type=int, default=8,
