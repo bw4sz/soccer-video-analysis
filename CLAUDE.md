@@ -498,6 +498,36 @@ passages.
 nothing. Both exist so an annotator clearing a form never has to guess — a guess
 banks the wrong appearance under a real player's name, which is worse than a gap.
 
+Slots are numbered **in the order they first appear**, not by lane length. Ranking
+by length is still how the lanes are *chosen* — the longest carry the most crops —
+but numbering by it scattered the sequence (slot 10 on screen at 0.0 s, slot 1 at
+1.8 s), and an annotator scrubbing through reasonably read that as broken. Each
+task also carries an `onscreen` string ("Player 1: 0-11s · …") because a 20 s
+window holds ten lanes but rarely three at once, and it names the slots the clip
+doesn't use so a six-lane window against ten dropdowns doesn't look wrong.
+
+**Measured: 260 tracklet crops did not improve the gallery.** First real batch
+(4 windows, 13 lanes named, `runs/u14g_tracklets`, 2026-07-29) enrolled 260
+crops, taking the U14G gallery from 47 to 299 exemplars. Leave-one-frame-out on
+the *same* 45 held-out crops: 19/45 before, 17/45 after — no measurable change
+(that difference is inside noise at n=45), and precision when named went 5/6 to
+4/6. Two reasons, both fixable:
+
+- **The crops came from one 3-minute stretch** (`u14g_smoke180.mp4`, cut from
+  15:00), so one sun angle and one patch of pitch. The gallery was short of
+  *views*, and this added almost none.
+- **It deepened the imbalance.** Only 7 of 11 players appear in those windows,
+  and mostly the already-dominant ones: the gallery went to Morgan 64 /
+  Eveleigh 64 / Morrighan 48 / Gia 45 against Ila 5, Leire 4, Izabelle 2,
+  Lainey 1, Riley 1 — and Morgan was already the attractor in 13 of 26
+  confusions.
+
+So the workflow works and the yield is real (13 decisions → 260 crops), but
+**crops from one window are not the constraint**. Spread windows across a full
+match and across matches — which needs a full `process` run, not a smoke clip.
+Keep `galleries/*.frames-only.npz` and `*.with-tracklets.npz` side by side and
+A/B any new batch on a fixed held-out set before adopting it.
+
 **Nicknames.** A roster entry may carry `nickname: Mo`, which replaces the first
 name in the annotator's label list — a squad clicking "Mo" twenty times a frame
 shouldn't have to translate "Morrighan" each time. Enrolment maps it back to the
