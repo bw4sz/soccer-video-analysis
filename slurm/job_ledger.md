@@ -848,3 +848,21 @@ Result: COMPLETED (exit 0, 5m10s). **Byte-identical counts to 38178685**:
   856 tracks, 662 kit-stamped, ball 760/899 visible (84.5%), teams black/white,
   0 events (expected — no action engine). Run runs/u14g-smoke-postsam3.
 Next: none. SAM3 removal is behaviour-preserving on this footage.
+
+## 38313387 — 2026-07-29 15:2x — slurm/submit_process.sh (U14G full match)
+Why: The re-id gallery is stuck at 42% naming teammates, and the first tracklet
+  batch (260 crops, `runs/u14g_tracklets`) did not move it — 19/45 to 17/45 on a
+  fixed held-out set. Cause is sampling, not the labelling workflow: every one of
+  those crops came from `u14g_smoke180.mp4`, a 3-minute cut from 15:00, so one sun
+  angle and only 7 of 11 players. `enroll --dump-tracklets` cannot spread windows
+  across a match it has no tracks for, so the smoke clip is the binding
+  constraint. This processes the full 60-min match
+  (data/wfc-rangers-vs-saints-pcu-cup-2026-07-11.mp4, match_id saints-u14g-full)
+  so windows can span the whole game — including the late backlit stretch where
+  accuracy collapses to 3/13 — and every player appears in several.
+  ~1.6h expected (mostly video decoding), 4h wall, RF-DETR.
+Result:
+Next: `enroll --run runs/saints-u14g-full --dump-tracklets runs/saints-u14g-full/tracklets
+  --profile examples/profiles/saints-u14g.yaml --team black --n-windows 12`, label,
+  then A/B the new gallery with `slurm/ab_gallery_sources.py` before adopting it —
+  the last batch's 260-crop yield looked like progress and wasn't.
