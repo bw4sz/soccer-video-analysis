@@ -861,8 +861,23 @@ Why: The re-id gallery is stuck at 42% naming teammates, and the first tracklet
   so windows can span the whole game — including the late backlit stretch where
   accuracy collapses to 3/13 — and every player appears in several.
   ~1.6h expected (mostly video decoding), 4h wall, RF-DETR.
-Result:
+Result: **FAILED — OOM killed (exit 137)** at frame 19500/108972, 8.5 min in, 64GB
+  exhausted. Cause: TeamClassifier kept 4 image crops per track id and RF-DETR
+  fragments this venue into ~285 lanes/min, so a 60-min match asks for ~68,000
+  crops — for a preview PNG that renders 8 per team. Fixed by a global
+  `max_crops=600` cap; wall memory also raised 64->128GB since per-frame track
+  boxes are held for the whole run. Resubmitted as 38348887.
 Next: `enroll --run runs/saints-u14g-full --dump-tracklets runs/saints-u14g-full/tracklets
   --profile examples/profiles/saints-u14g.yaml --team black --n-windows 12`, label,
   then A/B the new gallery with `slurm/ab_gallery_sources.py` before adopting it —
   the last batch's 260-crop yield looked like progress and wasn't.
+
+## 38348887 — 2026-07-29 21:3x — slurm/submit_process.sh (U14G full match, retry)
+Why: Retry of 38313387 after its OOM. Two changes: TeamClassifier crops capped
+  globally at 600 (was 4 per track, unbounded in match length) and --mem 64->128GB.
+  Both at once, so success won't attribute the fix — the goal is a full-match run
+  to hang tracklet windows off, since the 3-min smoke capped the first labelling
+  batch at one sun angle and 7 of 11 players (260 crops, no measurable gain).
+Result:
+Next: 12 tracklet windows across the full match, label, then A/B with
+  slurm/ab_gallery_sources.py before adopting the gallery.
