@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64GB
+#SBATCH --mem=128GB
 #SBATCH --time=04:00:00
 #SBATCH --partition=hpg-turin
 #SBATCH --gpus=1
@@ -20,6 +20,10 @@
 # 0.045 s/detection-frame, and better where we have ground truth — see that file.
 # A full 60-min match is ~1.6h, which is what the 4h wall is sized for; most of
 # that is video decoding, not detection.
+#
+# 128GB, not 64: per-frame track boxes are held for the whole run so tracks.json
+# can be written per-track at the end, and on a 60-minute match at this venue
+# that is a lot of lanes. Job 38313387 was OOM-killed at 64GB 18% in.
 #
 # Usage: sbatch slurm/submit_process.sh <video> <match_id> [profile] [config]
 
