@@ -944,3 +944,34 @@ Next: this is a re-id recall problem, and it is the same one the gallery work
   has been circling. Do NOT tune `--on-ball-dist`. The full-match run now makes
   the real fix available: spread 12 tracklet windows across all 60 minutes
   (not one 3-min clip), label, and A/B with `slurm/ab_gallery_sources.py`.
+
+## Tracklet dump — 12 windows across the full U14G match (2026-07-31)
+Why: The first batch (`runs/u14g_tracklets`, 4 windows) all came from one 3-min
+  clip and gained nothing. This is the same workflow against the full-match run,
+  which is the whole reason 38348887 was worth retrying.
+Cmd: `enroll --run runs/saints-u14g-full --dump-tracklets
+  runs/saints-u14g-full/tracklets --profile examples/profiles/saints-u14g.yaml
+  --team black --window 20 --n-windows 12 --max-lanes 12` (~15 min, login node).
+Result: **12 clips, 144 MB, 115 lanes ringed — all 115 distinct track ids —
+  with 4,373 crops behind them** (38 per lane), against 13 lanes / 260 crops
+  last time. Windows land every ~329 s from 0 s to 3615 s.
+**The lighting spread is real and visible**, which is the thing the last batch
+  lacked: window 2 (328 s) is high midday sun under a blue sky, window 10
+  (2958 s) is golden-hour backlight with long shadows. Inspected both — halos
+  and numbered tags render legibly in each, and jersey 88 is readable at slot 1
+  in window 10.
+**Two flaws to expect when labelling, neither blocking:**
+  (1) **Window 2 has only 2 lanes** against 12 dropdowns, and neither is on
+      screen 8 s in. `--max-lanes` picks the longest lanes, and this passage
+      fragments badly. Low-yield window; the `onscreen` string should stop it
+      reading as broken, but it's near-useless for annotation.
+  (2) **A referee is ringed as ours** — slot 3 in window 10 is the yellow-shirted
+      official near the corner flag, stamped into the black team. `not ours`
+      handles it, but it burns a slot, and it is the same non-participant
+      problem the U14G TAAD run hit (sideline/bench figures among the longest
+      lanes).
+Next: label in Label Studio, drop the export back as
+  `runs/saints-u14g-full/tracklets/annotations.json`, enrol to a *separate*
+  gallery, and A/B against `galleries/saints-u14g.frames-only.npz` on the fixed
+  45-crop held-out set with `slurm/validate_reid_frames.py` before adopting.
+  The reel above (49 lanes / ~131 s / 3 spans) is the end-to-end before-picture.
