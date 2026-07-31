@@ -901,13 +901,46 @@ Why: First attempt to answer a real player query end-to-end on a full match —
   backwards through a 2 GB long-GOP file continually: **~50 h**. Both functions
   now plan crops per *frame* and make one forward pass via a new
   `VideoReader.read_frames`, which grabs/skips and seeks only past a 300-frame
-  gap — **~66 min**, and verified pixel-identical to `read_frame` on 9 frames.
-  Crops are released as each track completes, so memory stays flat.
-Result:
-Next: `soccer-vision reel --run runs/saints-u14g-full --player Morgan --profile
-  examples/profiles/saints-u14g.yaml --halo`, which will fall back to on-ball
-  spans (0 events). Read the output narrowly: the gallery is the 47-exemplar
-  frames-only one that scores 42% rank-1 at zero margin on leave-one-frame-out,
-  and Morgan Lobey is the *attractor* in 13 of 26 recorded confusions — so
-  expect over-selection toward her specifically. This is a pipeline test, not a
-  usable reel.
+  gap, and verified pixel-identical to `read_frame` on 9 frames. Crops are
+  released as each track completes, so memory stays flat.
+Result: **COMPLETED (exit 0, 4m28s, MaxRSS 2.1GB)** — the whole 60-min match.
+  **Calibration note on the numbers above:** the 2.2 s / 0.036 s benchmark was
+  taken on a *login* node, so both absolute figures are ~15x pessimistic; the
+  compute node decodes at ~400 fps. The 60x *ratio* is what mattered and the fix
+  is validated, but read "~50 h" as "hours, not minutes", not as a measurement.
+  Re-id named **803/17,395 tracks (4.6%)** at min_similarity 0.5 / min_margin
+  0.05. Distribution is badly skewed and does not match the gallery's:
+  Izabelle 254, Eveleigh 152, Lainey 150, Riley 78, Leire 52, Gia 50,
+  **Morgan 49**, Iris 12, Morrighan 6 — Catherine and Ila got zero.
+Next: reel built (below). The recall number, not the reel, is the finding.
+
+## Reel test — `reel --player Morgan` on the full U14G match (2026-07-31)
+Why: End-to-end test of the individual-player pathway on a real 60-min match,
+  the first time it has been asked for anything beyond a smoke clip.
+**It works mechanically, end to end.** 3 on-ball spans → 24.9 s reel at
+  `runs/saints-u14g-full/reel_morgan.mp4`. Inspected all three haloed frames:
+  every one is a genuine on-ball moment of a **black-kit (Saints) player** —
+  a contest at the box edge (47:35), a touch at the centre circle (56:17), and
+  a throw-in (57:02). Halo tracks correctly. Nothing is broken.
+**The yield is the problem, and it is re-id recall, not the on-ball radius.**
+  Morgan's 49 lanes total only **655 track-frames — ~131 s of a 60-min match**,
+  so we capture a few percent of her actual screen time. Of those 655, only 577
+  have a visible ball, and just **14 (2.4%) fall within the 90px on-ball
+  radius** → 3 spans after the 0.4 s minimum. Loosening the radius does not
+  rescue this: 300px only reaches 26.5% of an already-tiny sample and would
+  start cutting clips where she is merely nearby.
+**Two things worth chasing:**
+  (1) All 3 spans land at 47:35 / 56:17 / 57:02 — i.e. entirely inside the late
+      backlit stretch where leave-one-frame-out accuracy is *worst* (3/13
+      against 16/32 earlier). That is the opposite of where matches should
+      concentrate, and hints the late-match lanes are being matched for the
+      wrong reason. Worth checking directly.
+  (2) 17 of Morgan's 49 lanes carry **no kit stamp at all** (32 black, 17 None),
+      so a third of her selection is unconstrained by team.
+**Also fixed en route:** `reel --out` is a file path, not a directory, and
+  passing a directory fails deep inside `ffmpeg_concat` with an unhelpful
+  "Invalid argument". Worth a guard.
+Next: this is a re-id recall problem, and it is the same one the gallery work
+  has been circling. Do NOT tune `--on-ball-dist`. The full-match run now makes
+  the real fix available: spread 12 tracklet windows across all 60 minutes
+  (not one 3-min clip), label, and A/B with `slurm/ab_gallery_sources.py`.
