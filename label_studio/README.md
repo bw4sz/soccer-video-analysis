@@ -174,6 +174,95 @@ every white-home track, so label one match of each and `--append`.
 > existed to pull the *view* back out to a full frame — i.e. to reconstruct what
 > Label Studio shows you for free. Removed 2026-07-28 along with `--from-crops`.
 
+### 1d. Tracklets — one decision per lane
+
+The higher-yield route, and the one to use whenever the match is processed. Each
+task is a **20 s clip of play with every lane of your squad ringed and
+numbered**, and you pick a name per number — so one decision banks every crop in
+that lane instead of one crop per box. It also gives you motion and pitch
+position, which is how people actually tell youth players apart and which no
+still frame carries.
+
+**Generate (HPC).** Needs `tracks.json`, so a `process` run must exist:
+
+```bash
+soccer-vision enroll --run runs/<match_id> \
+  --dump-tracklets runs/<match_id>/tracklets \
+  --profile examples/profiles/<team>.yaml --team black \
+  --window 20 --n-windows 12 --max-lanes 12
+```
+
+Writes `clips/window_*.mp4`, `labeling_config.xml`, `label_studio_tasks.json`
+and **`tracklets.json`** — the slot→track-id manifest. Label Studio fixes one
+labelling config per project but ByteTrack ids differ in every window, so each
+window ranks its lanes and hands out slots 1..N. **Lose `tracklets.json` and the
+export is uninterpretable.**
+
+Spread beats length. Twelve windows across a full match cost ~144 MB and gave
+115 lanes / 4,373 crops; four windows inside one 3-minute clip gave 260 crops
+and no measurable gain, because they carried one sun angle and 7 of 11 players.
+
+**Sync down (laptop).** The task paths are relative to the run directory
+(`?d=tracklets/clips/...`), so mirror that layout exactly — the document root is
+the folder *containing* `tracklets/`, and the folder must keep its name:
+
+```bash
+mkdir -p ~/soccer-annotation/runs/<match_id>
+rsync -avP b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/tracklets/ \
+  ~/soccer-annotation/runs/<match_id>/tracklets/
+
+export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+export LOCAL_FILES_DOCUMENT_ROOT=$HOME/soccer-annotation/runs/<match_id>
+label-studio start
+```
+
+Renaming the folder on the way down (`saints-u14g-tracklets/`) silently breaks
+every video: the paths say `tracklets/clips/...` and nothing resolves. Rebuild
+with `--serve-url`/`--serve-root` if you want a different layout.
+
+**In the UI**, in this order:
+
+1. **Create Project** → *Labeling Setup* → *Custom template* → paste
+   `labeling_config.xml`.
+2. **Settings → Cloud Storage → Add Source Storage → Local files**, path =
+   the directory above, then **Sync**. Video tasks are *served* from disk, not
+   uploaded, so this is required rather than a fallback — without it the player
+   comes up blank.
+3. **Import** → `label_studio_tasks.json`.
+
+> **Check the task count matches your window count.** Local-files sync creates
+> its own task per object it finds, so a 12-window export that reports 13+ tasks
+> has swept in the config/manifest files or duplicated the clips. Those
+> storage-made tasks carry only a video path — they lose the `onscreen` string
+> and the `slots` block that the tasks JSON provides, and `onscreen` is what
+> tells you a 20 s window holds ten lanes but rarely three at once. Set the
+> storage **File Filter Regex** to something like `.*\.mp4$`, or leave Sync
+> alone and let the imported JSON be the only source of tasks.
+
+**Labelling.** The chip number is *not* a jersey number — slots are numbered in
+the order players first appear. `not ours` (opponents, referees, spectators) and
+`unsure` are first-class and enrol nothing: a guess banks the wrong appearance
+under a real player's name, which is worse than a gap. Expect a referee or a
+sideline figure to be ringed occasionally; that is what `not ours` is for.
+
+**Enrol (HPC).** Drop the export back beside the manifest:
+
+```bash
+rsync -avP ~/soccer-annotation/runs/<match_id>/tracklets/annotations.json \
+  b.weinstein@hpg.rc.ufl.edu:/orange/ewhite/b.weinstein/soccer-video-analysis/runs/<match_id>/tracklets/
+
+soccer-vision enroll --run runs/<match_id> \
+  --from-tracklets runs/<match_id>/tracklets/annotations.json \
+  --out galleries/<team>.with-tracklets.npz --append
+```
+
+**Enrol to a new file, not over your working gallery, and A/B before adopting
+it.** `--max-samples` caps crops per lane because a lane is many crops but few
+*views*, and a batch can deepen an imbalance while looking like progress —
+the first one took the U14G gallery 47 → 299 exemplars and moved leave-one-frame-out
+19/45 → 17/45. Measure with `slurm/validate_reid_frames.py` on a fixed held-out
+set, keeping `galleries/*.frames-only.npz` and `*.with-tracklets.npz` side by side.
+
 ---
 
 ## 2. Events — Label Studio clip review
@@ -251,16 +340,20 @@ export LOCAL_FILES_DOCUMENT_ROOT=$HOME/soccer-annotation/runs
 label-studio start
 ```
 
-In the UI:
+In the UI, same three steps as [1d](#1d-tracklets--one-decision-per-lane):
+
 1. **Create Project** → *Labeling Setup* → *Custom template* → paste
    `labeling_config.xml`.
-2. **Import** → `label_studio_tasks.json`.
+2. **Settings → Cloud Storage → Add Source Storage → Local files**, path = the
+   document root above, then **Sync**.
+3. **Import** → `label_studio_tasks.json`.
 
-If the video player comes up blank, the local-files endpoint isn't serving:
-check that `LOCAL_FILES_DOCUMENT_ROOT` was exported *before* `label-studio
-start`, and register the same directory under **Settings → Cloud Storage → Add
-Local Files** (recent versions want the storage declared as well as the env
-var), then **Sync**.
+Step 2 is not optional on current Label Studio: the env var alone doesn't serve
+the files, and a project built without it shows a blank video player on every
+task. The same task-count caveat applies — see the note in 1d.
+
+If the player is still blank, `LOCAL_FILES_DOCUMENT_ROOT` was probably exported
+*after* `label-studio start`; restart it.
 
 Each clip opens with its label pre-selected; click through and fix the wrong
 ones. The `notes` box takes a free-text reason — worth using when you correct

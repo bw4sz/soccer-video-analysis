@@ -124,10 +124,11 @@ soccer-vision reel --run runs/match_001 --number 6 --event pass --out number6_pa
 Two short annotation passes make the clips yours, and
 [`label_studio/README.md`](label_studio/README.md) walks through both:
 
-- **Who's who** — label a squad once by renaming folders of crops, and every
-  match after that names players by appearance instead of squinting at jersey
-  numbers (`soccer-vision enroll` → `identify --method reid`). No Label Studio
-  required.
+- **Who's who** — label a squad once and every match after that names players by
+  appearance instead of squinting at jersey numbers (`soccer-vision enroll` →
+  `identify --method reid`). Either watch a few 20s clips with each player ringed
+  and numbered and name the numbers, or name pre-drawn boxes on a couple of dozen
+  still frames — the clips are higher yield, the frames need no processed run.
 - **What happened** — confirm or correct the pipeline's event label on each
   clip in Label Studio; the corrections are the training set that teaches it
   youth footage.
