@@ -878,6 +878,36 @@ Why: Retry of 38313387 after its OOM. Two changes: TeamClassifier crops capped
   Both at once, so success won't attribute the fix — the goal is a full-match run
   to hang tracklet windows off, since the 3-min smoke capped the first labelling
   batch at one sun angle and 7 of 11 players (260 crops, no measurable gain).
-Result:
+Result: **COMPLETED (exit 0, 42m39s, MaxRSS 7.2GB)** — well inside the 128GB
+  wall, so the crop cap was the fix and the memory bump was belt-and-braces.
+  17,395 tracks, 13,727 kit-stamped (7,277 black / 6,450 white), ball
+  14,901/18,162 visible (82.0%), team split by turf-relative lightness on
+  13,621 of 13,727 tracks. 0 events (expected — no action engine).
+  Run runs/saints-u14g-full.
 Next: 12 tracklet windows across the full match, label, then A/B with
   slurm/ab_gallery_sources.py before adopting the gallery.
+
+## 38455349 — 2026-07-31 — slurm/submit_identify.sh (U14G full match, re-id)
+Why: First attempt to answer a real player query end-to-end on a full match —
+  "a reel of Morgan's highlights" — which needs `identify` to put names on the
+  17,395 lanes in runs/saints-u14g-full before `reel --player Morgan` can select
+  any. Also the first time `identify` has been pointed at anything bigger than a
+  3-minute clip.
+**It exposed a 60x I/O bug first, now fixed.** `embed_tracks` (and
+  `assign_jerseys`) cropped track-by-track, calling `VideoReader.read_frame` per
+  crop — a `CAP_PROP_POS_FRAMES` seek each time. Measured on this run's proxy:
+  **2.2 s per seek** against **0.036 s** to grab the next frame in sequence.
+  Tracks overlap in time, so 164k crops off ~18k distinct frames meant seeking
+  backwards through a 2 GB long-GOP file continually: **~50 h**. Both functions
+  now plan crops per *frame* and make one forward pass via a new
+  `VideoReader.read_frames`, which grabs/skips and seeks only past a 300-frame
+  gap — **~66 min**, and verified pixel-identical to `read_frame` on 9 frames.
+  Crops are released as each track completes, so memory stays flat.
+Result:
+Next: `soccer-vision reel --run runs/saints-u14g-full --player Morgan --profile
+  examples/profiles/saints-u14g.yaml --halo`, which will fall back to on-ball
+  spans (0 events). Read the output narrowly: the gallery is the 47-exemplar
+  frames-only one that scores 42% rank-1 at zero margin on leave-one-frame-out,
+  and Morgan Lobey is the *attractor* in 13 of 26 recorded confusions — so
+  expect over-selection toward her specifically. This is a pipeline test, not a
+  usable reel.
