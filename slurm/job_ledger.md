@@ -975,3 +975,32 @@ Next: label in Label Studio, drop the export back as
   gallery, and A/B against `galleries/saints-u14g.frames-only.npz` on the fixed
   45-crop held-out set with `slurm/validate_reid_frames.py` before adopting.
   The reel above (49 lanes / ~131 s / 3 spans) is the end-to-end before-picture.
+
+## 38469680 — 2026-07-31 — the on-field cut was throwing away 21% of players
+Why: Asked why a player standing in the near corner never gets ringed in a
+  tracklet labelling clip. She was never *tracked*: `filter_spectators` kept the
+  middle 70% of width and height, and every player box in
+  `runs/saints-u14g-full` is clipped into x in [288, 1632], y <= 918 (0 of
+  240,821 outside it). The shape is wrong for these cameras — they stand at the
+  touchline, so the near half of the pitch runs off the bottom edge and a wide
+  frame is one pitch across; only the *top* holds other people's matches.
+Cmd: `sbatch slurm/diag_field_cut.sh` (41 s). 120 frames spread across the full
+  U14G match, old centred rectangle vs the new top-only cut, same detections.
+Result: COMPLETED.
+    RF-DETR person detections     median 28.0
+    kept - old centred rectangle  median 22.0   <- discards 21% of people
+    kept - top-only cut (new)     median 28.0   <- discards 0%
+  **+735 boxes over 120 frames (+27%)**: 377 at the left edge, 322 at the right,
+  57 in the bottom band. Consistent with 38180242's 36% on the smoke clip.
+**The top cut is inert on this footage** — nothing is detected above y=162 in
+  120 frames, so 0% is discarded at the default. It is kept anyway because it
+  costs nothing and the venues differ; it is *not* what removes the far-touchline
+  crowd, which sits below that line among our own far-side players (issue #21).
+Shipped: `top_frac` / `side_frac` / `bottom_frac` replace `field_fraction`
+  (defaults 0.15 / 0 / 0), `--field-top` / `--field-sides` / `--field-bottom` on
+  both `process` and `enroll --dump-frames`, and `process` prints the cut it
+  used. 8 tests in `tests/test_field_filter.py`.
+Next: `runs/saints-u14g-full` was processed with the old rectangle, so its
+  tracks — and the tracklet clips and gallery built off them — are missing every
+  edge player. Re-run `process` on that match (~1.6 h) before the next enrolment
+  batch, or the near-corner players stay unlabellable.

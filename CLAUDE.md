@@ -690,13 +690,44 @@ morphology + largest connected component → boundary polygon, anchored on
 keyframes and propagated between them by frame-to-frame optical flow (the camera
 pans and zooms about a roughly fixed point). No lines, no homography, no
 pretrained model, no domain shift. That gives on-field/off-field (feeding
-`detection/field_filter.py`, which is currently a crude central-rectangle hull)
-and rough zones — enough for set-piece detection in pixel space. Defer metric
-pixel→metres entirely unless a downstream metric truly needs metres.
+`detection/field_filter.py`, which is currently a single horizontal cut — see
+below) and rough zones — enough for set-piece detection in pixel space. Defer
+metric pixel→metres entirely unless a downstream metric truly needs metres.
 
 A VLM can pre-propose the turf boundary polygon (coarse region tracing is
 something it does well) to bootstrap Label Studio annotation; it is not reliable
 as a per-frame sub-pixel estimator.
+
+### The on-field cut is a top cut, not a box
+
+Until that lands, `detection/field_filter.py` is all the "on field" there is, and
+it is **asymmetric on purpose**. It kept the middle 70% of width *and* height —
+a centred rectangle — which does not match how these cameras are set up:
+
+- **The bottom of the frame is our own pitch.** The camera sits at the touchline,
+  so the near half of the field runs off the bottom edge. Nobody stands between
+  the camera and the pitch.
+- **The sides are our pitch too.** A wide Veo frame is one pitch across; other
+  matches are *beyond* the far touchline, not left and right of it.
+- **The top is where the intruders are** — far-touchline crowd, next pitch, car
+  park, trees.
+
+So cutting the sides and bottom discarded real players and removed nothing. Job
+38180242 measured the old rectangle dropping **36% of detected people** (22/frame
+→ 14/frame) while keeping actual spectators on the far touchline, and every
+player box in `runs/saints-u14g-full` is clipped into x ∈ [288, 1632], y ≤ 918 —
+which is why a player in the near corner never got a track id and so never
+appeared in a tracklet labelling clip to be named.
+
+Defaults are now `--field-top 0.15 --field-sides 0 --field-bottom 0`; `process`
+prints the cut it used. The side and bottom knobs remain for a camera set well
+back from the touchline. **Runs made before 2026-07-31 carry the old rectangle**,
+so a thin edge of the frame is empty in them by construction — don't read that as
+the detector missing players.
+
+What the top cut *cannot* do: the far-touchline crowd and the neighbouring match
+sit below that line, mixed in with our own far-side players. No horizontal cut
+separates them — that is issue #21, not this function.
 
 **Consequences to keep in mind when reading the code:**
 

@@ -462,6 +462,7 @@ def _dump_frames_from_video(video: Path, out_dir: Path, args):
     import cv2
 
     from soccer_vision.annotate.label_studio import local_files_url
+    from soccer_vision.cli.main import field_filter_kwargs
     from soccer_vision.detection.field_filter import filter_spectators
     from soccer_vision.io.video import VideoReader
     from soccer_vision.profiles.loader import get_roster, load_profile
@@ -488,7 +489,7 @@ def _dump_frames_from_video(video: Path, out_dir: Path, args):
         if frame is None:
             continue
         dets = detector(frame)
-        dets = filter_spectators(dets, frame.shape)
+        dets = filter_spectators(dets, frame.shape, **field_filter_kwargs(args))
         h, w = frame.shape[:2]
         boxes = [b for b in _detection_boxes(dets) if _plausible_player_box(b, w, h)]
         boxes = labellable_boxes(boxes, h)
