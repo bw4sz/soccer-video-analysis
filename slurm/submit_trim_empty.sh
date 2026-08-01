@@ -13,12 +13,14 @@
 #SBATCH --output=/home/b.weinstein/logs/sv_trim_empty_%j.out
 #SBATCH --error=/home/b.weinstein/logs/sv_trim_empty_%j.err
 
-# Smoke-test `trim-empty` on a full youth match. The Saints 16B pre-MLS-Next
-# clip is ~53 min with a long halftime and many stoppages — exactly the dead
-# time this tool should cut. Two stages:
+# Run `trim-empty` on a full youth match. Two stages:
 #   1. GPU: build a ball track from the RF-DETR ball detector.
 #   2. CPU: cut offscreen/stationary spans >= --min-dead and re-encode the rest.
 # The original video is never modified; all artifacts land in LOG_DIR.
+#
+# Neither match we have contains an untrimmed halftime (longest offscreen run is
+# 4.5s on the 16B clip, 6.8s on U14G), so expect a few percent removed, not a big
+# cut. Bigger trims need a dead-time criterion beyond ball-only — see job 36258658.
 #
 # Usage: sbatch slurm/submit_trim_empty.sh [VIDEO] [SAMPLE_FPS] [MIN_DEAD_S]
 
@@ -30,7 +32,13 @@ PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
 VIDEO="${1:-$REPO/data/match-saints-16b-pre-mls-next-2026-04-26.mp4}"
-SAMPLE_FPS="${2:-2}"     # 2 fps → 10 samples per 5s window; plenty of resolution
+# 30 fps (native rate) — NOT a knob to lower. The Kalman gate needs a dense track
+# to tell real ball motion from RF-DETR flicker; sparse sampling makes it coast,
+# so moving balls read as stationary and the trim cuts live play. Measured on the
+# 5 fps runs/saints-u14g-full track: 33% of detections rejected, and 17% of the
+# removed time sat on frames where the raw detector shows the ball moving.
+# Decimating further is monotonically worse (5→2.5→1.67 fps: 16→19→25 spans).
+SAMPLE_FPS="${2:-30}"
 MIN_DEAD="${3:-5}"       # cut dead spans longer than this many seconds
 
 # Keep the RF-DETR weight cache off the home quota (shared with other jobs).

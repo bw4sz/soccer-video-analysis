@@ -1004,3 +1004,31 @@ Next: `runs/saints-u14g-full` was processed with the old rectangle, so its
   tracks — and the tracklet clips and gallery built off them — are missing every
   edge player. Re-run `process` on that match (~1.6 h) before the next enrolment
   batch, or the near-corner players stay unlabellable.
+
+## 38504772 — 2026-08-01 — slurm/submit_trim_empty.sh (U14G, 30 fps)
+Why: `trim-empty` had been run exactly once (36258658, 2026-07-02) and never on the
+  U14G Veo match. That prior run also used `sample_fps 2` with an unsmoothed track
+  (it predates the Kalman filter), so we had no datapoint at a sample rate the
+  smoother can actually work at.
+Design: `data/wfc-rangers-vs-saints-pcu-cup-2026-07-11.mp4` (Veo, 60.6 min),
+  `--sample-fps 30 --min-dead 5`, Kalman smoothing on. 30 fps rather than reusing
+  the existing 5 fps `runs/saints-u14g-full/ball_track.json` because that track is
+  measurably too sparse (below). Decode dominates and is fixed (~55 min), so 30 fps
+  costs ~2.3 h against ~1.6 h for 15 fps — only 1.4x, not 2x.
+Why not reuse the 5 fps track: at 4.995 fps the gate rejects **33.1%** of visible
+  detections (4939/14901), so the filter coasts and moving balls read as stationary
+  — stationary fraction inflates 13.8% (raw) -> 18.9% (smoothed), median jump 27 ->
+  19 px. The trim plan gains 4 spans and 37 s, and **17% of the removed time
+  (102/599 samples) sits on frames where the raw detector shows the ball moving** —
+  live play cut out of the highlight. Same check on the raw plan: 0/414. Decimating
+  is monotonically worse (5 / 2.5 / 1.67 fps -> 16 / 19 / 25 spans, 2.00 / 2.53 /
+  3.07 min removed). Sparse sampling manufactures dead time, it doesn't miss it.
+Shipped: `SAMPLE_FPS` default in `slurm/submit_trim_empty.sh` changed 2 -> 30, with
+  the above recorded at the knob. The old comment ("2 fps ... plenty of resolution")
+  was wrong. Removed the header's "long halftime" premise — neither match has one.
+Expectation: a few percent removed, not a big cut. Longest offscreen run in the
+  whole U14G match is 6.8 s (at 28:03); no untrimmed halftime, same as the 16B clip.
+  This job buys *correctness* of the few cuts, not volume.
+Result: PENDING
+Next: if yield is again ~2%, the lever is a dead-time criterion beyond ball-only
+  (low ball speed, player-cluster/idle cues) — 36258658's open question, still open.
