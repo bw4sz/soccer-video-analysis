@@ -153,10 +153,10 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
     and pitch position — the cues people actually use to tell youth players
     apart, and ones no still frame carries.
     """
-    from soccer_vision.annotate.label_studio import local_files_url
     from soccer_vision.annotate.tracklets import (
         build_tasks,
         choose_windows,
+        clip_url,
         labeling_config,
         render_window_clip,
         write_manifest,
@@ -196,13 +196,14 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
               f"— {len(w['lanes'])} lanes", flush=True)
         render_window_clip(proxy_path, path, window=w,
                            track_samples=track_samples, fps=fps)
-        urls[w["window"]] = local_files_url(path, serve_root)
+        urls[w["window"]] = clip_url(path, serve_root, args.serve_url)
 
     names = label_names(get_roster(profile) if profile else [])
     config = out_dir / "labeling_config.xml"
     config.write_text(labeling_config(names, args.max_lanes))
     tasks_path = out_dir / "label_studio_tasks.json"
-    tasks_path.write_text(json.dumps(build_tasks(windows, urls, fps), indent=2))
+    tasks_path.write_text(json.dumps(
+        build_tasks(windows, urls, fps, max_lanes=args.max_lanes), indent=2))
     manifest = write_manifest(out_dir / "tracklets.json", run_dir=run_dir,
                               video=proxy_path, fps=fps, windows=windows,
                               max_lanes=args.max_lanes)
@@ -216,8 +217,15 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
         print("  NOTE: no --profile roster, so the dropdowns offer only "
               f"'{'not ours'}'/'unsure' — pass --profile for one option per player.")
     print("\nNext: sync this folder to the machine running Label Studio, then")
-    print(f"  export LOCAL_FILES_DOCUMENT_ROOT={Path(serve_root).resolve()}")
-    print("  label-studio start   # create project → paste config → import tasks")
+    if args.serve_url:
+        print(f"  cd {Path(serve_root).resolve()} && python -m http.server "
+              f"{args.serve_url.rsplit(':', 1)[-1].rstrip('/') or 8000}")
+        print("  label-studio start   # in another shell")
+    else:
+        print("  export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true")
+        print(f"  export LOCAL_FILES_DOCUMENT_ROOT={Path(serve_root).resolve()}")
+        print("  label-studio start")
+    print("  # create project → paste config → import tasks")
     print(f"Then drop the export back here as {out_dir / 'annotations.json'} and:")
     print(f"  soccer-vision enroll --run {run_dir} "
           f"--from-tracklets {out_dir / 'annotations.json'} --out galleries/<team>.npz")
@@ -454,6 +462,7 @@ def _dump_frames_from_video(video: Path, out_dir: Path, args):
     import cv2
 
     from soccer_vision.annotate.label_studio import local_files_url
+    from soccer_vision.cli.main import field_filter_kwargs
     from soccer_vision.detection.field_filter import filter_spectators
     from soccer_vision.io.video import VideoReader
     from soccer_vision.profiles.loader import get_roster, load_profile
@@ -480,7 +489,7 @@ def _dump_frames_from_video(video: Path, out_dir: Path, args):
         if frame is None:
             continue
         dets = detector(frame)
-        dets = filter_spectators(dets, frame.shape)
+        dets = filter_spectators(dets, frame.shape, **field_filter_kwargs(args))
         h, w = frame.shape[:2]
         boxes = [b for b in _detection_boxes(dets) if _plausible_player_box(b, w, h)]
         boxes = labellable_boxes(boxes, h)

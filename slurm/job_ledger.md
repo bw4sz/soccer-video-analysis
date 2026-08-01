@@ -848,3 +848,159 @@ Result: COMPLETED (exit 0, 5m10s). **Byte-identical counts to 38178685**:
   856 tracks, 662 kit-stamped, ball 760/899 visible (84.5%), teams black/white,
   0 events (expected — no action engine). Run runs/u14g-smoke-postsam3.
 Next: none. SAM3 removal is behaviour-preserving on this footage.
+
+## 38313387 — 2026-07-29 15:2x — slurm/submit_process.sh (U14G full match)
+Why: The re-id gallery is stuck at 42% naming teammates, and the first tracklet
+  batch (260 crops, `runs/u14g_tracklets`) did not move it — 19/45 to 17/45 on a
+  fixed held-out set. Cause is sampling, not the labelling workflow: every one of
+  those crops came from `u14g_smoke180.mp4`, a 3-minute cut from 15:00, so one sun
+  angle and only 7 of 11 players. `enroll --dump-tracklets` cannot spread windows
+  across a match it has no tracks for, so the smoke clip is the binding
+  constraint. This processes the full 60-min match
+  (data/wfc-rangers-vs-saints-pcu-cup-2026-07-11.mp4, match_id saints-u14g-full)
+  so windows can span the whole game — including the late backlit stretch where
+  accuracy collapses to 3/13 — and every player appears in several.
+  ~1.6h expected (mostly video decoding), 4h wall, RF-DETR.
+Result: **FAILED — OOM killed (exit 137)** at frame 19500/108972, 8.5 min in, 64GB
+  exhausted. Cause: TeamClassifier kept 4 image crops per track id and RF-DETR
+  fragments this venue into ~285 lanes/min, so a 60-min match asks for ~68,000
+  crops — for a preview PNG that renders 8 per team. Fixed by a global
+  `max_crops=600` cap; wall memory also raised 64->128GB since per-frame track
+  boxes are held for the whole run. Resubmitted as 38348887.
+Next: `enroll --run runs/saints-u14g-full --dump-tracklets runs/saints-u14g-full/tracklets
+  --profile examples/profiles/saints-u14g.yaml --team black --n-windows 12`, label,
+  then A/B the new gallery with `slurm/ab_gallery_sources.py` before adopting it —
+  the last batch's 260-crop yield looked like progress and wasn't.
+
+## 38348887 — 2026-07-29 21:3x — slurm/submit_process.sh (U14G full match, retry)
+Why: Retry of 38313387 after its OOM. Two changes: TeamClassifier crops capped
+  globally at 600 (was 4 per track, unbounded in match length) and --mem 64->128GB.
+  Both at once, so success won't attribute the fix — the goal is a full-match run
+  to hang tracklet windows off, since the 3-min smoke capped the first labelling
+  batch at one sun angle and 7 of 11 players (260 crops, no measurable gain).
+Result: **COMPLETED (exit 0, 42m39s, MaxRSS 7.2GB)** — well inside the 128GB
+  wall, so the crop cap was the fix and the memory bump was belt-and-braces.
+  17,395 tracks, 13,727 kit-stamped (7,277 black / 6,450 white), ball
+  14,901/18,162 visible (82.0%), team split by turf-relative lightness on
+  13,621 of 13,727 tracks. 0 events (expected — no action engine).
+  Run runs/saints-u14g-full.
+Next: 12 tracklet windows across the full match, label, then A/B with
+  slurm/ab_gallery_sources.py before adopting the gallery.
+
+## 38455349 — 2026-07-31 — slurm/submit_identify.sh (U14G full match, re-id)
+Why: First attempt to answer a real player query end-to-end on a full match —
+  "a reel of Morgan's highlights" — which needs `identify` to put names on the
+  17,395 lanes in runs/saints-u14g-full before `reel --player Morgan` can select
+  any. Also the first time `identify` has been pointed at anything bigger than a
+  3-minute clip.
+**It exposed a 60x I/O bug first, now fixed.** `embed_tracks` (and
+  `assign_jerseys`) cropped track-by-track, calling `VideoReader.read_frame` per
+  crop — a `CAP_PROP_POS_FRAMES` seek each time. Measured on this run's proxy:
+  **2.2 s per seek** against **0.036 s** to grab the next frame in sequence.
+  Tracks overlap in time, so 164k crops off ~18k distinct frames meant seeking
+  backwards through a 2 GB long-GOP file continually: **~50 h**. Both functions
+  now plan crops per *frame* and make one forward pass via a new
+  `VideoReader.read_frames`, which grabs/skips and seeks only past a 300-frame
+  gap, and verified pixel-identical to `read_frame` on 9 frames. Crops are
+  released as each track completes, so memory stays flat.
+Result: **COMPLETED (exit 0, 4m28s, MaxRSS 2.1GB)** — the whole 60-min match.
+  **Calibration note on the numbers above:** the 2.2 s / 0.036 s benchmark was
+  taken on a *login* node, so both absolute figures are ~15x pessimistic; the
+  compute node decodes at ~400 fps. The 60x *ratio* is what mattered and the fix
+  is validated, but read "~50 h" as "hours, not minutes", not as a measurement.
+  Re-id named **803/17,395 tracks (4.6%)** at min_similarity 0.5 / min_margin
+  0.05. Distribution is badly skewed and does not match the gallery's:
+  Izabelle 254, Eveleigh 152, Lainey 150, Riley 78, Leire 52, Gia 50,
+  **Morgan 49**, Iris 12, Morrighan 6 — Catherine and Ila got zero.
+Next: reel built (below). The recall number, not the reel, is the finding.
+
+## Reel test — `reel --player Morgan` on the full U14G match (2026-07-31)
+Why: End-to-end test of the individual-player pathway on a real 60-min match,
+  the first time it has been asked for anything beyond a smoke clip.
+**It works mechanically, end to end.** 3 on-ball spans → 24.9 s reel at
+  `runs/saints-u14g-full/reel_morgan.mp4`. Inspected all three haloed frames:
+  every one is a genuine on-ball moment of a **black-kit (Saints) player** —
+  a contest at the box edge (47:35), a touch at the centre circle (56:17), and
+  a throw-in (57:02). Halo tracks correctly. Nothing is broken.
+**The yield is the problem, and it is re-id recall, not the on-ball radius.**
+  Morgan's 49 lanes total only **655 track-frames — ~131 s of a 60-min match**,
+  so we capture a few percent of her actual screen time. Of those 655, only 577
+  have a visible ball, and just **14 (2.4%) fall within the 90px on-ball
+  radius** → 3 spans after the 0.4 s minimum. Loosening the radius does not
+  rescue this: 300px only reaches 26.5% of an already-tiny sample and would
+  start cutting clips where she is merely nearby.
+**Two things worth chasing:**
+  (1) All 3 spans land at 47:35 / 56:17 / 57:02 — i.e. entirely inside the late
+      backlit stretch where leave-one-frame-out accuracy is *worst* (3/13
+      against 16/32 earlier). That is the opposite of where matches should
+      concentrate, and hints the late-match lanes are being matched for the
+      wrong reason. Worth checking directly.
+  (2) 17 of Morgan's 49 lanes carry **no kit stamp at all** (32 black, 17 None),
+      so a third of her selection is unconstrained by team.
+**Also fixed en route:** `reel --out` is a file path, not a directory, and
+  passing a directory fails deep inside `ffmpeg_concat` with an unhelpful
+  "Invalid argument". Worth a guard.
+Next: this is a re-id recall problem, and it is the same one the gallery work
+  has been circling. Do NOT tune `--on-ball-dist`. The full-match run now makes
+  the real fix available: spread 12 tracklet windows across all 60 minutes
+  (not one 3-min clip), label, and A/B with `slurm/ab_gallery_sources.py`.
+
+## Tracklet dump — 12 windows across the full U14G match (2026-07-31)
+Why: The first batch (`runs/u14g_tracklets`, 4 windows) all came from one 3-min
+  clip and gained nothing. This is the same workflow against the full-match run,
+  which is the whole reason 38348887 was worth retrying.
+Cmd: `enroll --run runs/saints-u14g-full --dump-tracklets
+  runs/saints-u14g-full/tracklets --profile examples/profiles/saints-u14g.yaml
+  --team black --window 20 --n-windows 12 --max-lanes 12` (~15 min, login node).
+Result: **12 clips, 144 MB, 115 lanes ringed — all 115 distinct track ids —
+  with 4,373 crops behind them** (38 per lane), against 13 lanes / 260 crops
+  last time. Windows land every ~329 s from 0 s to 3615 s.
+**The lighting spread is real and visible**, which is the thing the last batch
+  lacked: window 2 (328 s) is high midday sun under a blue sky, window 10
+  (2958 s) is golden-hour backlight with long shadows. Inspected both — halos
+  and numbered tags render legibly in each, and jersey 88 is readable at slot 1
+  in window 10.
+**Two flaws to expect when labelling, neither blocking:**
+  (1) **Window 2 has only 2 lanes** against 12 dropdowns, and neither is on
+      screen 8 s in. `--max-lanes` picks the longest lanes, and this passage
+      fragments badly. Low-yield window; the `onscreen` string should stop it
+      reading as broken, but it's near-useless for annotation.
+  (2) **A referee is ringed as ours** — slot 3 in window 10 is the yellow-shirted
+      official near the corner flag, stamped into the black team. `not ours`
+      handles it, but it burns a slot, and it is the same non-participant
+      problem the U14G TAAD run hit (sideline/bench figures among the longest
+      lanes).
+Next: label in Label Studio, drop the export back as
+  `runs/saints-u14g-full/tracklets/annotations.json`, enrol to a *separate*
+  gallery, and A/B against `galleries/saints-u14g.frames-only.npz` on the fixed
+  45-crop held-out set with `slurm/validate_reid_frames.py` before adopting.
+  The reel above (49 lanes / ~131 s / 3 spans) is the end-to-end before-picture.
+
+## 38469680 — 2026-07-31 — the on-field cut was throwing away 21% of players
+Why: Asked why a player standing in the near corner never gets ringed in a
+  tracklet labelling clip. She was never *tracked*: `filter_spectators` kept the
+  middle 70% of width and height, and every player box in
+  `runs/saints-u14g-full` is clipped into x in [288, 1632], y <= 918 (0 of
+  240,821 outside it). The shape is wrong for these cameras — they stand at the
+  touchline, so the near half of the pitch runs off the bottom edge and a wide
+  frame is one pitch across; only the *top* holds other people's matches.
+Cmd: `sbatch slurm/diag_field_cut.sh` (41 s). 120 frames spread across the full
+  U14G match, old centred rectangle vs the new top-only cut, same detections.
+Result: COMPLETED.
+    RF-DETR person detections     median 28.0
+    kept - old centred rectangle  median 22.0   <- discards 21% of people
+    kept - top-only cut (new)     median 28.0   <- discards 0%
+  **+735 boxes over 120 frames (+27%)**: 377 at the left edge, 322 at the right,
+  57 in the bottom band. Consistent with 38180242's 36% on the smoke clip.
+**The top cut is inert on this footage** — nothing is detected above y=162 in
+  120 frames, so 0% is discarded at the default. It is kept anyway because it
+  costs nothing and the venues differ; it is *not* what removes the far-touchline
+  crowd, which sits below that line among our own far-side players (issue #21).
+Shipped: `top_frac` / `side_frac` / `bottom_frac` replace `field_fraction`
+  (defaults 0.15 / 0 / 0), `--field-top` / `--field-sides` / `--field-bottom` on
+  both `process` and `enroll --dump-frames`, and `process` prints the cut it
+  used. 8 tests in `tests/test_field_filter.py`.
+Next: `runs/saints-u14g-full` was processed with the old rectangle, so its
+  tracks — and the tracklet clips and gallery built off them — are missing every
+  edge player. Re-run `process` on that match (~1.6 h) before the next enrolment
+  batch, or the near-corner players stay unlabellable.

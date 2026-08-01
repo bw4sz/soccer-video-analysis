@@ -16,6 +16,7 @@ from soccer_vision.annotate.tracklets import (
     build_tasks,
     choose_windows,
     labeling_config,
+    slot_label,
 )
 
 
@@ -64,12 +65,19 @@ def test_team_filter_keeps_only_our_squad(tracks):
     assert [x["track_id"] for x in windows[0]["lanes"]] == [1]
 
 
+def test_slot_chips_match_the_form_labels():
+    """A clip showing "J" against a form listing "Player 1" costs a translation."""
+    assert [slot_label(i) for i in (1, 2, 12)] == ["1", "2", "12"]
+
+
 def test_config_declares_one_dropdown_per_slot():
     xml = labeling_config(["Mo", "Evie"], max_lanes=3)
     for slot in (1, 2, 3):
         assert f'name="p{slot}"' in xml
     assert 'name="p4"' not in xml
     assert '<Choice value="Mo"/>' in xml
+    assert '<Header value="Player 1' in xml
+
     # Abstaining has to be as easy as naming, or people guess to clear the form.
     assert f'<Choice value="{NOT_OURS}"/>' in xml
     assert f'<Choice value="{UNSURE}"/>' in xml
@@ -157,3 +165,37 @@ def test_tasks_carry_the_window_and_clip(tracks):
     assert tasks[0]["data"]["video"] == urls[windows[0]["window"]]
     assert tasks[0]["data"]["n_lanes"] == len(windows[0]["lanes"])
     assert "timestamp" in tasks[0]["data"]
+
+
+def test_slots_are_numbered_in_order_of_first_appearance():
+    """Numbering by lane length made the sequence look random when scrubbing.
+
+    The longest lanes are still the ones chosen — they carry the most crops — but
+    numbering follows the clip, so playing it once walks the form top to bottom.
+    """
+    tracks = {
+        1: lane(300, 30),           # longest, but enters late
+        2: lane(0, 20, x=200),      # shorter, enters first
+        3: lane(120, 25, x=300),    # middle on both counts
+    }
+    windows = choose_windows(tracks, fps=30, window_s=60, n_windows=1,
+                             min_track_frames=5, max_lanes=3)
+    lanes = windows[0]["lanes"]
+
+    assert [x["track_id"] for x in lanes] == [2, 3, 1]
+    assert [x["slot"] for x in lanes] == [1, 2, 3]
+    assert [x["enters_s"] for x in lanes] == sorted(x["enters_s"] for x in lanes)
+
+
+def test_onscreen_guide_names_the_slots_a_clip_does_not_use():
+    """Ten dropdowns over a six-player clip otherwise reads as broken."""
+    from soccer_vision.annotate.tracklets import onscreen_guide
+
+    window = {"lanes": [{"slot": 1, "enters_s": 0.0, "leaves_s": 9.0},
+                        {"slot": 2, "enters_s": 3.0, "leaves_s": 18.0}]}
+
+    guide = onscreen_guide(window, max_lanes=4)
+
+    assert "Player 1: 0-9s" in guide
+    assert "Player 2: 3-18s" in guide
+    assert "Players 3, 4 are not in this clip" in guide

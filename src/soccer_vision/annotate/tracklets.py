@@ -6,11 +6,12 @@ and asks for a name per number — so one decision harvests every crop in that
 lane, and the annotator gets the cues they actually identify children by:
 where someone is on the pitch, who they are next to, how they move.
 
-**Numbers are per window, not per track.** Label Studio's labelling config is
-fixed for a project while ByteTrack ids differ in every window, so a config
-naming real track ids is impossible. Each window instead ranks its lanes and
-assigns slots 1..N; the config declares N dropdowns once, and the manifest
-records which track id each slot meant. Enrolment joins them back.
+**Numbers are per window, not per track, and they are not jersey numbers.**
+Label Studio's labelling config is fixed for a project while ByteTrack ids differ
+in every window, so a config naming real track ids is impossible. Each window
+instead picks its longest lanes and numbers them 1..N *in the order they first
+appear*; the config declares N dropdowns once, and the manifest records which
+track id each slot meant. Enrolment joins them back.
 
 **What a lane is worth.** On the U14G RF-DETR run a lane runs 7 detection-frames
 (~1.4 s) at the median, so its crops are near-duplicates: one pose, one patch of
@@ -37,6 +38,18 @@ SLOT_COLORS = [
 
 NOT_OURS = "not ours"
 UNSURE = "unsure"
+
+
+def slot_label(slot: int) -> str:
+    """What goes on the chip in the clip. Digits, matching the form's "Player N".
+
+    Letters were tried, to stop a chip reading as a jersey number. They cost more
+    than they saved: the form lists "Player 1..N", so a clip showing "J" makes the
+    annotator translate on every decision. Whatever is drawn must be the same
+    token the dropdown is named after — that matters more than the ambiguity
+    with squad numbers, which the instruction header can address instead.
+    """
+    return str(int(slot))
 
 
 def choose_windows(
@@ -96,11 +109,21 @@ def choose_windows(
                 present.append((len(inside), tid, inside))
         if not present:
             continue
+        # Pick the longest lanes — they yield the most crops and are the easiest
+        # to follow — but *number* them in the order they first appear. Numbering
+        # by length scatters the sequence across the clip: on the U14G run that
+        # put slot 10 on screen at 0.0s and slot 1 at 1.8s, so an annotator
+        # scrubbing through met "2, 10, 3" and reasonably concluded the numbering
+        # was broken. Chronological order means playing the clip once walks the
+        # form from top to bottom.
         present.sort(reverse=True, key=lambda x: (x[0], -x[1]))
+        chosen = sorted(present[:max_lanes], key=lambda x: (x[2][0][0], -x[0]))
         lanes = [
             {"slot": i + 1, "track_id": tid, "n_frames": n,
-             "first_frame": inside[0][0], "last_frame": inside[-1][0]}
-            for i, (n, tid, inside) in enumerate(present[:max_lanes])
+             "first_frame": inside[0][0], "last_frame": inside[-1][0],
+             "enters_s": round((inside[0][0] - start) / fps, 1),
+             "leaves_s": round((inside[-1][0] - start) / fps, 1)}
+            for i, (n, tid, inside) in enumerate(chosen)
         ]
         windows.append({
             "window": w + 1,
@@ -163,9 +186,24 @@ def render_window_clip(
         writer.release()
         cap.release()
 
-    ffmpeg_run(["ffmpeg", "-y", "-i", str(raw_path),
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-pix_fmt", "yuv420p", "-an", str(out_path)])
+    ffmpeg_run([
+        "ffmpeg", "-y",
+        "-i", str(raw_path),
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        # `main` profile and yuv420p are what every browser decodes without
+        # argument; the default `high` profile buys nothing on footage nobody is
+        # grading.
+        "-profile:v", "main", "-level", "4.0", "-pix_fmt", "yuv420p",
+        # No audio. A silent AAC track was tried on the theory that Label
+        # Studio's documented "H.264 + AAC" meant it needed one; it does not —
+        # these clips play video-only — and `anullsrc` is an infinite input that
+        # `-shortest` failed to bound, so the encode ran away.
+        "-an",
+        # Puts the moov atom first so a player can start on the first bytes
+        # instead of fetching all 15 MB.
+        "-movflags", "+faststart",
+        str(out_path),
+    ])
     raw_path.unlink(missing_ok=True)
     return out_path
 
@@ -173,9 +211,9 @@ def render_window_clip(
 def _draw_slot(cv2, frame, bbox, slot: int):
     """Ring the player and put the slot number in a chip above them.
 
-    Sized against the **frame**, not the box. A number scaled to a 50 px player
+    Sized against the **frame**, not the box. A label scaled to a 50 px player
     is unreadable the moment a browser fits 1080p into half a screen, and the
-    number is the only thing the annotator has to type against — it has to
+    number is the only thing the annotator has to answer against — it has to
     survive that downscale. A filled chip rather than outlined text for the same
     reason: solid colour holds up under video compression where thin strokes
     smear into the turf.
@@ -190,7 +228,7 @@ def _draw_slot(cv2, frame, bbox, slot: int):
     cv2.ellipse(frame, (cx, y2), (max(8, w // 2), max(4, w // 4)),
                 0, -30, 210, colour, max(2, fh // 400), cv2.LINE_AA)
 
-    label = str(slot)
+    label = slot_label(slot)
     scale = max(0.75, fh / 1300.0)
     thick = max(2, int(round(fh / 540.0)))
     (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, scale, thick)
@@ -219,7 +257,7 @@ def labeling_config(names: list[str], max_lanes: int) -> str:
     )
     blocks = "".join(
         f'\n    <View style="display:inline-block; width:210px; padding:4px">'
-        f'\n      <Header value="Player {slot}" size="6"/>'
+        f'\n      <Header value="Player {slot_label(slot)}" size="6"/>'
         f'\n      <Choices name="p{slot}" toName="video" choice="single" '
         f'layout="select" showInline="false">{options}\n      </Choices>'
         f'\n    </View>'
@@ -227,22 +265,63 @@ def labeling_config(names: list[str], max_lanes: int) -> str:
     )
     return (
         '<View>\n'
-        '  <Header value="Name each ringed player. Numbers match the rings in the '
-        'clip. Use &quot;not ours&quot; for opponents, referees and spectators, and '
-        '&quot;unsure&quot; when you can\'t tell — both are skipped, never guessed."/>\n'
+        '  <Header value="Name each ringed player. The number on the chip is the '
+        '&quot;Player N&quot; below it — it is NOT a jersey number. Players are '
+        'numbered in the order they first appear, and each is only on screen for '
+        'part of the clip (see the list under the video). Use &quot;not ours&quot; '
+        'for opponents, referees and spectators, and &quot;unsure&quot; when you '
+        'can\'t tell — both are skipped, never guessed."/>\n'
         '  <Video name="video" value="$video"/>\n'
+        '  <Text name="onscreen" value="$onscreen"/>\n'
         f'  <View style="display:flex; flex-wrap:wrap">{blocks}\n  </View>\n'
         '</View>\n'
     )
 
 
-def build_tasks(windows: list[dict], clip_urls: dict[int, str], fps: float) -> list[dict]:
+def clip_url(clip_path: Path, serve_root: Path, base_url: str | None) -> str:
+    """URL for a clip: a plain HTTP one when ``base_url`` is given, else local-files.
+
+    Label Studio's ``/data/local-files/`` endpoint needs two environment variables
+    set before the server starts and a document root at exactly the right level,
+    and when any of that is off the player reports "cannot open video" — which
+    looks like a codec problem and isn't. Serving the folder with
+    ``python -m http.server`` sidesteps the whole mechanism, so ``--serve-url``
+    exists for when the built-in route is fighting you.
+    """
+    rel = clip_path.resolve().relative_to(Path(serve_root).resolve()).as_posix()
+    if base_url:
+        return f"{base_url.rstrip('/')}/{rel}"
+    return f"/data/local-files/?d={rel}"
+
+
+def onscreen_guide(window: dict, max_lanes: int) -> str:
+    """"Player 3: 4.8-19.8s" per slot — when to look for each one.
+
+    A 20s window holds ten lanes but rarely more than three at once, so an
+    annotator who plays it once sees a couple of chips and cannot tell whether
+    the rest are missing or merely elsewhere in time. Spelling out each slot's
+    span turns that into a scrub target. Slots the window doesn't use are named
+    too, because a form with ten dropdowns and six players otherwise looks
+    broken.
+    """
+    parts = [f"Player {lane['slot']}: {lane['enters_s']:.0f}-{lane['leaves_s']:.0f}s"
+             for lane in window["lanes"]]
+    unused = [str(s) for s in range(len(window["lanes"]) + 1, max_lanes + 1)]
+    if unused:
+        parts.append(f"(Players {', '.join(unused)} are not in this clip "
+                     f"— leave them blank)")
+    return "On screen —  " + "  ·  ".join(parts)
+
+
+def build_tasks(windows: list[dict], clip_urls: dict[int, str], fps: float,
+                max_lanes: int = 12) -> list[dict]:
     """One task per window, carrying the slot→track map the export won't."""
     tasks = []
     for w in windows:
         tasks.append({
             "data": {
                 "video": clip_urls[w["window"]],
+                "onscreen": onscreen_guide(w, max_lanes),
                 "window": w["window"],
                 "start_frame": w["start_frame"],
                 "start_s": w["start_s"],

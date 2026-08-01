@@ -284,9 +284,20 @@ def assign_kits_to_clusters(
 class TeamClassifier:
     """Assign track IDs to one of two teams by accumulated jersey colour."""
 
-    def __init__(self, min_samples: int = 3, keep_crops: int = 4):
+    def __init__(self, min_samples: int = 3, keep_crops: int = 4,
+                 max_crops: int = 600):
         self.min_samples = min_samples
         self.keep_crops = keep_crops
+        # Retained crops are for `build_team_preview` and nothing else, and it
+        # renders 8 per team. Keeping 4 per *track* is unbounded in video length:
+        # RF-DETR fragments this footage into ~285 lanes a minute, so a 60-minute
+        # match asks for ~68,000 crops and the full-match run was OOM-killed at
+        # 64 GB, 18% in (job 38313387). A global cap keeps the preview while
+        # making the cost independent of match length — the tradeoff is that the
+        # crops all come from early in the match, which is fine for a montage
+        # whose only job is confirming the cluster→kit-name mapping.
+        self.max_crops = max_crops
+        self._n_crops = 0
         self._samples: dict[int, list[np.ndarray]] = {}
         self._illum: dict[int, list[np.ndarray | None]] = {}
         self._crops: dict[int, list[np.ndarray]] = {}
@@ -317,13 +328,15 @@ class TeamClassifier:
                 estimate_local_illuminant(frame, bbox)
             )
             crops = self._crops.setdefault(tid, [])
-            if self.keep_crops and len(crops) < self.keep_crops:
+            if (self.keep_crops and len(crops) < self.keep_crops
+                    and self._n_crops < self.max_crops):
                 x1, y1, x2, y2 = (int(round(float(v))) for v in bbox)
                 h, w = frame.shape[:2]
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(w, x2), min(h, y2)
                 if x2 - x1 >= 2 and y2 - y1 >= 2:
                     crops.append(frame[y1:y2, x1:x2].copy())
+                    self._n_crops += 1
 
     def _fit_reference_illuminant(self) -> np.ndarray | None:
         """Median turf colour across every sample — the lighting we normalise to.

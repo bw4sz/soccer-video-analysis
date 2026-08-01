@@ -44,13 +44,44 @@ class VideoReader:
         ret, frame = self.cap.read()
         return frame if ret else None
 
+    def read_frames(self, frame_numbers, *, seek_threshold: int = 300):
+        """Yield ``(frame_no, frame)`` for many frames in one forward pass.
+
+        :meth:`read_frame` seeks, and a seek on long-GOP h264 costs a keyframe
+        rewind plus a decode run-up: **2.2 s** on the 60-min U14G match against
+        **0.036 s** to grab the next frame in sequence. Anything that wants
+        hundreds of frames — embedding a match's tracks, sampling crops — must
+        walk the file rather than jump around it, or it pays 60x for the same
+        pixels.
+
+        So frames are visited in order, decoding only the ones asked for
+        (``grab`` skips, ``retrieve`` decodes) and seeking only when the gap
+        ahead exceeds ``seek_threshold`` frames — the break-even against a seek,
+        left deliberately conservative because a seek can also land inexactly.
+        Frames that fail to decode are skipped, so the caller sees a short
+        sequence rather than ``None`` holes.
+        """
+        wanted = sorted({int(f) for f in frame_numbers})
+        pos = 0  # index of the next frame `grab()` will consume
+        for target in wanted:
+            if target < pos or target - pos > seek_threshold:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+                pos = target
+            while pos < target:
+                if not self.cap.grab():
+                    return
+                pos += 1
+            if not self.cap.grab():
+                return
+            pos += 1
+            ok, frame = self.cap.retrieve()
+            if ok:
+                yield target, frame
+
     def sample_frames(self, interval: int, start: int = 0, end: int | None = None):
         """Yield (frame_no, frame) at the given interval."""
         end = end or self.total_frames
-        for fn in range(start, end, interval):
-            frame = self.read_frame(fn)
-            if frame is not None:
-                yield fn, frame
+        yield from self.read_frames(range(start, end or self.total_frames, interval))
 
     def close(self):
         self.cap.release()

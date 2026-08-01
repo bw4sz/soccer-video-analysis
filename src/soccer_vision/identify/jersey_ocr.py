@@ -176,34 +176,55 @@ def assign_jerseys(
     ``max_samples_per_track`` boxes evenly across its span, crop the number
     region, gate for legibility, recognize, then vote. Returns
     ``{track_id: JerseyVote}`` for every track (including unknowns).
+
+    Like :func:`~.reid.embed_tracks`, crops are planned per *frame* and the video
+    is read in one forward pass — tracks overlap in time, so reading them one at
+    a time seeks backwards through the file at ~2.2 s a seek (see
+    :meth:`~soccer_vision.io.video.VideoReader.read_frames`).
     """
     vote_kwargs = vote_kwargs or {}
     out: dict[int, JerseyVote] = {}
 
+    plan: dict[int, list] = {}
+    pending: dict[int, int] = {}
     for tid, samples in track_boxes.items():
         if not samples:
             out[tid] = vote_jersey([], n_sampled=0, **vote_kwargs)
             continue
         step = max(1, len(samples) // max_samples_per_track)
         chosen = samples[::step]
-
-        observations: list[tuple[int, float]] = []
         for frame_no, bbox in chosen:
-            frame = reader.read_frame(int(frame_no))
-            if frame is None:
-                continue
-            crop = crop_number_region(frame, bbox)
-            if not is_legible(crop):
-                continue
-            read = recognizer.predict(crop)
-            if read.number is not None:
-                observations.append((read.number, read.confidence))
+            plan.setdefault(int(frame_no), []).append((tid, bbox))
+        pending[tid] = len(chosen)
 
-        out[tid] = vote_jersey(observations, n_sampled=len(chosen), **vote_kwargs)
-        if progress:
-            v = out[tid]
-            tag = f"#{v.jersey}" if v.jersey is not None else "unknown"
-            print(f"  track {tid}: {tag} "
-                  f"(conf {v.confidence:.2f}, {v.n_obs}/{len(chosen)} legible)")
+    n_chosen = dict(pending)
+    observations: dict[int, list[tuple[int, float]]] = {}
+    for frame_no, frame in reader.read_frames(plan.keys()):
+        for tid, bbox in plan[frame_no]:
+            crop = crop_number_region(frame, bbox)
+            if is_legible(crop):
+                read = recognizer.predict(crop)
+                if read.number is not None:
+                    observations.setdefault(tid, []).append(
+                        (read.number, read.confidence)
+                    )
+            pending[tid] -= 1
+            if pending[tid] == 0:
+                out[tid] = vote_jersey(
+                    observations.pop(tid, []), n_sampled=n_chosen[tid], **vote_kwargs
+                )
+                if progress:
+                    v = out[tid]
+                    tag = f"#{v.jersey}" if v.jersey is not None else "unknown"
+                    print(f"  track {tid}: {tag} "
+                          f"(conf {v.confidence:.2f}, {v.n_obs}/{n_chosen[tid]} legible)",
+                          flush=True)
+
+    # Tracks whose frames all failed to decode never reached the flush above.
+    for tid, remaining in pending.items():
+        if remaining > 0 and tid not in out:
+            out[tid] = vote_jersey(
+                observations.get(tid, []), n_sampled=n_chosen[tid], **vote_kwargs
+            )
 
     return out

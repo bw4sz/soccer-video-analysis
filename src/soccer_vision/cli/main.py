@@ -33,6 +33,57 @@ def _add_on_ball_args(parser: argparse.ArgumentParser) -> None:
         help="Drop on-ball spans shorter than this as incidental (default: 0.4)")
 
 
+def _add_field_filter_args(parser: argparse.ArgumentParser) -> None:
+    """Shared on-field cut for `process` and `enroll --dump-frames`.
+
+    The cut is asymmetric: these cameras sit close to the touchline, so the
+    bottom and sides of the frame are our own pitch and only the top holds other
+    people's matches. See :mod:`soccer_vision.detection.field_filter`.
+    """
+    from soccer_vision.detection.field_filter import (
+        DEFAULT_BOTTOM_FRAC, DEFAULT_SIDE_FRAC, DEFAULT_TOP_FRAC,
+    )
+
+    parser.add_argument(
+        "--field-top", type=float, default=DEFAULT_TOP_FRAC, metavar="FRAC",
+        help="Drop detections whose feet are in the top FRAC of the frame — sky, "
+             "trees, rooftops (default: %(default)s). It will not separate the "
+             "far-touchline crowd or a neighbouring pitch, which sit below that "
+             "line among our own far-side players.")
+    parser.add_argument(
+        "--field-sides", type=float, default=DEFAULT_SIDE_FRAC, metavar="FRAC",
+        help="Drop detections within FRAC of the left/right edge (default: "
+             "%(default)s — a wide frame is one pitch across, so cutting the "
+             "sides only loses real players).")
+    parser.add_argument(
+        "--field-bottom", type=float, default=DEFAULT_BOTTOM_FRAC, metavar="FRAC",
+        help="Drop detections within FRAC of the bottom edge (default: "
+             "%(default)s — with the camera at the touchline there is nobody "
+             "between it and the pitch). Raise it only for a camera set well back.")
+
+
+def field_filter_kwargs(args) -> dict:
+    """``--field-*`` as keyword arguments for ``filter_spectators``.
+
+    Falls back to the module defaults so a caller assembling ``args`` by hand
+    (tests, notebooks) gets the shipped cut rather than ``None``.
+    """
+    from soccer_vision.detection.field_filter import (
+        DEFAULT_BOTTOM_FRAC, DEFAULT_SIDE_FRAC, DEFAULT_TOP_FRAC,
+    )
+
+    # `is None`, not `or`: --field-top 0 is a legitimate "cut nothing".
+    def _pick(name, default):
+        value = getattr(args, name, None)
+        return default if value is None else float(value)
+
+    return {
+        "top_frac": _pick("field_top", DEFAULT_TOP_FRAC),
+        "side_frac": _pick("field_sides", DEFAULT_SIDE_FRAC),
+        "bottom_frac": _pick("field_bottom", DEFAULT_BOTTOM_FRAC),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="soccer-vision",
@@ -53,6 +104,7 @@ def main():
         help="Action-detection engine(s) to run: rules (default) / learned / vlm. "
              "Overrides the config; engines without a runtime/checkpoint are skipped.",
     )
+    _add_field_filter_args(p_process)
     p_process.add_argument(
         "--broadcast", action="store_true",
         help="Crop wide/zoomed-out footage into a steadied, followed 16:9 view "
@@ -127,6 +179,12 @@ def main():
     p_enroll.add_argument("--manifest", metavar="JSON",
                           help="tracklets.json for --from-tracklets, if it isn't "
                                "beside the export")
+    p_enroll.add_argument("--serve-url", metavar="BASE",
+                          help="Write absolute clip URLs against this base (e.g. "
+                               "http://localhost:8000) instead of Label Studio's "
+                               "/data/local-files/ endpoint — serve the folder with "
+                               "`python -m http.server` when local-files serving "
+                               "won't cooperate")
     p_enroll.add_argument("--window", type=float, default=20.0, metavar="SEC",
                           help="Seconds per tracklet window (default: 20)")
     p_enroll.add_argument("--n-windows", type=int, default=8,
@@ -146,6 +204,7 @@ def main():
                           help="Keep only detections whose feet are below this fraction of "
                                "frame height — the way to exclude a neighbouring pitch's "
                                "match at a multi-field complex (e.g. 0.45; 0 keeps all)")
+    _add_field_filter_args(p_enroll)
     p_enroll.add_argument("--min-motion", type=float, default=6.0,
                           help="Drop detections that barely move between frames half a "
                                "second apart — the seated crowd and the next pitch over "

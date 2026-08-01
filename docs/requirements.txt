@@ -1,0 +1,7 @@
+# Docs-only dependencies. The package itself is deliberately *not* installed on
+# Read the Docs: these pages are prose and screenshots, not autodoc, so pulling
+# torch + rfdetr in would cost ~10 minutes a build and buy nothing.
+sphinx>=8.1
+furo>=2024.8
+myst-parser>=4.0
+sphinx-copybutton>=0.5

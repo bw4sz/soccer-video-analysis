@@ -206,3 +206,26 @@ def test_falls_back_to_clustering_without_turf():
     assert set(clf.team_names().values()) == {"black", "white"}
     assert clf.predict(1) == "black"
     assert clf.predict(3) == "white"
+
+
+def test_retained_crops_are_globally_capped():
+    """Crops feed a 16-tile preview; keeping 4 per track OOM-killed a full match.
+
+    The cost has to be independent of video length — RF-DETR fragments this
+    footage into hundreds of lanes a minute, so a per-track budget grows without
+    limit (job 38313387, killed at 64 GB 18% into a 60-minute match).
+    """
+    import numpy as np
+
+    from soccer_vision.tracking.teams import TeamClassifier
+
+    clf = TeamClassifier(keep_crops=4, max_crops=10)
+    frame = np.full((200, 200, 3), 120, dtype=np.uint8)
+    for tid in range(50):
+        clf.add_sample(tid, frame, (10, 10, 40, 80))
+
+    retained = sum(len(c) for c in clf._crops.values())
+    assert retained <= 10
+    # Colour samples are cheap and still recorded for every track — capping the
+    # preview must not cost team assignment any data.
+    assert len(clf._samples) == 50

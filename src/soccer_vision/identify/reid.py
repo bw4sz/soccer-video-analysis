@@ -165,27 +165,51 @@ def embed_tracks(
     a track's span so a gallery entry covers the poses and lighting the player
     actually appeared in. Returns ``{track_id: (M, 512)}``, skipping tracks whose
     boxes were all too small to crop.
+
+    **The video is read once, in frame order**, not once per track. Tracks
+    overlap in time — a 60-min match fragments into ~17k lanes that between them
+    want ~164k crops off ~18k distinct frames — so cropping track-by-track means
+    seeking backwards through the file continually, at ~2.2 s a seek (see
+    :meth:`~soccer_vision.io.video.VideoReader.read_frames`). Planning the crops
+    per *frame* first turns that into a single forward pass: ~66 min for the
+    whole match instead of ~50 h.
     """
-    out: dict[int, np.ndarray] = {}
     items = [(t, s) for t, s in track_boxes.items() if track_ids is None or t in track_ids]
 
+    # frame -> [(track_id, bbox)], and how many frames each track still expects,
+    # so a track can be embedded and its crops released as soon as it's complete.
+    plan: dict[int, list] = {}
+    pending: dict[int, int] = {}
     for tid, samples in items:
         if not samples:
             continue
         step = max(1, len(samples) // max_samples_per_track)
-        crops = []
-        for frame_no, bbox in samples[::step][:max_samples_per_track]:
-            frame = reader.read_frame(int(frame_no))
-            if frame is None:
-                continue
+        chosen = samples[::step][:max_samples_per_track]
+        for frame_no, bbox in chosen:
+            plan.setdefault(int(frame_no), []).append((tid, bbox))
+        pending[tid] = len(chosen)
+
+    out: dict[int, np.ndarray] = {}
+    crops: dict[int, list] = {}
+    done = 0
+    for frame_no, frame in reader.read_frames(plan.keys()):
+        for tid, bbox in plan[frame_no]:
             crop = crop_player(frame, bbox)
             if crop is not None:
-                crops.append(crop)
-        if not crops:
-            continue
-        out[tid] = embedder.embed(crops)
-        if progress:
-            print(f"  track {tid}: {len(crops)} crops embedded")
+                crops.setdefault(tid, []).append(crop)
+            pending[tid] -= 1
+            if pending[tid] == 0:
+                taken = crops.pop(tid, None)
+                if taken:
+                    out[tid] = embedder.embed(taken)
+                done += 1
+                if progress and done % 500 == 0:
+                    print(f"  {done}/{len(pending)} tracks embedded", flush=True)
+
+    # Tracks whose frames all failed to decode never hit the flush above.
+    for tid, taken in crops.items():
+        if taken:
+            out[tid] = embedder.embed(taken)
 
     return out
 

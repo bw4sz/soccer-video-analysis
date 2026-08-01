@@ -16,6 +16,9 @@ runs/
 .pytest_cache/
 tests/results/
 
+# Built docs (Read the Docs builds them from source)
+docs/_build/
+
 # SoccerNet NDA password (secret — never commit)
 .soccernet_token
 

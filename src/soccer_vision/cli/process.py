@@ -17,6 +17,7 @@ def run_pipeline(args):
     from soccer_vision.broadcast.virtual_cam import BroadcastConfig, generate_broadcast_proxy
     from soccer_vision.clips.extract import extract_event_clips
     from soccer_vision.detection.ball import detect_ball_position
+    from soccer_vision.cli.main import field_filter_kwargs
     from soccer_vision.detection.field_filter import filter_spectators
     from soccer_vision.detection.rfdetr import ALL_PERSON_CLASS_IDS, RFDETRSoccerDetector
     from soccer_vision.events.associate import associate_events, stamp_event_positions
@@ -121,6 +122,11 @@ def run_pipeline(args):
     # Step 4: Player tracking
     print("\n[Step 4] Player tracking...")
     tracker = create_tracker(frame_rate=int(proxy_fps))
+    # Which slice of the frame counts as on-field. Printed because it silently
+    # decides whether a player near an edge ever gets a track id at all.
+    field_cut = field_filter_kwargs(args)
+    print(f"  On-field cut: top {field_cut['top_frac']:.0%}, "
+          f"sides {field_cut['side_frac']:.0%}, bottom {field_cut['bottom_frac']:.0%}")
     # Per-frame player positions for event→player association, and jersey-colour
     # samples for team assignment. Pixel space throughout: there is no field
     # registration (see soccer_vision.pitch for why), so everything downstream
@@ -138,7 +144,7 @@ def run_pipeline(args):
         person_dets = person_dets[person_mask]
 
         # Filter spectators: keep only field players
-        person_dets = filter_spectators(person_dets, frame.shape)
+        person_dets = filter_spectators(person_dets, frame.shape, **field_cut)
         detections = sv.Detections.merge([ball_dets, person_dets])
 
         tracked = track_detections(tracker, detections)
