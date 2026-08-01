@@ -1,0 +1,32 @@
+/* Minimal additions to Furo. Everything here earns its place by making a
+   screenshot or a table readable — no decoration. */
+
+/* Screenshots are the point of these pages, so give them an edge that works
+   on both the light and dark background rather than floating in the text. */
+article img {
+  border: 1px solid var(--color-background-border);
+  border-radius: 3px;
+  max-width: 100%;
+  height: auto;
+}
+
+/* Caption under a figure: smaller and quieter than body text, since it labels
+   the image rather than continuing the argument. */
+article figcaption,
+article .caption-text {
+  font-size: 0.85rem;
+  color: var(--color-foreground-secondary);
+}
+
+/* Tables here are mostly small comparisons; left-align so numbers in adjacent
+   columns line up against their headers. */
+article table.docutils th,
+article table.docutils td {
+  text-align: left;
+  padding: 0.4rem 0.7rem;
+}
+
+/* Furo's default heading rhythm is generous for pages this short. */
+article h2 {
+  margin-top: 2rem;
+}
