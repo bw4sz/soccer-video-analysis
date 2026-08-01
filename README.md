@@ -66,6 +66,9 @@ runs/{match_id}/
 | [Training new detectors](docs/training-detectors.md) | fine-tuning, action models |
 | [Contributing](docs/contributing.md) | dev loop, where help is useful |
 
+📺 **[Video walkthrough: the re-ID workflow in Label Studio](https://www.loom.com/share/b935605f592a4ebf8a60b4f71dedc57d)**
+— labelling a squad once so clips can be cut per player.
+
 Build them locally:
 
 ```bash

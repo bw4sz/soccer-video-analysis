@@ -76,10 +76,17 @@ soccer-vision enroll --run runs/match_001 \
 ```
 
 :::{note}
-**Video walkthrough of step 2 — <!-- LOOM: paste the share link here -->coming
-soon.** Setting up the Label Studio project and labelling a first window is the
-part that's fiddly to describe in text.
+**Video walkthrough:
+[the re-ID workflow in Label Studio](https://www.loom.com/share/b935605f592a4ebf8a60b4f71dedc57d).**
+Setting up the Label Studio project and labelling a first window is the part
+that's fiddly to describe in text.
 :::
+
+<div class="video-embed">
+  <iframe src="https://www.loom.com/embed/b935605f592a4ebf8a60b4f71dedc57d"
+          title="Re-ID workflow using Label Studio"
+          frameborder="0" allowfullscreen></iframe>
+</div>
 
 There is a second route that needs **no processed run at all** — it detects on
 a couple of dozen exported frames and nothing else, so a squad you have never
