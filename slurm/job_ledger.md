@@ -1032,3 +1032,47 @@ Expectation: a few percent removed, not a big cut. Longest offscreen run in the
 Result: PENDING
 Next: if yield is again ~2%, the lever is a dead-time criterion beyond ball-only
   (low ball speed, player-cluster/idle cues) — 36258658's open question, still open.
+
+## 38506138 — 2026-08-01 — slurm/submit_identify.sh (U14G full match, re-id, full-match gallery)
+Why: Test whether the second tracklet batch (12 windows across the whole match,
+  620 crops, all 11 players) lifts re-id *recall* on a real query, after the
+  leave-one-frame-out A/B showed it does not lift *accuracy* (42% -> 37-43%,
+  all inside noise; `slurm/ab_gallery_fullmatch.py`). Accuracy and recall are
+  different questions: the 2026-07-31 run named only 803/17,395 lanes (4.6%)
+  off a 47-exemplar gallery skewed to players with 1-2 exemplars
+  (Izabelle 254 lanes off 2 exemplars, Morrighan 6 lanes off 8). The new
+  gallery is balanced at 64/player, which should at minimum redistribute.
+  Target queries: reels for Morgan Lobey and Morrighan "Mo" Wright.
+Gallery: galleries/saints-u14g.fullmatch.npz (620 exemplars, 12 players)
+  = labelled frames + smoke-clip tracklets + full-match tracklets.
+  Prior jerseys.json preserved at runs/saints-u14g-full/jerseys.ocr-backup.json.
+Note: first ran this interactively on the session's 1-CPU allocation — killed at
+  56 min with no output (node load average 187). This job is the right shape:
+  8 CPUs + 1 GPU, 4m28s last time.
+Result: **COMPLETED (exit 0, ~4 min, node c0602a-s14)** — named
+  **1920/17,395 lanes (11.0%)**, up from 803 (4.6%). Balancing the gallery did
+  move recall, but it **moved the attractor rather than removing it**: before,
+  Izabelle 254 / Eveleigh 152 / Lainey 150 off 2, 8 and 1 exemplars; now
+  **Gia Olson alone takes 979 of 1920 (51%)** off 64. Whichever player the
+  gallery over-represents in the *matched* direction wins the mean-of-top-3,
+  and equalising exemplar counts did not stop that.
+  For the two target players it went the wrong way for one:
+  **Morgan 49 -> 29 lanes, Morrighan 6 -> 14.**
+Reels (both built, `--halo`, on-ball fallback since no detector events exist):
+  runs/saints-u14g-full/reel_morgan_fullmatch.mp4  — 4 spans, 38.2 s
+    (16:51, 16:55, 17:39 [6.8 s], 56:16), 29 lanes / 357 track-frames
+  runs/saints-u14g-full/reel_mo_fullmatch.mp4      — 2 spans, 16.4 s
+    (38:39, 59:48), 14 lanes / 529 track-frames
+  Inspected zoomed crops at every span. All four Morgan spans are black-kit
+  Saints players in genuine on-ball moments on the pitch. Of Mo's two, 38:39 is
+  a genuine contested touch; **59:48 puts the halo on a figure up among the
+  far-touchline spectators** — the old middle-70% field rectangle was in force
+  for this run (processed 2026-07-30), and no horizontal cut separates far-side
+  players from the crowd behind them (issue #21).
+  **Identity itself is unverifiable by eye** — teammates in one kit at ~50x21 px
+  — which is exactly issue #25. Kit and on-ball-ness check out; "is this Morgan
+  or Mo" does not, and cannot be settled from these clips.
+Next: do NOT read the recall gain as the gallery working. Fix the scoring
+  (issue #25, top-3-mean punishes players whose good exemplars are few) before
+  spending another annotation round. `jerseys.ocr-backup.json` holds the
+  2026-07-31 naming if a comparison is needed.
