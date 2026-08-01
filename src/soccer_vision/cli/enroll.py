@@ -264,6 +264,13 @@ def _enroll_from_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
     print(f"Source: tracklets — {summary['lanes_named']} lanes named across "
           f"{summary['windows']} windows ({summary['lanes_skipped']} skipped as "
           f"not-ours/unsure), {len(boxes)} crops")
+    if summary["matched_by_filename"]:
+        print(f"  ({summary['matched_by_filename']} tasks matched on clip filename — "
+              "the export lost its 'window' field, which Label Studio drops unless "
+              "the tasks JSON itself was imported)")
+    if summary["unmatched_tasks"]:
+        print(f"  WARNING: {summary['unmatched_tasks']} task(s) matched no window in "
+              f"{manifest_path} — is this the manifest that produced these clips?")
     for name, n in sorted(summary["per_player"].items(), key=lambda kv: -kv[1]):
         print(f"  {roster_full_name(profile, name):<24} {n} crops")
     if not boxes:

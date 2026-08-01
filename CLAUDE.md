@@ -528,6 +528,36 @@ match and across matches — which needs a full `process` run, not a smoke clip.
 Keep `galleries/*.frames-only.npz` and `*.with-tracklets.npz` side by side and
 A/B any new batch on a fixed held-out set before adopting it.
 
+**Measured: spreading windows across the full match didn't help either
+(2026-08-01).** That "one sun angle" diagnosis was tested and **does not hold**.
+A second batch (`runs/saints-u14g-full/tracklets`, 12 windows spread evenly over
+the whole 60-minute match, 11 annotated, 31 lanes named) enrolled **620 crops
+covering all 11 players** — the diverse, balanced batch the first one wasn't.
+Same 45-odd held-out frame crops, `slurm/ab_gallery_fullmatch.py`:
+
+| gallery | exemplars | rank-1 (no abstention) | precision @0.05 |
+|---|---|---|---|
+| A: frames only | 47 | 19/45 (42%) | 5/6 |
+| B: + smoke-clip tracklets | 307 | 17/45 (38%) | 4/6 |
+| C: + full-match tracklets | 667 | 17/46 (37%) | 4/8 |
+| D: + both | 927 | 20/46 (43%) | 4/4 |
+
+**A 20x bigger gallery bought nothing.** Every row sits inside noise of 42%, so
+the ceiling is a property of the embedding, not of how much or how varied the
+tracklet data is. (Denominators differ by one because Riley, with a single frame
+exemplar, only becomes testable once tracklets put her in the gallery.)
+
+**The crops are not the problem — that was checked.** Gallery built from the
+full-match tracklets *alone* names a frame query 16/46 (35%) against 9% chance,
+and a tracklet crop matched against other tracklet frames scores 106/120 (88%,
+inflated by same-lane near-duplicates but conclusive that boxes, labels and
+frame-seeking are all aligned).
+
+So **do not spend more annotation effort on tracklets hoping to cross 42%.** The
+open lead is still the scoring — the correct player is in the top-3 exemplars 62%
+of the time — and, failing that, a backbone fine-tuned on these players rather
+than one trained to separate people by clothing. Filed as issue #25.
+
 **Nicknames.** A roster entry may carry `nickname: Mo`, which replaces the first
 name in the annotator's label list — a squad clicking "Mo" twenty times a frame
 shouldn't have to translate "Morrighan" each time. Enrolment maps it back to the

@@ -24,6 +24,7 @@ longer clips).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -351,15 +352,31 @@ def boxes_from_tracklet_export(
     named ``NOT_OURS`` / ``UNSURE`` contribute nothing, and a lane is sampled at
     most ``max_samples_per_lane`` times — 129 near-identical crops from one lane
     would swamp a gallery built from a dozen views.
+
+    **Matching a task back to its window.** The task's ``window`` field is the
+    first choice, but Label Studio only preserves it when the tasks JSON itself
+    was imported: point a project at the clips directory instead (or re-import
+    after retargeting) and every field but ``video`` is dropped, so a fully
+    labelled export matches nothing. The clip filename carries the window number
+    too, so fall back to that — and count what still fails to match, because
+    silently returning zero crops from a good export reads as "the labelling
+    didn't take" and costs an annotation round to rediscover.
     """
     windows = {w["window"]: w for w in manifest["windows"]}
     out: list[tuple[int, np.ndarray, str]] = []
-    summary = {"lanes_named": 0, "lanes_skipped": 0, "windows": 0, "per_player": {}}
+    summary = {"lanes_named": 0, "lanes_skipped": 0, "windows": 0, "per_player": {},
+               "unmatched_tasks": 0, "matched_by_filename": 0}
 
     for task in export:
         data = task.get("data", {}) or {}
-        window = windows.get(data.get("window"))
+        key = data.get("window")
+        if key not in windows:
+            key = _window_of_clip(data.get("video"))
+            if key in windows:
+                summary["matched_by_filename"] += 1
+        window = windows.get(key)
         if window is None:
+            summary["unmatched_tasks"] += 1
             continue
         lane_of = {lane["slot"]: lane for lane in window["lanes"]}
         seen_window = False
@@ -390,6 +407,17 @@ def boxes_from_tracklet_export(
                 seen_window = True
         summary["windows"] += int(seen_window)
     return out, summary
+
+
+def _window_of_clip(video) -> int | None:
+    """``".../window_004_986s.mp4"`` → 4, whatever routing prefix precedes it.
+
+    The URL is rewritten freely — ``/data/local-files/?d=…`` against one document
+    root or another, or a plain HTTP base — but the basename is written once by
+    ``enroll`` and survives all of it.
+    """
+    m = re.search(r"window_(\d+)_", str(video or ""))
+    return int(m.group(1)) if m else None
 
 
 def _slot_of(from_name) -> int | None:
