@@ -1076,3 +1076,57 @@ Next: do NOT read the recall gain as the gallery working. Fix the scoring
   (issue #25, top-3-mean punishes players whose good exemplars are few) before
   spending another annotation round. `jerseys.ocr-backup.json` holds the
   2026-07-31 naming if a comparison is needed.
+
+## Track linking post-pass — 2026-08-01
+Why: Reels were being cut off mid-touch. Diagnosis: `tracking/bytetrack.py` is a
+  27-line wrapper with no linking, no interpolation and no re-id across lanes, so
+  a lane that dies is gone. **1,184 lanes (6.8%) die with the ball inside the
+  90px on-ball radius** — including Morgan's last span, whose lane ended with the
+  ball 35px from her feet.
+**Not an association-threshold problem.** Consecutive-sample IoU is 0.65 median
+  and only 1.6% of steps fall under supervision's accept floor (which is on IoU
+  *distance*, so it accepts IoU >= 0.2, not >= 0.8). Players move 6px per 0.2s
+  step against a 29px median box width. Lanes die to detector dropout and
+  occlusion, not motion — hence a post-pass, not tracker surgery.
+New: `soccer_vision/tracking/link.py` + `soccer-vision link-tracks`
+  (`cli/link.py`). Gate is kit -> motion-extrapolated position (both directions)
+  -> speed plausibility, optional appearance veto. Writes tracks.linked.json,
+  jerseys.linked.json and track_links.json (every link with its evidence).
+Measured, `slurm/eval_track_linking.py` — cut 400 long lanes in half, delete
+  samples to simulate dropout, drop both halves back among all 17k real lanes,
+  see if the head finds its own tail:
+  | strategy | 0.2s gap | 1.0s | 2.0s |
+  |---|---|---|---|
+  | naive position, greedy | 96% | 91% | 87% |
+  | motion, forward only | 98% | 94% | 88% |
+  | **motion, bidirectional** | **98%** | **94%** | **89%** |
+  | motion, bidir + hungarian | 94% | 91% | 86% |
+  **Hungarian is worse, don't retry it** — minimum-cost assignment also maximises
+  how many pairs match, and not linking costs nothing here, so it reaches for
+  marginal pairs greedy correctly declines. Needs a priced "no-link" column.
+**The important failure, and the fix for it.** Cut a 3.0s hole and use a 3.0s
+  gate so the true tail is just out of reach: the linker made **150 wrong links
+  on 400 heads instead of abstaining**. Precision figures above are all
+  conditioned on the right answer being in range; real lanes often have no
+  continuation at all. An appearance veto fixes this (`slurm/eval_link_appearance.py`):
+  | threshold | wrong links kept (truth absent) | right links kept (truth present) |
+  |---|---|---|
+  | none | 150 | 381 |
+  | 0.70 | **23 (-85%)** | **340 (-11%)** |
+  | 0.80 | 7 | 213 |
+  Note this asks a much easier question than issue #25 — "same person 0.6s later,
+  same pose and light" rather than "which of 11 teammates" — on the same backbone.
+Yield at 3.0s/250px, geometry only, on runs/saints-u14g-full:
+  17,395 lanes -> 10,208 chains; median 1.4s -> 1.8s, max 63s -> 105s;
+  names propagated 1,920 -> 3,608 lanes, 39 chains with conflicting names.
+  **Morgan 4 -> 9 spans (71s -> 201s), Mo 2 -> 13 spans (106s -> 230s).**
+  Reels: runs/saints-u14g-full-linked/reel_{morgan,mo}_linked.mp4 (80s / 115s).
+Bug found en route: `propagate_names` set `name` but not `jersey`, and
+  `identify.resolve.tracks_for` matches on the number — so every inherited lane
+  was invisible to `--player`. Fixed; that alone was Morgan 5 -> 9 spans.
+## 38514244 — FAILED (OUT_OF_MEMORY, 1m57s, 35GB) — appearance pass held all
+  ~35k lane-edge crops for one `embed` call. Now chunked at 2048; resubmitted.
+## 38514469 — 2026-08-01 — slurm/submit_link_tracks.sh (appearance veto, 96GB)
+Result: PENDING
+Next: A/B geometry-only vs appearance-gated links on the same reels; then decide
+  the shipped default (currently --max-gap 1.5 --max-dist 150, conservative).

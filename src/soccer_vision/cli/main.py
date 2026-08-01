@@ -148,6 +148,35 @@ def main():
     p_identify.add_argument("--min-reid-margin", type=float, default=None,
                             help="Min similarity lead over the runner-up player (default: 0.05)")
 
+    # link-tracks
+    p_link = subparsers.add_parser(
+        "link-tracks",
+        help="Rejoin fragmented ByteTrack lanes across detector dropouts")
+    p_link.add_argument("--run", required=True, help="Run directory path")
+    p_link.add_argument("--max-gap", type=float, default=1.5,
+                        help="Max dropout to bridge, seconds (default: 1.5)")
+    p_link.add_argument("--max-dist", type=float, default=150.0,
+                        help="Max px between where motion says the player should "
+                             "be and where the next lane starts (default: 150)")
+    p_link.add_argument("--no-motion", action="store_true",
+                        help="Compare raw positions instead of extrapolating "
+                             "velocity across the gap (worse; for comparison)")
+    p_link.add_argument("--ignore-kit", action="store_true",
+                        help="Allow links between different kit colours")
+    p_link.add_argument("--appearance", action="store_true",
+                        help="Also require the two lane edges to look like the "
+                             "same person. Needs the proxy video; rejects 85%% of "
+                             "the links made when no true continuation exists")
+    p_link.add_argument("--min-appearance", type=float, default=0.70,
+                        help="Cosine similarity floor for --appearance (default: 0.70)")
+    p_link.add_argument("--no-interpolate", action="store_true",
+                        help="Don't fill positions across bridged gaps")
+    p_link.add_argument("--in-place", action="store_true",
+                        help="Overwrite tracks.json/jerseys.json so reel and "
+                             "extract use the linked ones (originals kept as "
+                             "*.unlinked.json)")
+    p_link.add_argument("--device", default=None, help="PyTorch device for --appearance")
+
     # enroll
     p_enroll = subparsers.add_parser(
         "enroll", help="Bank a team's appearances into a re-id gallery (carried between matches)"
@@ -396,6 +425,9 @@ def main():
     elif args.command == "identify":
         from soccer_vision.cli.identify import run_identify
         run_identify(args)
+    elif args.command == "link-tracks":
+        from soccer_vision.cli.link import run_link_tracks
+        run_link_tracks(args)
     elif args.command == "enroll":
         from soccer_vision.cli.enroll import run_enroll
         run_enroll(args)
