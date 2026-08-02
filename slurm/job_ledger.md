@@ -1210,9 +1210,49 @@ Not passing --conflict-exclude-jersey 1 deliberately: `1` is PARSeq's
 Cost: unlike the ~4 min re-id-only job, OCR is a per-crop unbatched PARSeq forward
   over up to 40 samples of all 17,395 lanes (named ones to check, abstained ones
   to name). Hours; 12h requested.
-Result: PENDING
-Next: if the veto lands, re-run link-tracks (name propagation now refuses a number
-  a lane's own reads contradict) and rebuild the Morgan / Mo reels.
+Result: **COMPLETED (exit 0, 16 min — not the hours budgeted; PARSeq on 17,395
+  lanes shares the one decode pass re-id already makes).**
+
+**The veto works, and it says re-id is wrong far more often than it is right.**
+  Of 1,920 re-id-named lanes: **38 disproved, 12 corroborated, 1,870 no legible
+  evidence**. So of the 50 lanes a shirt could be read on, **76% were wrong** —
+  worse than the 58% the leave-one-frame-out ceiling predicts, though 50 lanes is
+  a small and biased sample (a legible number means a bigger, better-lit crop,
+  which favours re-id too).
+Over-claimed: Gia Olson 19 of her 979 lanes, Leire 11 of 273, Iris 5 of 312,
+  Morgan 2 of 29, Quinn 1 of 74.
+**Similarity does partly separate them** (agree mean 0.776 vs conflict 0.678,
+  gap +0.098) — but conflict sits exactly on the no-evidence mean (0.679), so the
+  disproved lanes are *typical* re-id matches, not outliers. n=12 on the agree
+  side; suggestive, not a mandate to raise `--min-similarity`.
+Numbers the shirts actually read: #2 x11, #1 x10, #20 x7, #23 x3, #4/#30/#21 x2.
+  Mostly numbers **nobody on our roster wears** — consistent with the gallery
+  pulling opponents onto our squad (the kit gate, not the embedding, is the fix).
+
+**The unasked-for half of this run is the problem: OCR *naming*.** `reid+ocr`
+  also names the lanes re-id abstained on, at the ordinary vote bar (3 reads /
+  0.5 share / 0.15 margin, **no per-read confidence floor**) — and it named
+  **2,589 lanes**, distributed **#1 x982, #4 x380, #2 x299, #7 x204, #3 x134,
+  #6 x81, #5 x60**. A distribution that decays with digit size is the
+  hallucination signature, and nobody on our roster wears 1. 875 of those lanes
+  landed on a roster number, taking **Morgan 29 -> 407 lanes**. Rebuilding a reel
+  off this jerseys.json would pull in 380 unvetted "#4" lanes.
+  (Caveat: an opposing keeper wearing 1 is plausible, and 982 lanes is within
+  one player's lane count on a 17k-lane run. Counts alone cannot separate the two
+  — that needs eyes on a contact sheet of the #1 lanes.)
+Artefacts: baseline `runs/saints-u14g-full/jerseys.reid-only.json`;
+  cross-checked `runs/saints-u14g-full/jerseys.json`;
+  report `slurm/compare_identify_crosscheck.py` (re-runnable on the pair).
+Next, in order:
+  1. Contact-sheet the #1 and #4 OCR-named lanes before trusting any of them; if
+     they are hallucinations, the naming path needs the veto's read-confidence
+     floor (and probably a roster-number restriction) before `reid+ocr` is safe
+     as a default. Until then prefer `--method reid` + the veto.
+  2. Re-run this on `runs/saints-u14g-full-30fps` (job 38546990). 97% of lanes
+     had no legible read *at 5 fps sampling*; at native rate the same lanes carry
+     2.4x the seconds, so the veto should get far more than 50 lanes to rule on.
+  3. Then link-tracks (propagation now refuses a number a lane's own reads
+     contradict) and rebuild the Morgan / Mo reels.
 
 ## 2026-08-02 — no job — continuity/identity audit of `runs/saints-u14g-full`
 All numbers below are recomputed from saved artefacts (no GPU), so they are
