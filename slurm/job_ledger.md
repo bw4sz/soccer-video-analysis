@@ -1029,9 +1029,28 @@ Shipped: `SAMPLE_FPS` default in `slurm/submit_trim_empty.sh` changed 2 -> 30, w
 Expectation: a few percent removed, not a big cut. Longest offscreen run in the
   whole U14G match is 6.8 s (at 28:03); no untrimmed halftime, same as the 16B clip.
   This job buys *correctness* of the few cuts, not volume.
-Result: PENDING
-Next: if yield is again ~2%, the lever is a dead-time criterion beyond ball-only
-  (low ball speed, player-cluster/idle cues) — 36258658's open question, still open.
+Result: COMPLETED (exit 0, **1h42m** — track build 1h29m, re-encode 14m; under the
+  2.3h estimate). Ball visible 89504/108972 = **82.1%**, unchanged from the 5 fps
+  track's 82.0% — detection quality is sample-rate independent, the whole effect is
+  in the gate. Kalman rejection **33.1% -> 22.1%**. Trim: **9 spans, 67.2s (2%)**,
+  all `stationary`, longest 19.4s at 10:12.6, rest 4-9s set-piece setups. No
+  offscreen run anywhere in the match qualifies.
+  **The 5 fps extra cuts were artefacts, confirmed**: only 8/2022 raw detections
+  inside the 9 cuts move >40px frame-to-frame (0.4%), against 17% of removed time
+  at 5 fps. Mechanism, which is the opposite of what the totals suggest: per-sample
+  stationary went *up* (18.9% -> 20.6%) while spans went *down* (16 -> 9), because
+  at 5 fps misread samples **bridged** short stationary runs into single runs long
+  enough to clear the 5s threshold. Denser sampling breaks the bridges.
+Reviewed: yield is 2%, matching 36258658's 2% on a different camera and venue. Two
+  matches now agree the **ball-only dead-time definition is the binding constraint**
+  — not detection, not sample rate. This job bought correctness of the few cuts, not
+  volume; `trim-empty` is not yet a useful way to shorten a match for a parent.
+Artifacts: `slurm/logs/trim_empty_20260801_123941/` — `.trimmed.mp4` (2.02 GB,
+  59.5 min), `.trim.json` (EDL), `.ball_track.json` (25 MB, 30 fps, smoothed — the
+  best ball track we have for this match, worth reusing).
+Next: the lever is a dead-time criterion beyond ball-only (low ball speed,
+  player-cluster/idle cues) — 36258658's open question, now measured twice and
+  still open. Good candidate for a community issue.
 
 ## 38506138 — 2026-08-01 — slurm/submit_identify.sh (U14G full match, re-id, full-match gallery)
 Why: Test whether the second tracklet batch (12 windows across the whole match,
