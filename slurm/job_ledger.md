@@ -1181,3 +1181,35 @@ Three complaints, all reproduced, two fixed.
 Reels (geometry-only links, merged windows, player-wide halo):
   runs/saints-u14g-full-linked/reel_morgan_v2.mp4 (6 clips, 91s)
   runs/saints-u14g-full-linked/reel_mo_v2.mp4     (5 clips, 109s)
+
+## 38526407 — 2026-08-01 — slurm/submit_identify_crosscheck.sh (U14G full match,
+  reid+ocr with the jersey veto)
+Why: User reports players in the reels that "don't match", and can see the number
+  in the footage at moments inside those tracks. Job 38506138 named 1,920/17,395
+  lanes with `--method reid` alone — **no OCR ran at all**, so every legible
+  number in the match was ignored — and **Gia Olson alone took 979 of the 1,920
+  (51%)**, which is an attractor, not a squad. This run re-identifies with
+  `reid+ocr` and the new cross-check: re-id still names, and jersey OCR is allowed
+  only to *veto* a name its reads disprove (4+ reads at >=0.7 confidence holding
+  >=0.75 of the weight). Vetoed lanes drop to unknown rather than taking the read
+  number.
+Baseline preserved at runs/saints-u14g-full/jerseys.reid-only.json;
+  slurm/compare_identify_crosscheck.py diffs the two at the end of the job.
+Three things it should settle:
+  1. What fraction of re-id's named lanes are provably wrong (over the subset
+     carrying a legible number — a biased sample: those lanes are bigger and
+     better lit, which favours re-id too).
+  2. Whether re-id similarity separates the disproved lanes from the corroborated
+     ones. If it does not, no `--min-reid-margin` setting substitutes for reading
+     the shirt.
+  3. Which numbers the disproved shirts actually carry — a number nobody on the
+     roster wears means the gallery is matching *opponents* onto our squad.
+Not passing --conflict-exclude-jersey 1 deliberately: `1` is PARSeq's
+  hallucination class here, but the 0.7 per-read floor may already suppress it,
+  and the report breaks vetoes down by number read. Measure, then decide.
+Cost: unlike the ~4 min re-id-only job, OCR is a per-crop unbatched PARSeq forward
+  over up to 40 samples of all 17,395 lanes (named ones to check, abstained ones
+  to name). Hours; 12h requested.
+Result: PENDING
+Next: if the veto lands, re-run link-tracks (name propagation now refuses a number
+  a lane's own reads contradict) and rebuild the Morgan / Mo reels.
