@@ -1328,3 +1328,60 @@ Cost: 13m for 3 min at 30 fps = ~4.3x realtime, so ~4.3 h for a 60-min match
   at conf 0.2. Take the ball from the first pass.
 Next: fix the double forward, then re-`process` the U14G full match at 30 fps and
   re-run the identity/linking measurements against it.
+
+## 38546990 — 2026-08-02 — slurm/submit_reprocess_u14g_30fps.sh (U14G full match
+  at native rate, single-forward detector) — COMPLETED, stage 1 335s + stage 2
+  6415s (1h47m)
+Why: every identity number we have was measured on the 5 fps run. Job 38526638
+  showed native rate is a large structural win for lane length, which is what
+  gates identity; the duplicate RF-DETR forward is what made it unaffordable.
+
+**Stage 1 — the refactor is provably a no-op.** Same 3-min clip, `predict_split`
+  vs the two calls it replaces: **2,169 lanes and 5,394 ball samples identical**,
+  in **335 s against 780 s (2.33x)**. Stage 2 was gated on that equality.
+
+**Stage 2 — full match, 5 fps vs 30 fps:**
+
+| | 5 fps | 30 fps |
+|---|---|---|
+| lanes | 17,395 | 44,350 |
+| tracked player-seconds | 48,665 | **97,008** |
+| share of tracked time in lanes >=10 s | 28.4% | **56.0%** |
+| longest lane | 63.5 s | **227.7 s** |
+| black-kit on-ball spans | 745 | 555 |
+| black-kit on-ball **seconds** | 1,065 | **2,584** |
+
+The on-ball line is the one that matters: **fewer spans but 2.4x the seconds**,
+  because lanes no longer die mid-touch and split one action into several. The
+  span *count* falling is the fix working, not a regression.
+
+Wall time came in at 1h47m against the ~2.2 h predicted; it would have been ~4.3 h
+  with the duplicate forward.
+
+**Link sweep on the new run** (chains only — `identify` has not been run against
+  it, and the kit gate is landing separately):
+
+| gap/dist | links | chains (30 fps) | chains (5 fps) |
+|---|---|---|---|
+| 2.0/150 | 18,743 | 25,607 | 12,457 |
+| 5.0/250 | 23,736 | 20,614 | 9,401 |
+| 12.0/400 | 26,528 | 17,822 | 7,340 |
+
+More chains than the 5 fps run had raw lanes, because native rate also mints
+  ~1,262-per-3-min sub-second fragments. Those hold 4% of tracked time, so they
+  cost little, but they mean **chain count is a useless success metric here** —
+  judge on named on-ball seconds, and on the ground truth below.
+
+## 2026-08-02 — no job — linking ground truth staged for annotation
+`runs/saints-u14g-full-30fps/link_gt/` — 3 Label Studio tasks, one 20 s stretch at
+  **34:40** (2080 s), **all 31 black-kit lanes** ringed across 3 passes of 12/12/7.
+Chosen for density (38 s of black on-ball play in 20 s) and for fragmentation
+  (median lane 4.1 s, so there are real continuations to recover); 3 pages is a
+  labelling load someone will actually finish.
+Scored by `slurm/eval_link_ground_truth.py`, smoke-tested both directions on
+  synthetic fixtures — recovers true continuations as the gate loosens, and
+  catches a decoy-player wrong link and names both players.
+Purpose: the 7% -> 48% named-coverage gain from loosening the gate (recorded
+  above) was measured **without ground truth**, and its conflict count undercounts
+  errors badly because only 4% of lanes were named. Do not adopt a loose gate
+  until this is scored.
