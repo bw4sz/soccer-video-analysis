@@ -76,7 +76,7 @@ def track_duration_s(track: dict) -> float:
 def build_ball_track(
     video_path: str | Path,
     *,
-    sample_fps: float = 15.0,
+    sample_fps: float = 30.0,
     detector=None,
     conf_threshold: float = 0.2,
     device: str | None = None,
@@ -132,7 +132,11 @@ def build_ball_track(
         track = {
             "video": str(video_path),
             "fps": native_fps,
-            "sample_fps": sample_fps,
+            # The rate actually sampled, not the one requested — `interval` is an
+            # integer frame step, so asking for 30 on 29.97 fps footage gives
+            # 29.97. Downstream gates reason about px-per-sample, so the real
+            # rate is what they need.
+            "sample_fps": native_fps / interval,
             "width": reader.width,
             "height": reader.height,
             "total_frames": reader.total_frames,

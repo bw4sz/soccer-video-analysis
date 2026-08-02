@@ -99,6 +99,11 @@ def main():
     p_process.add_argument("--out-dir", default="runs", help="Output base directory")
     p_process.add_argument("--match-id", help="Match identifier (auto-generated if omitted)")
     p_process.add_argument("--device", default=None, help="PyTorch device: cpu / cuda / mps")
+    p_process.add_argument("--detect-fps", type=float, default=None,
+                           help="Detection rate (default: every frame). Lowering this "
+                                "is a speed knob with a measured accuracy cost — it "
+                                "breaks ByteTrack association and thins ball_track.json "
+                                "(job 38504772). Config: detector.detect_fps")
     p_process.add_argument(
         "--action-engine", nargs="+", metavar="ENGINE",
         help="Action-detection engine(s) to run: rules (default) / learned / vlm. "
@@ -320,10 +325,12 @@ def main():
     p_trim.add_argument("--out", help="Output video path (default: <video>.trimmed.mp4)")
     p_trim.add_argument("--edl", help="Edit-decision-list JSON path (default: <video>.trim.json)")
     p_trim.add_argument("--save-track", help="Where to save an auto-built ball track")
-    p_trim.add_argument("--sample-fps", type=float, default=15.0,
-                        help="Sample rate when building a track (default: 15; the "
-                             "flickery ball detector needs a dense track for Kalman "
-                             "smoothing to lock on — lower rates over-reject)")
+    p_trim.add_argument("--sample-fps", type=float, default=30.0,
+                        help="Sample rate when building a track (default: 30, native. "
+                             "The flickery ball detector needs a dense track for Kalman "
+                             "smoothing to lock on: 22.1%% of detections rejected at 30 "
+                             "fps against 33.1%% at 5, and a 5 fps plan cut live play "
+                             "17%% of the time — job 38504772)")
     p_trim.add_argument("--min-dead", type=float, default=5.0,
                         help="Min seconds of dead time before a span is cut (default: 5)")
     p_trim.add_argument("--stationary-px", type=float, default=40.0,
