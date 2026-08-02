@@ -1130,3 +1130,35 @@ Bug found en route: `propagate_names` set `name` but not `jersey`, and
 Result: PENDING
 Next: A/B geometry-only vs appearance-gated links on the same reels; then decide
   the shipped default (currently --max-gap 1.5 --max-dist 150, conservative).
+
+## Reel windows + halo coverage — 2026-08-01 (user feedback on Morgan's reel)
+Three complaints, all reproduced, two fixed.
+**1. Duplicate/overlapping clips — fixed.** Spans at 1011.0s and 1015.4s produced
+  windows 1006.0-1013.9 and 1010.4-1018.1: 3.5s of the same footage twice, from
+  the same lane. `_merge_windows` now joins windows within `--merge-gap` (2s) into
+  one longer clip carrying the union of track_ids. Morgan 9 spans -> 6 clips,
+  Mo 13 -> 5.
+**2. Padding — increased and exposed.** `reel` gained `--pre` (6.0, was a
+  hardcoded 5.0) and `--post` (5.0, was `pre/2` = 2.5).
+**3. Halo "delayed" — diagnosed, partly fixed.** It is NOT drawing in a wrong
+  place: verified at the touch it sits correctly on the black-kit player. It is
+  *absent* until the lane starts, and the lane usually starts after the clip
+  does — chain 4892 begins 4.8s into a 7.9s clip, so the halo was missing for
+  60% of it and then appeared. `halo_samples_for` now takes `extra_ids` and
+  halos the whole *player* rather than only the lanes the touch happened on.
+  Coverage: Mo 73% -> 75% of clip frames, Morgan 63% -> 58% (the longer padding
+  outruns her lane). Remaining gap is the 3% naming problem, not the halo:
+  during Morgan's lead-in the nearest candidate is a black lane ending 0.8s
+  earlier 215px away that the linker declined, and an 85px one that is white kit.
+## 38514469 — appearance-gated linking, COMPLETED (2m15s, 7.4GB)
+**The appearance veto costs most of the yield on real data.** Links 7,187 ->
+  2,853 (-60%), Morgan 9 -> 4 spans, Mo 13 -> 3. Conflicts fell 39 -> 11, but
+  per-link conflict rate only 0.54% -> 0.39% — so it is rejecting genuine links,
+  not mainly wrong ones. **Why the benchmark over-promised:** it simulated
+  dropouts of <=1.0s, where the same player looks nearly identical; real links
+  span up to 3.0s, over which pose and lighting change enough to fall under a
+  0.70 cosine floor. Next: make the threshold gap-dependent (or ~0.6 at long
+  gaps) and re-measure, rather than accepting either extreme.
+Reels (geometry-only links, merged windows, player-wide halo):
+  runs/saints-u14g-full-linked/reel_morgan_v2.mp4 (6 clips, 91s)
+  runs/saints-u14g-full-linked/reel_mo_v2.mp4     (5 clips, 109s)

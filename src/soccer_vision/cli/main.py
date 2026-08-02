@@ -289,6 +289,14 @@ def main():
 
     # reel
     p_reel = subparsers.add_parser("reel", help="Build highlight reel")
+    p_reel.add_argument("--pre", type=float, default=6.0,
+                        help="Seconds of lead-in before each touch (default: 6)")
+    p_reel.add_argument("--post", type=float, default=5.0,
+                        help="Seconds kept after each touch (default: 5)")
+    p_reel.add_argument("--merge-gap", type=float, default=2.0,
+                        help="Join clips whose windows are within this many "
+                             "seconds, so one passage of play is one clip "
+                             "instead of several overlapping ones (default: 2)")
     p_reel.add_argument("--run", required=True)
     p_reel.add_argument("--event", help="Filter by event label")
     p_reel.add_argument("--team", help="Filter by team colour (e.g. blue)")
