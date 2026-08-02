@@ -1213,3 +1213,118 @@ Cost: unlike the ~4 min re-id-only job, OCR is a per-crop unbatched PARSeq forwa
 Result: PENDING
 Next: if the veto lands, re-run link-tracks (name propagation now refuses a number
   a lane's own reads contradict) and rebuild the Morgan / Mo reels.
+
+## 2026-08-02 — no job — continuity/identity audit of `runs/saints-u14g-full`
+All numbers below are recomputed from saved artefacts (no GPU), so they are
+reproducible from the run dir alone.
+
+**The pipeline is not losing the football; it is losing the *name*.** On-ball
+spans over every black-kit lane: **745 spans, 1,065 s of our team on the ball**.
+Spans on black lanes that carry an identity: **70 spans, 75 s — 9.4%**. So ~91%
+of the touches a parent watches are detected, tracked, kit-classified and
+span-detected, then discarded for want of a label. Detection/geometry is not the
+bottleneck; identity coverage is.
+
+**Re-id names the *opposing* team 4.4x more often than ours.** Of 1,920 re-id
+names: 1,163 landed on **white**-kit lanes, 296 on black, 461 unstamped. Named
+rate is **18.0% of white lanes vs 4.1% of black** — and Saints U14G are the black
+kit; the gallery contains no white player. Gia Olson alone took 691 white lanes.
+*Why the margin test inverts out of gallery:* for a black-kit query every
+exemplar is close and similar, so the winner's lead collapses and the matcher
+abstains; for a white-kit query every exemplar is far and roughly random, and
+random distances have spread, so someone wins by >0.05 easily. **Abstention
+protects the enrolled team and actively fails on strangers.**
+
+**`min_similarity` is not inert — that claim was measured on the wrong
+population.** CLAUDE.md records 0.0 and 0.7 giving the same answer, from
+`validate_reid.py` on a run where every lane *was* the enrolled squad. Sweeping
+it against kit on the full match:
+
+| min_similarity | black named kept | white (wrong) kept |
+|---|---|---|
+| 0.00 (current) | 296 | 1163 |
+| 0.70 | 235 | 219 |
+| 0.75 | 151 | **14** |
+| 0.80 | 76 | 0 |
+
+0.75 removes 99% of the opponent contamination for half the true names.
+Kit-gating removes 100% of it for none. Do both; gate first.
+
+**The link gate is tuned as a tracking fix, not as the identity-propagation fix
+it actually is.** Sweeping `LinkConfig` on the same run, measuring named
+black-kit on-ball spans (the quantity the user sees):
+
+| max_gap_s / max_dist_px | chains | named lanes | conflicts | named spans | seconds |
+|---|---|---|---|---|---|
+| no linking | 17395 | 296 | — | 70 | 75 |
+| 2.0 / 150 (current) | 12457 | 274 | 18 | 136 | 155 |
+| 5.0 / 250 | 9401 | 258 | 45 | 237 | 302 |
+| 12.0 / 400 | 7340 | 246 | 95 | **418** | **513** |
+
+7% → 48% of the available 1,065 s. Conflicts per link stay under 1% (0.36% →
+0.94%), but read that as weak: only 296 lanes are named, so most chains carry
+≤1 name and conflicts undercount errors badly. The direction is unambiguous; the
+right endpoint is not, and geometry-only greedy linking is the wrong tool at a
+12 s gap — see the GTA reference below.
+
+**Scoring is not the 42% ceiling — four more candidates ruled out.** Leave-one-
+frame-out on the same 45-46 held-out U14G crops, same embeddings, scoring rule
+varied (`scratchpad/reid_scoring.py`):
+
+| rule | frames-only gallery | + 620 tracklet crops |
+|---|---|---|
+| current (mean of top-3) | 19/45 (42%) | 17/46 (37%) |
+| top-1 | 19/45 | 17/46 |
+| player centroid | 18/45 | 22/46 (48%) |
+| hubness centering | 16/45 | 21/46 |
+| closed-set Hungarian per frame | 19/45 | 17/46 |
+| k-reciprocal re-ranking (Zhong CVPR'17) | 20/45 (44%) | 17/46 |
+| k-reciprocal + Hungarian | 21/45 (47%) | 17/46 |
+
+Everything sits inside noise of 42%. Hubness correction and re-ranking, the two
+standard re-ID fixes, buy nothing here — consistent with issue #25. The backbone
+is the constraint.
+
+Follow-up: job 38526638 (fps ablation), and the recommendations written up for
+the user on 2026-08-02.
+
+## 38526638 — 2026-08-02 — slurm/submit_fps_ablation.sh (30 vs 5 fps, U14G 3-min
+  clip, current code both sides) — COMPLETED, 15m00s
+Why: `runs/saints-u14g-full` was detected at 5 fps and every identity number we
+  have comes off it. Commit 9e7acfd moved the default to native rate and told
+  ByteTrack the truth about it, but nothing measured what that buys.
+  `runs/u14g-smoke-rfdetr` is not a valid control — it predates the field-cut
+  change (a3bb247), which alone moves detections/frame ~36%.
+
+Result: **detecting every frame is a large structural win, and the lane-count
+  statistic hides it completely.**
+
+| | 30 fps | 5 fps |
+|---|---|---|
+| lanes | 2,169 | 1,226 |
+| median lane | 0.30 s | 1.00 s |
+| **tracked player-seconds** | **4,576** | **2,616** |
+| share of tracked time in lanes >=5 s | **70.8%** | 48.2% |
+| share in lanes >=10 s | **52.7%** | 20.9% |
+| longest lane | **114.1 s** | 27.6 s |
+| detections/frame carrying a track id | 25.4 | 14.5 |
+| ball visible | 86.0% | 84.5% |
+
+Read the median as a trap: 30 fps creates 1,262 sub-half-second lanes that hold
+  4% of tracked time and drag the median down. Coverage-weighted, 30 fps puts
+  **75% more of the match under a track at all** and **2.5x more of that time in
+  lanes long enough to name**. A 114 s lane is a player; at 5 fps the longest
+  fragment in three minutes was 27.6 s.
+
+This partly *substitutes* for aggressive linking: the 12 s / 400 px link gate
+  exists to rebuild continuity 5 fps destroyed. Re-measure the link sweep on a
+  30 fps run before adopting a loose gate — the right threshold there is almost
+  certainly tighter than the one the 5 fps data argued for.
+
+Cost: 13m for 3 min at 30 fps = ~4.3x realtime, so ~4.3 h for a 60-min match
+  (5 fps was 2m, ~0.7 h). **Halve that for free**: `process` runs the full
+  RF-DETR forward twice per frame — once at conf 0.3 for players (which already
+  splits `ball_dets` out of the result) and again inside `detect_ball_position`
+  at conf 0.2. Take the ball from the first pass.
+Next: fix the double forward, then re-`process` the U14G full match at 30 fps and
+  re-run the identity/linking measurements against it.

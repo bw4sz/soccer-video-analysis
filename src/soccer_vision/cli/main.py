@@ -152,6 +152,15 @@ def main():
                             help="Min gallery cosine similarity to name a track (default: 0.5)")
     p_identify.add_argument("--min-reid-margin", type=float, default=None,
                             help="Min similarity lead over the runner-up player (default: 0.05)")
+    p_identify.add_argument("--team",
+                            help="Only name lanes on this kit colour (e.g. black) — the "
+                                 "gallery holds one squad and cannot say 'none of the "
+                                 "above', so without this it names opponents and referees "
+                                 "after your own players. Uses the `teams` block of "
+                                 "tracks.json")
+    p_identify.add_argument("--team-strict", action="store_true",
+                            help="With --team, also hold back lanes that got no kit "
+                                 "colour at all (precision over reach)")
     p_identify.add_argument("--no-ocr-verify", action="store_true",
                             help="Skip cross-checking re-id names against jersey OCR "
                                  "(reid+ocr only; saves the OCR pass over named tracks)")

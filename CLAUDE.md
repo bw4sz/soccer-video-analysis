@@ -587,6 +587,50 @@ reid:
 `jerseys.json` gains `source` (`"reid"` / `"ocr"` / `null`) and `similarity` per
 track, so which route named a clip is always auditable.
 
+### Always pass `--team` on a match with two squads on screen
+
+**A gallery holds one squad and has no way to answer "none of the above."**
+`match_track` scores a crop against our eleven players *only*, so handed a
+referee, an opponent or someone on the next pitch it returns whichever of ours is
+nearest and the margin test sees an ordinary win. Measured on
+`runs/saints-u14g-full` (gallery: 620 black-kit crops of the Saints U14G squad),
+naming with no kit gate put **878 of 1595 names on the white kit against 256 on
+our own** — the opposing squad, the yellow-shirted officials, and players on the
+neighbouring pitch, all confidently named after somebody's daughter. Gia Olson
+alone took 511 white-kit lanes to 56 black. `runs/saints-u14g-full-linked/named_white_lanes.jpg`
+is a contact sheet of two dozen of them.
+
+Do not read this as a re-id accuracy problem. It is a **missing constraint**: the
+kit colour `process` already stamps into `tracks.json` settles it for free, and a
+lane in the opponent's colours cannot be one of our players whatever the
+embedding thinks.
+
+```bash
+soccer-vision identify --run runs/<match> --method reid \
+    --gallery galleries/saints-u14g.npz --profile <team>.yaml --team black
+```
+
+The gate runs **before any model does**, so the excluded lanes cost no re-id
+forward passes and no OCR either — it makes the step faster, not slower. Excluded
+lanes stay in `jerseys.json` carrying `"excluded": "kit"` (and every lane now
+records its `"kit"`), so a lane that went unnamed can always be explained.
+
+**A missing kit is not the wrong kit.** About a third of lanes get no colour at
+all — too short, or never seen against grass — and by default those stay
+eligible, the same abstention logic the OCR veto uses. `--team-strict` holds them
+back too, trading reach for precision (on the U14G run: 7064 eligible lanes
+against 3396 strict).
+
+`reid: team: black` works in the profile, but think before setting it — **the kit
+is a property of the match, not of the squad.** Saints run black away and white
+home, so a profile-level default is wrong half the season. Prefer the flag.
+
+Two things this gate cannot do, both still open. It can't separate our players
+from the **neighbouring pitch** when that pitch's squad happens to wear our
+colours (issue #21 — no horizontal cut separates them either). And the kit
+classifier itself errs: a few plainly black-kit lanes are stamped `white` and are
+now excluded, which is the recall this buys its precision with.
+
 ### OCR vetoes re-id, it never renames it
 
 `reid+ocr` also sends the tracks re-id *did* name to OCR, to **cross-check**

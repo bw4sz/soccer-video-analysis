@@ -18,6 +18,11 @@ proof the re-id match is wrong, and that track is dropped back to unknown
 (:mod:`soccer_vision.identify.crosscheck`; ``--no-ocr-verify`` skips this pass
 and the OCR it costs).
 
+``--team <kit>`` restricts naming to one squad's kit colour, and on a match with
+two teams on screen you almost always want it: a gallery holds one squad and
+cannot answer "none of the above", so an opponent or a referee gets named after
+whichever of our players is nearest. See :mod:`soccer_vision.identify.team_gate`.
+
 Runs as its own opt-in step (not part of `process`) over an already-processed
 run, and writes ``jerseys.json``: per track, the matched name and/or voted
 jersey, plus the ``source`` that named it so a clip's selection can be audited.
@@ -66,15 +71,21 @@ def run_identify(args):
 
     results: dict[int, dict] = {tid: _blank() for tid in track_boxes}
 
+    # The kit gate runs before any model does: a lane in the opponent's colours
+    # can't be one of ours, so naming it is wrong and embedding it is wasted.
+    kit = args.team or reid_cfg.get("team")
+    eligible = _apply_team_gate(track_boxes, tracks_path, kit, args.team_strict, results)
+    namable = {t: b for t, b in track_boxes.items() if t in eligible}
+
     if method.startswith("reid"):
-        _run_reid(args, track_boxes, proxy_path, gallery_path, reid_cfg, profile, results)
+        _run_reid(args, namable, proxy_path, gallery_path, reid_cfg, profile, results)
 
     verify = method == "reid+ocr" and not args.no_ocr_verify
 
     if method.endswith("ocr"):
         # OCR sees the tracks the gallery couldn't name, plus — when verifying —
         # the ones it did, to check their numbers against the reads.
-        todo = {t: b for t, b in track_boxes.items()
+        todo = {t: b for t, b in namable.items()
                 if method == "ocr" or verify or results[t]["name"] is None}
         _run_ocr(args, todo, proxy_path, profile, results,
                  verify=verify, reid_cfg=reid_cfg)
@@ -85,6 +96,8 @@ def run_identify(args):
         "gallery": str(gallery_path) if gallery_path else None,
         "model": args.model or "parseq",
         "ocr_verify": verify,
+        "team": kit,
+        "team_strict": bool(kit and args.team_strict),
         "tracks": {str(t): r for t, r in results.items()},
     }
     jerseys_path.write_text(json.dumps(doc, indent=2))
@@ -106,7 +119,45 @@ def run_identify(args):
 def _blank() -> dict:
     return {"jersey": None, "name": None, "source": None, "confidence": 0.0,
             "n_obs": 0, "legible_frac": 0.0, "similarity": None,
-            "crosscheck": None, "conflict": None}
+            "crosscheck": None, "conflict": None, "kit": None, "excluded": None}
+
+
+def _apply_team_gate(track_boxes, tracks_path: Path, kit, strict: bool,
+                     results: dict[int, dict]) -> set[int]:
+    """Mark every lane with its kit and hold back the ones wearing another team's.
+
+    Excluded lanes stay in ``jerseys.json`` carrying ``excluded: "kit"`` rather
+    than being dropped, so a lane that went unnamed can always be explained.
+    """
+    from soccer_vision.identify.team_gate import EXCLUDED_KIT, gate_by_kit
+
+    stamped = json.loads(tracks_path.read_text()).get("teams") or {}
+    track_kits = {int(k): v for k, v in stamped.items()}
+    for tid in track_boxes:
+        results[tid]["kit"] = track_kits.get(tid)
+
+    if not kit:
+        if track_kits:
+            print("Team gate: off — pass --team <kit> to stop the gallery naming "
+                  "opponents and referees after your own players")
+        return set(track_boxes)
+
+    if not stamped:
+        print(f"Team gate: --team {kit} was asked for but tracks.json has no `teams` "
+              f"block — nothing to gate on, naming every lane. Re-run `process`, or "
+              f"`enroll --team {kit}` to classify kits first.")
+        return set(track_boxes)
+
+    eligible, counts = gate_by_kit(track_boxes, track_kits, kit, strict=strict)
+    for tid in track_boxes:
+        if tid not in eligible:
+            results[tid]["excluded"] = EXCLUDED_KIT
+
+    held = "held back too" if strict else "still eligible"
+    print(f"Team gate: naming the {kit} kit only — {counts['ours']} lanes ours, "
+          f"{counts['other']} on another kit (excluded), "
+          f"{counts['unassigned']} with no kit assigned ({held})")
+    return eligible
 
 
 def _resolve_gallery(flag, reid_cfg: dict, run_dir: Path) -> Path | None:

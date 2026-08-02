@@ -16,10 +16,10 @@ def run_pipeline(args):
 
     from soccer_vision.broadcast.virtual_cam import BroadcastConfig, generate_broadcast_proxy
     from soccer_vision.clips.extract import extract_event_clips
-    from soccer_vision.detection.ball import detect_ball_position
+    from soccer_vision.detection.ball import ball_position_from
     from soccer_vision.cli.main import field_filter_kwargs
     from soccer_vision.detection.field_filter import filter_spectators
-    from soccer_vision.detection.rfdetr import ALL_PERSON_CLASS_IDS, RFDETRSoccerDetector
+    from soccer_vision.detection.rfdetr import RFDETRSoccerDetector
     from soccer_vision.events.associate import associate_events, stamp_event_positions
     from soccer_vision.events.phases import classify_phase
     from soccer_vision.events.sources import ActionContext, active_detectors, run_detectors
@@ -91,9 +91,15 @@ def run_pipeline(args):
     # default 0.3). Overhead cameras may need lower (e.g. 0.15) to recover
     # small players.
     conf_threshold = config.get("detector", {}).get("conf_threshold", 0.3)
+    # The ball is small and dim enough to want a looser floor than a player;
+    # 0.2 is the default `detect_ball_position` has always used. Both classes
+    # come out of one forward now (see `predict_split`), so the two thresholds
+    # cost nothing extra.
+    BALL_CONF_THRESHOLD = config.get("detector", {}).get("ball_conf_threshold", 0.2)
     player_detector = ball_detector  # Use RF-DETR for both
     player_detector.conf_threshold = conf_threshold
-    print(f"  Detector: RF-DETR (conf_threshold: {conf_threshold})")
+    print(f"  Detector: RF-DETR (conf_threshold: {conf_threshold}, "
+          f"ball: {BALL_CONF_THRESHOLD})")
     if getattr(args, "broadcast", False):
         print("\n[Step 2] Generating broadcast proxy...")
         generate_broadcast_proxy(
@@ -164,22 +170,30 @@ def run_pipeline(args):
     team_clf = TeamClassifier()
 
     for fn, frame in proxy_reader.sample_frames(detect_interval):
-        # Detect players and ball
-        person_dets = player_detector.predict(frame)
-
-        # RF-DETR returns mixed detections; separate ball from people by class_id
-        person_mask = np.isin(person_dets.class_id, list(ALL_PERSON_CLASS_IDS))
-        ball_dets = person_dets[~person_mask]
-        person_dets = person_dets[person_mask]
+        # People and ball out of ONE forward pass. This used to be two — a
+        # `predict()` at the player threshold plus a `detect_ball_position()`
+        # that ran the whole model again at the looser ball threshold — which
+        # doubled the detection cost of every run for nothing (job 38526638).
+        person_dets, ball_dets = player_detector.predict_split(
+            frame, player_conf=conf_threshold, ball_conf=BALL_CONF_THRESHOLD
+        )
 
         # Filter spectators: keep only field players
         person_dets = filter_spectators(person_dets, frame.shape, **field_cut)
-        detections = sv.Detections.merge([ball_dets, person_dets])
+        # The tracker sees the ball only at the *player* threshold. Feeding it
+        # the looser ball detections would mint extra ball lanes in tracks.json,
+        # which is a behaviour change, not a speedup — the ball track below is
+        # where the looser threshold belongs.
+        tracked_ball = (
+            ball_dets[ball_dets.confidence >= conf_threshold]
+            if len(ball_dets) else ball_dets
+        )
+        detections = sv.Detections.merge([tracked_ball, person_dets])
 
         tracked = track_detections(tracker, detections)
 
         # Ball
-        ball = detect_ball_position(frame, ball_detector)
+        ball = ball_position_from(ball_dets)
         # Record every sampled frame (visible or not) for the persisted ball
         # track. Kept separate from `ball_positions`, which the action engines
         # consume and which only carries frames where the ball was found.
