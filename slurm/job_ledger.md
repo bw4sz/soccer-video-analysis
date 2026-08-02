@@ -1465,3 +1465,26 @@ Baseline preserved at runs/saints-u14g-full/jerseys.pre-teamgate.json;
 Cost: 16 min ungated; the gate skips ~3,100 of 17,395 lanes, so expect less. 4h
   requested.
 Result: PENDING
+
+## 2026-08-02 — no SLURM job: individual-player tracking audit (interactive)
+
+**Why.** The Morgan reel got worse and longer (8.7 min) with a halo that jumped
+between players and rang empty grass. Asked to stop using ball proximity and
+prove smooth individual tracking first.
+
+**Result.**
+- Not a tracking failure. `identify` names lanes with no one-player-one-place
+  constraint: "Morgan Lobey" = 275 lanes on `runs/saints-u14g-full`, 2-4 alive at
+  once on 18.4% of the frames she is named at. `reel --player` haloed the union.
+  Filed as issue #28; `docs/images/concurrent_morgan_lanes.jpg` is the figure.
+- Tracking at 30 fps is good: from hand-verified lane 14185 of
+  `runs/saints-u14g-full-30fps`, motion linking alone follows her 23.5 s across a
+  handoff at 96% fill, 6.6 px jump. Verified crop by crop.
+  `runs/saints-u14g-full-30fps/follow_morgan_1057s.mp4`.
+- Shipped `merge_duplicate_lanes` (dedup before linking) and the one-lane-at-a-time
+  halo. Median chain span over 1,003 seed lanes 37.3 s -> 39.7 s, bad handoffs flat.
+- Loose link gates are verified garbage (white player -> referee -> Morgan) and
+  the referee is stamped `black` by the kit classifier — issue #29.
+- **Blocked:** no ground truth for link precision.
+  `runs/saints-u14g-full-30fps/link_gt/` is staged and unannotated;
+  `slurm/eval_link_ground_truth.py` is waiting on it.
