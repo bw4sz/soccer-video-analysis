@@ -205,6 +205,11 @@ def main():
                              "velocity across the gap (worse; for comparison)")
     p_link.add_argument("--ignore-kit", action="store_true",
                         help="Allow links between different kit colours")
+    p_link.add_argument("--no-dedup", action="store_true",
+                        help="Skip the pre-pass that collapses lanes which are one "
+                             "player under two ids. That pattern ends 9.9%% of lanes "
+                             "over 10s and linking cannot fix it, because the two "
+                             "lanes overlap in time")
     p_link.add_argument("--appearance", action="store_true",
                         help="Also require the two lane edges to look like the "
                              "same person. Needs the proxy video; rejects 85%% of "

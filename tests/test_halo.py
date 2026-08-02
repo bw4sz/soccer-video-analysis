@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from soccer_vision.cli.extract import _load_halo
-from soccer_vision.clips.extract import extract_event_clips
+from soccer_vision.clips.extract import extract_event_clips, halo_samples_for
 from soccer_vision.clips.halo import (
     interpolate_bbox,
     load_track_boxes,
@@ -123,21 +123,63 @@ def test_extract_event_clips_halo_renders_matching_track(tmp_path, monkeypatch):
 
 
 def test_load_halo_disabled_returns_none(tmp_path):
-    assert _load_halo(tmp_path, None) == (None, None, 0)
+    assert _load_halo(tmp_path, None) == (None, None, 0, 30.0)
 
 
 def test_load_halo_missing_tracks_warns_and_disables(tmp_path, capsys):
     got = _load_halo(tmp_path, "ellipse")
-    assert got == (None, None, 0)
+    assert got == (None, None, 0, 30.0)
     assert "missing" in capsys.readouterr().out
 
 
 def test_load_halo_reads_boxes_and_gap(tmp_path):
     (tmp_path / "tracks.json").write_text(json.dumps({
         "sample_interval": 6,
+        "fps": 29.97,
         "tracks": {"3": [{"frame": 0, "bbox": [1, 2, 3, 4]}]},
     }))
-    boxes, style, max_gap = _load_halo(tmp_path, "circle")
+    boxes, style, max_gap, fps = _load_halo(tmp_path, "circle")
     assert style == "circle"
     assert max_gap == 24  # sample_interval * 4
+    assert fps == 29.97   # the halo needs it to price a lane handoff in seconds
     assert set(boxes) == {3}
+
+
+# --- one halo, one player -------------------------------------------------
+#
+# `identify` names lanes independently with no one-player-one-place constraint,
+# so a player's name lands on lanes that are alive *at the same time* — 275
+# lanes for "Morgan Lobey" on the U14G run, up to six concurrent. Haloing that
+# union is what made the spotlight jump between players mid-clip.
+
+def _lane(start, x, n=5, step=6):
+    return [(start + i * step, [x, 0.0, x + 10.0, 20.0]) for i in range(n)]
+
+
+def test_halo_rejects_a_lane_alive_at_the_same_time_as_the_anchor():
+    """Two lanes of "one player" that overlap in time cannot both be her."""
+    tracks = {1: _lane(0, 100.0), 2: _lane(0, 900.0), }
+    samples = halo_samples_for({"track_ids": [1]}, tracks, extra_ids={2}, fps=30.0)
+    assert [s[1][0] for s in samples] == [100.0] * 5
+
+
+def test_halo_accepts_a_plausible_continuation():
+    """A lane that starts after the anchor ends, near where it ended, is her."""
+    tracks = {1: _lane(0, 100.0), 2: _lane(60, 120.0)}
+    samples = halo_samples_for({"track_ids": [1]}, tracks, extra_ids={2}, fps=30.0)
+    assert len(samples) == 10
+    assert samples[-1][0] == 60 + 4 * 6
+
+
+def test_halo_rejects_a_continuation_no_footballer_could_reach():
+    """Across the pitch in a third of a second is a naming error, not a sprint."""
+    tracks = {1: _lane(0, 100.0), 2: _lane(35, 1800.0)}
+    samples = halo_samples_for({"track_ids": [1]}, tracks, extra_ids={2}, fps=30.0)
+    assert [s[1][0] for s in samples] == [100.0] * 5
+
+
+def test_halo_without_an_anchor_starts_from_the_longest_lane():
+    """A plain --player clip has no event lane to anchor on; pick the real one."""
+    tracks = {1: _lane(0, 100.0, n=2), 2: _lane(0, 900.0, n=9)}
+    samples = halo_samples_for({}, tracks, extra_ids={1, 2}, fps=30.0)
+    assert [s[1][0] for s in samples] == [900.0] * 9

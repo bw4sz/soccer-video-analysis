@@ -12,40 +12,94 @@ from soccer_vision.io.video import ffmpeg_extract_clip
 _CLIP_NAME_RE = re.compile(r"^(?P<prefix>.+?)_(?P<index>\d+)_(?P<label>.+)_(?P<ts>\d+)s\.mp4$")
 
 
+#: A halo may cross a lane handoff only if a footballer could have covered the
+#: distance. ~64 px per metre at this venue and a 10 m/s sprint gives ~640 px/s;
+#: left generous because the camera pans, adding apparent speed.
+_HALO_MAX_SPEED_PX_S = 900.0
+
+
+def _lane_span(samples: list) -> tuple[int, int]:
+    return samples[0][0], samples[-1][0]
+
+
+def _foot(bbox) -> tuple[float, float]:
+    return (float(bbox[0] + bbox[2]) / 2.0, float(bbox[3]))
+
+
 def halo_samples_for(event: dict, halo_tracks: dict[int, list] | None,
-                     *, extra_ids: set[int] | None = None) -> list | None:
-    """Track boxes to halo for one event, or ``None``.
+                     *, extra_ids: set[int] | None = None,
+                     fps: float = 30.0) -> list | None:
+    """Track boxes to halo for one event, as **one lane at a time**, or ``None``.
 
     Uses ``track_ids`` when the event carries one (on-ball spans do — a player
     fragments across lanes mid-touch, and the spotlight has to follow through the
     handoff or it drops out partway through the clip), else the single
-    ``track_id``.
+    ``track_id``. Those are the anchors: the lanes the event itself happened on.
 
-    ``extra_ids`` adds every other lane belonging to the same player. A clip
-    opens several seconds before the touch, and the lane the touch happened on
-    typically starts *after* the clip does — on the U14G match a 7.9s clip whose
-    lane began 4.8s in, so the spotlight was missing for most of it and then
-    appeared, which reads as the halo lagging. The player is usually on screen
-    that whole time under a different lane id, so halo the player.
+    ``extra_ids`` offers every other lane ``identify`` gave the same name, so the
+    halo can cover the seconds of the clip before the touch, when the player is
+    usually on screen under a different lane id.
 
-    Lanes of one player are disjoint in time by construction, so the merged
-    samples read as one continuous track. Where two lanes do overlap (a wrong
-    link, or two lanes of the same player alive at once) the earlier sample wins
-    for that frame rather than the halo flickering between them.
+    **Those extras are candidates, not members**, and that distinction is the
+    whole of this function. The previous version merged them all and let the
+    earliest sample win each frame, on the stated assumption that lanes of one
+    player are disjoint in time. They are not: naming runs per lane with no
+    one-player-one-place constraint, so on ``runs/saints-u14g-full`` the name
+    "Morgan Lobey" lands on 275 lanes, **two to four of them alive at once on
+    18.4% of the frames she is named at**. All but one of those is another
+    person, and the merge picked between them arbitrarily, frame by frame —
+    which is precisely the halo that jumps between players and settles on empty
+    grass.
+
+    So a candidate joins only if it is a *possible continuation* of what has
+    already been accepted: no overlap in time with an accepted lane, and close
+    enough to one of them that a player could have run between the two in the
+    gap. Everything else is dropped. That cannot make the halo correct — the
+    name it started from may be wrong — but it does make it coherent: one person
+    at a time, moving the way a person moves.
     """
     if not halo_tracks:
         return None
 
-    ids = list(event.get("track_ids") or [])
+    ids = [int(t) for t in (event.get("track_ids") or [])]
     if not ids:
         tid = event.get("track_id")
-        ids = [tid] if tid is not None else []
-    if extra_ids:
-        ids = list(ids) + [t for t in extra_ids if t not in set(ids)]
+        ids = [int(tid)] if tid is not None else []
 
-    merged: list = []
+    accepted: list[list] = []
     for tid in ids:
-        merged.extend(halo_tracks.get(int(tid)) or [])
+        lane = halo_tracks.get(tid)
+        if lane:
+            accepted.append(sorted(lane, key=lambda s: s[0]))
+    if not accepted and not extra_ids:
+        return None
+
+    candidates = [
+        sorted(halo_tracks[int(t)], key=lambda s: s[0])
+        for t in (extra_ids or ())
+        if int(t) not in set(ids) and halo_tracks.get(int(t))
+    ]
+    if not accepted and candidates:
+        # No anchor lane (a plain --player clip): start from the longest
+        # candidate, which is the one most likely to be a real, followable lane.
+        candidates.sort(key=len, reverse=True)
+        accepted.append(candidates.pop(0))
+
+    # Grow greedily by nearest plausible continuation, re-checking every round:
+    # accepting a lane changes which others are reachable.
+    changed = True
+    while changed and candidates:
+        changed = False
+        best, best_cost = None, None
+        for i, cand in enumerate(candidates):
+            cost = _continuation_cost(cand, accepted, fps)
+            if cost is not None and (best_cost is None or cost < best_cost):
+                best, best_cost = i, cost
+        if best is not None:
+            accepted.append(candidates.pop(best))
+            changed = True
+
+    merged = [s for lane in accepted for s in lane]
     if not merged:
         return None
     merged.sort(key=lambda s: s[0])
@@ -55,6 +109,32 @@ def halo_samples_for(event: dict, halo_tracks: dict[int, list] | None,
             continue
         deduped.append(sample)
     return deduped
+
+
+def _continuation_cost(cand: list, accepted: list[list], fps: float) -> float | None:
+    """Implied px/s to reach ``cand`` from an accepted lane, or ``None`` if impossible.
+
+    ``None`` means the candidate overlaps an accepted lane in time (two lanes of
+    one player cannot both be live) or no accepted lane is near enough in space
+    to be the same person. Otherwise the cost is the slowest such crossing, so
+    the tightest continuation is taken first.
+    """
+    c0, c1 = _lane_span(cand)
+    best = None
+    for lane in accepted:
+        a0, a1 = _lane_span(lane)
+        if c0 <= a1 and a0 <= c1:
+            return None                      # overlapping in time
+        if c0 > a1:                          # candidate follows this lane
+            gap_frames, here, there = c0 - a1, lane[-1][1], cand[0][1]
+        else:                                # candidate precedes it
+            gap_frames, here, there = a0 - c1, lane[0][1], cand[-1][1]
+        gap_s = max(gap_frames / fps, 1e-3)
+        fh, ft = _foot(here), _foot(there)
+        speed = ((fh[0] - ft[0]) ** 2 + (fh[1] - ft[1]) ** 2) ** 0.5 / gap_s
+        if speed <= _HALO_MAX_SPEED_PX_S and (best is None or speed < best):
+            best = speed
+    return best
 
 
 def extract_event_clips(

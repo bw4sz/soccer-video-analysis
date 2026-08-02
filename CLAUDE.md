@@ -1091,6 +1091,107 @@ progressively longer gaps — the principled version of "link at 12 seconds" —
 its hockey dataset is a fixed whole-surface camera, i.e. our geometry rather than
 broadcast.
 
+### The jumping halo was never a tracking failure — measured 2026-08-02
+
+A player reel with a halo that hops between players, and rings empty grass, looks
+like bad tracking. It is not. **The tracking is good and the naming has no
+one-player-one-place constraint**, and everything downstream inherits that.
+
+**On `runs/saints-u14g-full`, "Morgan Lobey" is 275 lanes, and on 18.4% of the
+frames she is named at, two to four of them are alive at once** — 166 s of the
+899 s she is named across, peaking at four. There is one Morgan on the pitch, so
+every one of those frames has at least one other child labelled with her name.
+`reel --player` unioned all 275 lanes into one halo track and let the earliest
+sample win each frame — an arbitrary pick between them, re-made at every frame
+boundary. That is the jumping halo, and no clip-selection change fixes it.
+`runs/saints-u14g-full/six_morgans.jpg` is one frame with four, two of them on
+the *neighbouring pitch*.
+
+**One halo, one player** (`clips/extract.py::halo_samples_for`). Lanes named for
+a player are now *candidates*, not members: one joins only if it does not overlap
+in time with a lane already accepted, and is near enough that a footballer could
+have run there in the gap. This cannot make the halo *correct* — the name it
+started from may be wrong — but it makes it coherent, which is the difference
+between a viewer seeing one player and seeing a strobe.
+
+**The tracking underneath is genuinely good, at 30 fps.** Seeded from lane 14185
+of `runs/saints-u14g-full-30fps` (Morgan, hand-verified through the 5 fps run's
+lane 5188), motion linking alone follows her for **23.5 s across a lane handoff
+with 96% frame fill and a 6.6 px jump** — verified by eye, crop by crop, not by a
+metric. `scripts/follow_player.py` is the tool: seed a lane, chain it, render one
+continuous window with one halo and the lane id in the HUD.
+
+**Detect at 30 fps for this, not 5.** The same player at `sample_interval: 6`
+fragments where the 30 fps run holds her. The 30 fps run has 104 lanes over 60 s
+and a 228 s maximum; 52.7% of its tracked time sits in lanes over 10 s.
+
+### Dedup is a separate pass from linking, and has to run first
+
+`link_tracks` requires `b.first_frame > a.last_frame`, rejecting a successor born
+before its predecessor died as "overlapping in time". But that overlap is the
+**most common way a long lane ends**: the detector mints a duplicate box on a
+player it is already tracking, the box takes a fresh id, and the old lane dies a
+frame later. It ends **9.9% of lanes lasting over 10 s** (3.6% of lanes under
+1 s — the longer the lane, the more this is what kills it). It is the easiest
+link in the file, and the gate refused it by construction.
+
+`tracking/link.py::merge_duplicate_lanes` collapses those pairs, and
+`link-tracks` runs it first by default (`--no-dedup` to skip). Morgan's chain
+went 12.4 s → 23.5 s; median chain span over 1,003 seed lanes went 37.3 s →
+39.7 s with the bad-handoff rate flat (0.50 → 0.45).
+
+Three things that cost a run each to learn:
+
+- **Order matters, and folding the passes together is much worse than either.**
+  Unioning dedup pairs into an already-built link result put **5.6 bad handoffs
+  on the average chain, one chain collecting 705**, because a single bad merge
+  fuses two long chains. Dedup → link keeps it at 0.45.
+- **IoU is the wrong same-player test.** The real handoff that breaks Morgan's
+  chain pairs a 30x59 box with a 51x83 one — same player, IoU 0.40. IoU punishes
+  that scale disagreement twice. Centre distance in box heights (0.4) plus a
+  separate scale-ratio test catches it without loosening enough to swallow a
+  neighbour.
+- **The kit gate is not optional.** Geometry cannot separate one player under two
+  ids from two players in contact. Without it, 16.3% of merges joined lanes the
+  team classifier had put in *different kits*, one stitching a 62 s white-kit
+  lane onto Morgan's black one.
+
+### Do not loosen the link gate on a coverage number — it is verified garbage
+
+Taking the gate from 2 s/150 px to 4 s/250 px grows Morgan's chain from 23.5 s to
+66.4 s and the population median from 39.7 s to 45.9 s. **Both numbers are
+worthless.** Rendering the 66 s chain shows it is a white-kit player for 60 s,
+then the **yellow-shirted referee** for 15 s, then Morgan. At 6 s/300 px it also
+picks up a 62 s white lane.
+
+Two traps to know:
+
+- **Handoff jump distance is not a precision metric.** Wrong links happen
+  precisely when two people are *close together*, so a swap is a small jump. The
+  loose chains scored a 16.7 px median jump while being three different people.
+- **The referee is stamped `black`.** The team classifier judges lightness
+  against turf, and a yellow shirt in shadow reads darker than the grass — so
+  the kit gate that keeps our squad's lanes apart from the opposition's does
+  nothing against officials. This is the same failure that put officials in
+  `named_white_lanes.jpg`.
+
+**There is no ground truth for link precision, which is why this keeps
+happening.** `runs/saints-u14g-full-30fps/link_gt/` holds the `--all-lanes`
+tracklet windows staged for exactly this and they are **not annotated**;
+`slurm/eval_link_ground_truth.py` is waiting on them. Until they exist, judge a
+gate change by rendering the chain and looking at it — `scripts/follow_player.py`
+takes about a minute.
+
+**Camera pan is measured and is not the lever it looks like.** This Veo camera
+moves 1.35 px/frame at the median and 10.8 px/frame at p99 (~325 px/s), so every
+motion model in the stack — ByteTrack's Kalman, the linker's velocity
+extrapolation — is fitting camera motion as player motion. Compensating it is
+nearly free (the median box displacement per frame is a robust estimate; no
+homography, no optical flow, no decode pass — `slurm/eval_follow_leads.py`). But
+at the safe gate it buys **+0.8 s of median chain span**, and at loose gates its
+apparent gains are the garbage chains above. It is a prerequisite for a longer
+gate, not a win on its own.
+
 ---
 
 ## On-ball spans — the only working selection pathway today
