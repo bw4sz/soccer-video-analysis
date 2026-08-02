@@ -103,15 +103,16 @@ def run_identify(args):
     jerseys_path.write_text(json.dumps(doc, indent=2))
 
     named = sum(1 for r in results.values() if r["name"] or r["jersey"] is not None)
-    dropped = sum(1 for r in results.values() if r["conflict"])
+    flagged = sum(1 for r in results.values() if r["conflict"])
     by_source: dict[str, int] = {}
     for r in results.values():
         if r["source"]:
             by_source[r["source"]] = by_source.get(r["source"], 0) + 1
     breakdown = ", ".join(f"{k}: {v}" for k, v in sorted(by_source.items())) or "none"
     print(f"\nIdentified {named}/{len(results)} tracks ({breakdown}). Saved: {jerseys_path}")
-    if dropped:
-        print(f"{dropped} re-id match(es) dropped on a jersey conflict — see the "
+    if flagged:
+        verb = "dropped" if getattr(args, "drop_on_conflict", False) else "flagged"
+        print(f"{flagged} re-id match(es) {verb} on a jersey conflict — see the "
               f"`conflict` records in jerseys.json")
     print(f"Next: soccer-vision reel --run {run_dir} --player <name>   (or --number <N>)")
 
@@ -253,13 +254,15 @@ def _run_ocr(args, track_boxes, proxy_path, profile, results, *,
         reader.close()
 
     cc_kwargs = _crosscheck_kwargs(args, reid_cfg or {})
+    drop = bool(getattr(args, "drop_on_conflict", False)
+                or (reid_cfg or {}).get("drop_on_conflict"))
     checked: dict[str, int] = {}
 
     for tid, v in votes.items():
         r = results[tid]
         if r["source"] == "reid":
-            # Never rename a re-id match — only corroborate or veto it.
-            verdict = _apply_crosscheck(tid, r, v, cc_kwargs)
+            # Never rename a re-id match — only corroborate or flag it.
+            verdict = _apply_crosscheck(tid, r, v, cc_kwargs, drop=drop)
             checked[verdict] = checked.get(verdict, 0) + 1
             continue
         r.update(jersey=v.jersey, confidence=round(v.confidence, 3),
@@ -272,20 +275,23 @@ def _run_ocr(args, track_boxes, proxy_path, profile, results, *,
     if verify:
         from soccer_vision.identify.crosscheck import AGREE, CONFLICT, NO_EVIDENCE
 
+        fate = "dropped" if drop else "flagged, name kept"
         print(f"Cross-checked {sum(checked.values())} re-id matches: "
               f"{checked.get(AGREE, 0)} corroborated, "
-              f"{checked.get(CONFLICT, 0)} dropped on a jersey conflict, "
+              f"{checked.get(CONFLICT, 0)} contradicted ({fate}), "
               f"{checked.get(NO_EVIDENCE, 0)} no legible evidence "
               f"(min_reads={cc_kwargs['min_reads']}, "
               f"min_read_conf={cc_kwargs['min_read_conf']})")
 
 
-def _apply_crosscheck(tid, r, vote, cc_kwargs) -> str:
-    """Weigh a re-id-named track's jersey reads; drop the track if they contradict it.
+def _apply_crosscheck(tid, r, vote, cc_kwargs, *, drop: bool = False) -> str:
+    """Weigh a re-id-named track's jersey reads against the name it was given.
 
-    Returns the verdict. On a conflict the name and number are cleared — the
-    reads say who this *isn't*, not who it is — while ``similarity`` and the
-    ``conflict`` record stay so the drop is auditable in ``jerseys.json``.
+    Returns the verdict. A contradiction is always *recorded* — ``crosscheck``
+    plus a ``conflict`` block holding both sides' evidence — but the name only
+    goes away under ``drop``, because on the lanes we have hand-checked the
+    reader was the one that was wrong (see
+    ``runs/saints-u14g-full/identity_evidence/ground_truth.md``).
     """
     from soccer_vision.identify.crosscheck import crosscheck_jersey
 
@@ -302,8 +308,10 @@ def _apply_crosscheck(tid, r, vote, cc_kwargs) -> str:
     }
     print(f"  track {tid}: re-id said {r['name']} (#{r['jersey']}) but "
           f"{cc.n_obs} strong reads say #{cc.jersey} "
-          f"(conf {cc.confidence:.2f}) — dropped", flush=True)
-    r.update(jersey=None, name=None, source=None, confidence=0.0)
+          f"(conf {cc.confidence:.2f}) — {'dropped' if drop else 'flagged'}",
+          flush=True)
+    if drop:
+        r.update(jersey=None, name=None, source=None, confidence=0.0)
     return cc.verdict
 
 

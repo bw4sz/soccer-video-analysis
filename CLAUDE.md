@@ -712,12 +712,52 @@ that shirt says. So they are combined **asymmetrically** — re-id names, OCR is
 only ever allowed to *veto*:
 
 - **Conflict** (strong reads back a number that isn't the named player's) — the
-  track is **dropped back to unknown**, and `--player` / `--number` stop
-  selecting it. It is not relabelled to the read number: the evidence says who
-  this lane *isn't*, and the reader may be looking at an opponent or a number
-  belonging to nobody on the roster.
+  contradiction is **recorded, and the name is kept**. `--drop-on-conflict`
+  unnames the track instead. Read *Measured: the veto is 0 for 2* below before
+  turning that on.
 - **Agree / no evidence** — the re-id name stands. OCR abstaining is the normal
   case and means nothing.
+
+### Measured: the veto is 0 for 2 against hand-verified truth
+
+Drop-on-conflict shipped as the default on 2026-08-02 and was **switched off the
+same day**, on the first look at the actual pixels
+(`slurm/sample_identity_evidence.py`, sheets and labels in
+`runs/saints-u14g-full/identity_evidence/`). Both vetoes in the sample killed a
+*correct* re-id name on a high-similarity lane:
+
+| lane | truth (hand-verified) | re-id | OCR |
+|---|---|---|---|
+| 4623 | **Gia Olson**, #7 plainly on her back | Gia, 0.866 — right | `#4` x10, **best 0.98** — vetoed her |
+| 5188 | **Morgan Lobey**, facing camera, number never visible | Morgan, 0.859 — right | `#1` x14, best 0.80 — vetoed her |
+
+**A per-read confidence floor cannot fix this**: lane 4623's wrong `4` was read
+at 0.98, above every genuine read on the corroborated lanes. The blurred **7** on
+a running player *is* a confident 4 to a scene-text model, which also explains
+`#4 x380` across the match — Gia is the most-tracked player and #4 is Morgan.
+The cause is upstream: `is_legible` is a grayscale-variance gate, so an empty
+chest and a smeared shoulder both reach PARSeq, and PARSeq always returns
+something. This is the case for importing
+[jersey-number-pipeline](https://github.com/mkoshkina/jersey-number-pipeline)'s
+legibility classifier and pose-based torso localisation, not for tuning
+thresholds.
+
+**Where OCR is genuinely better than re-id**, from the same sheets: a sharp,
+back-on number reads 0.90–1.00 and re-id often has nothing (lane 6047, `#20`
+read 18 times at 1.00). **Agreement is the reliable signal, contradiction is
+not** — treat a `crosscheck: "agree"` lane as near-certain identity and prefer
+those lanes when building a reel.
+
+**Two constraints from that session that no model can be blamed for:**
+
+- **Guest players exist.** Lane 6047 is one of ours wearing #20 — on no roster,
+  in no gallery. So "that number isn't on our roster" is **not** an eligibility
+  test for whether a lane is our player, and a squad gallery will always abstain
+  on a guest.
+- **The keeper wears no number.** Izzy in goal (lane 13) is unreadable by
+  construction, in a kit that also differs from the outfield black the gallery
+  was enrolled from. Her identity has to come from re-id with the keeper kit
+  enrolled, or from pitch position — never from OCR.
 
 Every checked track records `crosscheck` (`"agree"` / `"conflict"` /
 `"no_evidence"`) in `jerseys.json`, and a dropped one keeps a `conflict` block

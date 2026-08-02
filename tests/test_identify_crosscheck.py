@@ -76,15 +76,26 @@ def reid_result(name="Morgan", jersey=21):
     return r
 
 
-def test_conflicting_track_is_dropped_but_stays_auditable():
+def test_conflict_is_recorded_but_the_name_survives_by_default():
+    # Hand-checked lanes put the reader on the wrong side of both conflicts, so a
+    # contradiction is evidence to review, not grounds to delete an identity.
     r = reid_result()
     verdict = _apply_crosscheck(41, r, vote_jersey(strong(7)), _crosscheck_kwargs(FakeArgs, {}))
 
     assert verdict == CONFLICT
-    assert r["name"] is None and r["jersey"] is None and r["source"] is None
+    assert r["name"] == "Morgan" and r["jersey"] == 21 and r["source"] == "reid"
     assert r["crosscheck"] == CONFLICT
     assert r["conflict"]["reid_name"] == "Morgan"
     assert r["conflict"]["reid_jersey"] == 21
+    assert r["conflict"]["ocr_jersey"] == 7
+
+
+def test_drop_on_conflict_unnames_the_track_but_stays_auditable():
+    r = reid_result()
+    _apply_crosscheck(41, r, vote_jersey(strong(7)),
+                      _crosscheck_kwargs(FakeArgs, {}), drop=True)
+
+    assert r["name"] is None and r["jersey"] is None and r["source"] is None
     assert r["conflict"]["ocr_jersey"] == 7
     # The re-id evidence is preserved so the drop can be reviewed.
     assert r["similarity"] == 0.71

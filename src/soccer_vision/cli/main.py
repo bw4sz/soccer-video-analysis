@@ -164,6 +164,11 @@ def main():
     p_identify.add_argument("--no-ocr-verify", action="store_true",
                             help="Skip cross-checking re-id names against jersey OCR "
                                  "(reid+ocr only; saves the OCR pass over named tracks)")
+    p_identify.add_argument("--drop-on-conflict", action="store_true",
+                            help="Unname a track whose jersey reads contradict its "
+                                 "re-id name. Off by default: on hand-checked lanes "
+                                 "the reads were the wrong side (see "
+                                 "identity_evidence/ground_truth.md)")
     p_identify.add_argument("--conflict-min-reads", type=int, default=None,
                             help="High-confidence reads needed to veto a re-id name "
                                  "(default: 4)")
