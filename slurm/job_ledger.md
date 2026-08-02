@@ -1488,3 +1488,36 @@ prove smooth individual tracking first.
 - **Blocked:** no ground truth for link precision.
   `runs/saints-u14g-full-30fps/link_gt/` is staged and unannotated;
   `slurm/eval_link_ground_truth.py` is waiting on it.
+
+## 38562933 — 2026-08-02 — slurm/submit_morgan_reel_30fps.sh (Morgan reel on the
+## 30 fps run, gated ball track, deduped + linked tracks, one-lane halo)
+
+**Why.** Every previous Morgan reel came off `runs/saints-u14g-full` (5 fps),
+which fragments her where the 30 fps run holds her. First `identify` ever run
+against `runs/saints-u14g-full-30fps`. Four changes since the 8.7-min reel:
+gated ball track, `merge_duplicate_lanes`, one-lane-at-a-time halo, and linking
+with name propagation.
+
+Ball track was gated offline first (`scripts/smooth_saved_ball_track.py`, run
+interactively): p95 frame step **635 px -> 46 px**, unphysical steps
+**20.5% -> 3.1%**, coverage 82.1% -> 78.5%, 24,768 detections gated. Original
+kept at `runs/saints-u14g-full-30fps/ball_track.raw.json`.
+
+Method is `reid` not `reid+ocr` — OCR naming on this footage is
+hallucination-shaped and `--player` resolves through re-id names anyway. Kit
+gate `--team black`: 29,456 of 44,350 lanes eligible (18,124 black + 11,332 no
+kit; 14,894 white excluded).
+
+**Prediction under test.** Whether the reel is watchable now, and what
+`slurm/report_name_concurrency.py` says before vs after linking.
+
+**Known going in: linking makes name concurrency worse.** On the 5 fps run,
+Morgan went 18.4% -> 28.4% of her named frames carrying 2+ lanes of her name,
+worst case 4 -> 6 concurrent, all players 17.9% -> 21.9%. `propagate_names`
+spreads a chain's name to every member with no one-player-one-place check, so
+it buys named coverage by putting her name on lanes concurrent with her own.
+Linking is still what makes the *halo* smooth; these are different axes and the
+job prints both.
+
+**Result:** _pending_
+
