@@ -199,3 +199,88 @@ def test_onscreen_guide_names_the_slots_a_clip_does_not_use():
     assert "Player 1: 0-9s" in guide
     assert "Player 2: 3-18s" in guide
     assert "Players 3, 4 are not in this clip" in guide
+
+
+# --- contiguous, complete labelling (for measuring track linking) -------------
+#
+# Building a gallery wants a *sample* of the match: spread windows, longest lanes
+# only. Measuring whether the linker rejoined a player wants the opposite — one
+# contiguous stretch with nothing left out, because the lanes it drops are the
+# short ones linking exists to join.
+
+
+@pytest.fixture
+def crowded():
+    """Ten lanes alive at once, more than one form can carry."""
+    return {i: lane(0, 30, x=50.0 * i) for i in range(1, 11)}
+
+
+def test_at_pins_the_window_instead_of_spreading(tracks):
+    windows = choose_windows(tracks, fps=30, window_s=5, n_windows=1,
+                             min_track_frames=3, max_lanes=12, start_s=10.0)
+    assert [w["start_frame"] for w in windows] == [300]
+    assert windows[0]["lanes"], "lane 3 starts at frame 300 and should be ringed"
+
+
+def test_pinned_windows_run_back_to_back_not_spread(tracks):
+    windows = choose_windows(tracks, fps=30, window_s=2, n_windows=3,
+                             min_track_frames=3, max_lanes=12, start_s=0.0)
+    # 2s at 30fps = 60 frames, so consecutive starts are 0, 60, 120 — contiguous
+    # coverage, unlike the spread-across-the-match default.
+    assert [w["start_frame"] for w in windows] == [0, 60, 120]
+
+
+def test_all_lanes_pages_rather_than_truncating(crowded):
+    capped = choose_windows(crowded, fps=30, window_s=60, n_windows=1,
+                            min_track_frames=3, max_lanes=4)
+    paged = choose_windows(crowded, fps=30, window_s=60, n_windows=1,
+                           min_track_frames=3, max_lanes=4, all_lanes=True)
+
+    assert sum(len(w["lanes"]) for w in capped) == 4, "default still drops the rest"
+    assert sum(len(w["lanes"]) for w in paged) == 10, "paging must lose nobody"
+    assert [w["n_pages"] for w in paged] == [3, 3, 3]
+    assert [w["page"] for w in paged] == [1, 2, 3]
+    # Same footage every page — only the rings differ.
+    assert len({w["start_frame"] for w in paged}) == 1
+
+
+def test_every_lane_appears_exactly_once_across_the_pages(crowded):
+    paged = choose_windows(crowded, fps=30, window_s=60, n_windows=1,
+                           min_track_frames=3, max_lanes=4, all_lanes=True)
+    seen = [l["track_id"] for w in paged for l in w["lanes"]]
+    assert sorted(seen) == sorted(crowded), "a lane in two pages is labelled twice"
+    # Slots restart per page, so the manifest is what disambiguates them.
+    assert all(l["slot"] <= 4 for w in paged for l in w["lanes"])
+
+
+def test_pages_are_longest_first_so_stopping_early_is_measurable():
+    tracks = {1: lane(0, 30), 2: lane(0, 20, x=200), 3: lane(0, 10, x=300),
+              4: lane(0, 5, x=400)}
+    paged = choose_windows(tracks, fps=30, window_s=60, n_windows=1,
+                           min_track_frames=3, max_lanes=2, all_lanes=True)
+    assert [l["track_id"] for l in paged[0]["lanes"]] == [1, 2]
+    assert [l["track_id"] for l in paged[1]["lanes"]] == [3, 4]
+
+
+def test_repeated_footage_is_announced_so_page_two_is_not_skipped(crowded):
+    from soccer_vision.annotate.tracklets import onscreen_guide
+
+    paged = choose_windows(crowded, fps=30, window_s=60, n_windows=1,
+                           min_track_frames=3, max_lanes=4, all_lanes=True)
+    guide = onscreen_guide(paged[1], 4)
+    assert "PASS 2 of 3" in guide
+    # And a single-page window says nothing about passes.
+    single = choose_windows(crowded, fps=30, window_s=60, n_windows=1,
+                            min_track_frames=3, max_lanes=20, all_lanes=True)
+    assert "PASS" not in onscreen_guide(single[0], 20)
+
+
+def test_tasks_carry_the_page_so_an_export_can_be_reconciled(crowded):
+    paged = choose_windows(crowded, fps=30, window_s=60, n_windows=1,
+                           min_track_frames=3, max_lanes=4, all_lanes=True)
+    tasks = build_tasks(paged, {w["window"]: f"u{w['window']}" for w in paged},
+                        fps=30, max_lanes=4)
+    assert [t["data"]["page"] for t in tasks] == [1, 2, 3]
+    assert {t["data"]["n_pages"] for t in tasks} == {3}
+    # Window numbers stay unique across pages — they key the clip files.
+    assert len({t["data"]["window"] for t in tasks}) == 3

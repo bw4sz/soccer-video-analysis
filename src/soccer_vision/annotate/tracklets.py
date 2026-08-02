@@ -63,6 +63,8 @@ def choose_windows(
     max_lanes: int,
     teams: dict[int, str] | None = None,
     team: str | None = None,
+    start_s: float | None = None,
+    all_lanes: bool = False,
 ) -> list[dict]:
     """Pick evenly spread windows and the lanes to ring in each.
 
@@ -74,6 +76,25 @@ def choose_windows(
 
     Lanes are capped at ``max_lanes`` because the number of dropdowns is fixed
     by the config, and a window ringing thirty players is one nobody will finish.
+
+    Two options exist for a different job than building a gallery — measuring how
+    well **track linking** works, which needs to know every lane in one stretch
+    rather than a sample of lanes across the match:
+
+    ``start_s``
+        Pin the window at one moment instead of spreading. With ``n_windows``
+        above 1 the windows run *consecutively* from there, covering a
+        contiguous stretch.
+
+    ``all_lanes``
+        Don't drop the lanes past ``max_lanes``; **page** them. A 20 s window at
+        native frame rate holds far more lanes than any form can carry, and
+        truncating biases the measurement precisely where linking matters —
+        short lanes are the ones that most need joining. So the same window is
+        emitted once per page of ``max_lanes``, longest lanes first, and the
+        annotator makes several passes over the same clip. Each page is a task
+        in its own right with its own slot→track map, so stopping after page 2
+        leaves a partial answer whose gaps are known rather than a biased one.
     """
     if not track_samples:
         return []
@@ -94,14 +115,19 @@ def choose_windows(
     window_frames = int(round(window_s * fps))
 
     starts = []
-    if n_windows == 1 or span_frames <= window_frames:
+    if start_s is not None:
+        # Pinned: run the windows back to back from here, so N of them cover one
+        # contiguous N x window_s stretch rather than sampling the whole match.
+        base = int(round(start_s * fps))
+        starts = [base + i * window_frames for i in range(max(1, n_windows))]
+    elif n_windows == 1 or span_frames <= window_frames:
         starts = [first]
     else:
         step = (span_frames - window_frames) / (n_windows - 1)
         starts = [int(round(first + i * step)) for i in range(n_windows)]
 
     windows = []
-    for w, start in enumerate(starts):
+    for start in starts:
         end = start + window_frames
         present = []
         for tid, samples in eligible.items():
@@ -110,30 +136,39 @@ def choose_windows(
                 present.append((len(inside), tid, inside))
         if not present:
             continue
-        # Pick the longest lanes — they yield the most crops and are the easiest
-        # to follow — but *number* them in the order they first appear. Numbering
-        # by length scatters the sequence across the clip: on the U14G run that
-        # put slot 10 on screen at 0.0s and slot 1 at 1.8s, so an annotator
-        # scrubbing through met "2, 10, 3" and reasonably concluded the numbering
-        # was broken. Chronological order means playing the clip once walks the
-        # form from top to bottom.
+        # Longest first, so page 1 carries the most player-time and an annotator
+        # who stops early leaves a gap whose size is known.
         present.sort(reverse=True, key=lambda x: (x[0], -x[1]))
-        chosen = sorted(present[:max_lanes], key=lambda x: (x[2][0][0], -x[0]))
-        lanes = [
-            {"slot": i + 1, "track_id": tid, "n_frames": n,
-             "first_frame": inside[0][0], "last_frame": inside[-1][0],
-             "enters_s": round((inside[0][0] - start) / fps, 1),
-             "leaves_s": round((inside[-1][0] - start) / fps, 1)}
-            for i, (n, tid, inside) in enumerate(chosen)
-        ]
-        windows.append({
-            "window": w + 1,
-            "start_frame": start,
-            "end_frame": end,
-            "start_s": round(start / fps, 2),
-            "duration_s": round(window_frames / fps, 2),
-            "lanes": lanes,
-        })
+        pages = (
+            [present[i:i + max_lanes] for i in range(0, len(present), max_lanes)]
+            if all_lanes else [present[:max_lanes]]
+        )
+        for page_no, page in enumerate(pages, start=1):
+            # Pick the longest lanes — they yield the most crops and are the
+            # easiest to follow — but *number* them in the order they first
+            # appear. Numbering by length scatters the sequence across the clip:
+            # on the U14G run that put slot 10 on screen at 0.0s and slot 1 at
+            # 1.8s, so an annotator scrubbing through met "2, 10, 3" and
+            # reasonably concluded the numbering was broken. Chronological order
+            # means playing the clip once walks the form from top to bottom.
+            chosen = sorted(page, key=lambda x: (x[2][0][0], -x[0]))
+            lanes = [
+                {"slot": i + 1, "track_id": tid, "n_frames": n,
+                 "first_frame": inside[0][0], "last_frame": inside[-1][0],
+                 "enters_s": round((inside[0][0] - start) / fps, 1),
+                 "leaves_s": round((inside[-1][0] - start) / fps, 1)}
+                for i, (n, tid, inside) in enumerate(chosen)
+            ]
+            windows.append({
+                "window": len(windows) + 1,
+                "start_frame": start,
+                "end_frame": end,
+                "start_s": round(start / fps, 2),
+                "duration_s": round(window_frames / fps, 2),
+                "lanes": lanes,
+                "page": page_no,
+                "n_pages": len(pages),
+            })
     return windows
 
 
@@ -311,7 +346,17 @@ def onscreen_guide(window: dict, max_lanes: int) -> str:
     if unused:
         parts.append(f"(Players {', '.join(unused)} are not in this clip "
                      f"— leave them blank)")
-    return "On screen —  " + "  ·  ".join(parts)
+    guide = "On screen —  " + "  ·  ".join(parts)
+    # Under --all-lanes the same footage comes round several times ringing
+    # different people. Say so, or page 2 reads as a duplicate task and gets
+    # skipped — and the pages that carry the short lanes are exactly the ones a
+    # linking measurement cannot do without.
+    if window.get("n_pages", 1) > 1:
+        guide = (f"PASS {window['page']} of {window['n_pages']} over this same "
+                 f"{window['duration_s']:.0f}s of play, at "
+                 f"{_clock(window['start_s'])} — each pass rings a different set "
+                 f"of players, so the footage repeating is expected.\n" + guide)
+    return guide
 
 
 def build_tasks(windows: list[dict], clip_urls: dict[int, str], fps: float,
@@ -329,6 +374,8 @@ def build_tasks(windows: list[dict], clip_urls: dict[int, str], fps: float,
                 "timestamp": _clock(w["start_s"]),
                 "slots": {str(lane["slot"]): lane["track_id"] for lane in w["lanes"]},
                 "n_lanes": len(w["lanes"]),
+                "page": w.get("page", 1),
+                "n_pages": w.get("n_pages", 1),
             }
         })
     return tasks

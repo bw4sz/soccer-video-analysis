@@ -252,6 +252,17 @@ def main():
     p_enroll.add_argument("--max-lanes", type=int, default=12,
                           help="Lanes ringed per window, longest first (default: 12). "
                                "Fixes the number of dropdowns in the config")
+    p_enroll.add_argument("--at", type=float, default=None, metavar="SEC",
+                          help="Pin the windows at this point in the match instead of "
+                               "spreading them; --n-windows then run back to back from "
+                               "here. For measuring track linking, which needs one "
+                               "contiguous stretch rather than a sample of the match")
+    p_enroll.add_argument("--all-lanes", action="store_true",
+                          help="Ring every lane in the window, paging them --max-lanes "
+                               "at a time, instead of keeping only the longest. Several "
+                               "passes over the same footage. Needed for a linking "
+                               "measurement: truncating drops the short lanes, which are "
+                               "exactly the ones linking exists to join")
     p_enroll.add_argument("--n-frames", type=int, default=20,
                           help="Frames to export for labelling, spread across the match "
                                "(default: 20)")
