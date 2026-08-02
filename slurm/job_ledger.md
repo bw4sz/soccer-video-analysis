@@ -1425,3 +1425,43 @@ Purpose: the 7% -> 48% named-coverage gain from loosening the gate (recorded
   above) was measured **without ground truth**, and its conflict count undercounts
   errors badly because only 4% of lanes were named. Do not adopt a loose gate
   until this is scored.
+
+## 38556018 — 2026-08-02 — slurm/submit_identify_teamgate.sh (U14G full match,
+  reid+ocr with the new `--team black` kit gate)
+Why: User watched `runs/saints-u14g-full-linked/preview_tracks_990s.mp4` (a 60 s
+  overlay of every surviving track and its label, from t=990s) and reported
+  "implausible things with referees and white team getting boxes". Confirmed from
+  saved artefacts: of 1,595 named lanes surviving the link pass, **878 are on the
+  white kit against 256 on our own black**, and a contact sheet of two dozen of
+  them (`runs/saints-u14g-full-linked/named_white_lanes.jpg`) shows three distinct
+  populations wearing Saints names — the opposing squad, the yellow-shirted
+  referees, and players on a *neighbouring pitch* in kits nobody here wears
+  (numbers #33, #42), plus one person in a t-shirt who is walking.
+Cause: not re-id accuracy — a **missing constraint**. `match_track` scores a crop
+  against our eleven players only and cannot answer "none of the above", so a
+  stranger returns whichever of ours is nearest with an ordinary-looking margin.
+  `identify` never read the `teams` block `process` already writes.
+Fix under test (commit d7b7542): `identify --team <kit>` holds back lanes wearing
+  another squad's colours **before any model runs**, so they cost no re-id forward
+  pass and no OCR. A lane with *no* kit stays eligible by default (absence of
+  evidence is not evidence of the wrong kit — the same abstention logic as the OCR
+  veto); `--team-strict` holds those back too. Excluded lanes keep
+  `"excluded": "kit"` in jerseys.json so a gap is always explainable.
+The falsifiable prediction this job exists to test: job 38526407 found 38 re-id
+  names disproved by legible reads, on shirts reading #2/#1/#20/#23 — numbers
+  **nobody on our roster wears**. If those conflicts were opponents, gating on kit
+  should make most of them disappear at the source. If the conflict count instead
+  holds steady on our own kit, the remaining errors are teammate confusions and no
+  gate will touch them.
+Projected effect, computed post hoc on the existing jerseys.json (no GPU): names
+  4,471 -> 2,243 (-50%) on this run; 1,595 -> 717 (-55%) on the linked run.
+  `--team-strict` would keep 1,782 and 256 respectively.
+Also rebuilds the Morgan and Morrighan reels to `reel_*_teamgate.mp4`, leaving the
+  old ones in place to compare against.
+Baseline preserved at runs/saints-u14g-full/jerseys.pre-teamgate.json;
+  slurm/compare_team_gate.py diffs the pair at the end of the job (names kept /
+  removed / added split by kit, per-player deltas, and the veto conflict count
+  before and after).
+Cost: 16 min ungated; the gate skips ~3,100 of 17,395 lanes, so expect less. 4h
+  requested.
+Result: PENDING
