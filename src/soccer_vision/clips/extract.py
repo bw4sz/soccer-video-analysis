@@ -12,29 +12,49 @@ from soccer_vision.io.video import ffmpeg_extract_clip
 _CLIP_NAME_RE = re.compile(r"^(?P<prefix>.+?)_(?P<index>\d+)_(?P<label>.+)_(?P<ts>\d+)s\.mp4$")
 
 
-def halo_samples_for(event: dict, halo_tracks: dict[int, list] | None) -> list | None:
+def halo_samples_for(event: dict, halo_tracks: dict[int, list] | None,
+                     *, extra_ids: set[int] | None = None) -> list | None:
     """Track boxes to halo for one event, or ``None``.
 
     Uses ``track_ids`` when the event carries one (on-ball spans do — a player
     fragments across lanes mid-touch, and the spotlight has to follow through the
     handoff or it drops out partway through the clip), else the single
-    ``track_id``. Samples from several lanes are merged in frame order; the lanes
-    are disjoint in time by construction, so they read as one continuous track.
+    ``track_id``.
+
+    ``extra_ids`` adds every other lane belonging to the same player. A clip
+    opens several seconds before the touch, and the lane the touch happened on
+    typically starts *after* the clip does — on the U14G match a 7.9s clip whose
+    lane began 4.8s in, so the spotlight was missing for most of it and then
+    appeared, which reads as the halo lagging. The player is usually on screen
+    that whole time under a different lane id, so halo the player.
+
+    Lanes of one player are disjoint in time by construction, so the merged
+    samples read as one continuous track. Where two lanes do overlap (a wrong
+    link, or two lanes of the same player alive at once) the earlier sample wins
+    for that frame rather than the halo flickering between them.
     """
     if not halo_tracks:
         return None
 
-    ids = event.get("track_ids")
+    ids = list(event.get("track_ids") or [])
     if not ids:
         tid = event.get("track_id")
         ids = [tid] if tid is not None else []
+    if extra_ids:
+        ids = list(ids) + [t for t in extra_ids if t not in set(ids)]
 
     merged: list = []
     for tid in ids:
         merged.extend(halo_tracks.get(int(tid)) or [])
     if not merged:
         return None
-    return sorted(merged, key=lambda s: s[0])
+    merged.sort(key=lambda s: s[0])
+    deduped: list = []
+    for sample in merged:
+        if deduped and deduped[-1][0] == sample[0]:
+            continue
+        deduped.append(sample)
+    return deduped
 
 
 def extract_event_clips(

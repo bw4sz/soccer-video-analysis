@@ -1004,3 +1004,464 @@ Next: `runs/saints-u14g-full` was processed with the old rectangle, so its
   tracks — and the tracklet clips and gallery built off them — are missing every
   edge player. Re-run `process` on that match (~1.6 h) before the next enrolment
   batch, or the near-corner players stay unlabellable.
+
+## 38504772 — 2026-08-01 — slurm/submit_trim_empty.sh (U14G, 30 fps)
+Why: `trim-empty` had been run exactly once (36258658, 2026-07-02) and never on the
+  U14G Veo match. That prior run also used `sample_fps 2` with an unsmoothed track
+  (it predates the Kalman filter), so we had no datapoint at a sample rate the
+  smoother can actually work at.
+Design: `data/wfc-rangers-vs-saints-pcu-cup-2026-07-11.mp4` (Veo, 60.6 min),
+  `--sample-fps 30 --min-dead 5`, Kalman smoothing on. 30 fps rather than reusing
+  the existing 5 fps `runs/saints-u14g-full/ball_track.json` because that track is
+  measurably too sparse (below). Decode dominates and is fixed (~55 min), so 30 fps
+  costs ~2.3 h against ~1.6 h for 15 fps — only 1.4x, not 2x.
+Why not reuse the 5 fps track: at 4.995 fps the gate rejects **33.1%** of visible
+  detections (4939/14901), so the filter coasts and moving balls read as stationary
+  — stationary fraction inflates 13.8% (raw) -> 18.9% (smoothed), median jump 27 ->
+  19 px. The trim plan gains 4 spans and 37 s, and **17% of the removed time
+  (102/599 samples) sits on frames where the raw detector shows the ball moving** —
+  live play cut out of the highlight. Same check on the raw plan: 0/414. Decimating
+  is monotonically worse (5 / 2.5 / 1.67 fps -> 16 / 19 / 25 spans, 2.00 / 2.53 /
+  3.07 min removed). Sparse sampling manufactures dead time, it doesn't miss it.
+Shipped: `SAMPLE_FPS` default in `slurm/submit_trim_empty.sh` changed 2 -> 30, with
+  the above recorded at the knob. The old comment ("2 fps ... plenty of resolution")
+  was wrong. Removed the header's "long halftime" premise — neither match has one.
+Expectation: a few percent removed, not a big cut. Longest offscreen run in the
+  whole U14G match is 6.8 s (at 28:03); no untrimmed halftime, same as the 16B clip.
+  This job buys *correctness* of the few cuts, not volume.
+Result: COMPLETED (exit 0, **1h42m** — track build 1h29m, re-encode 14m; under the
+  2.3h estimate). Ball visible 89504/108972 = **82.1%**, unchanged from the 5 fps
+  track's 82.0% — detection quality is sample-rate independent, the whole effect is
+  in the gate. Kalman rejection **33.1% -> 22.1%**. Trim: **9 spans, 67.2s (2%)**,
+  all `stationary`, longest 19.4s at 10:12.6, rest 4-9s set-piece setups. No
+  offscreen run anywhere in the match qualifies.
+  **The 5 fps extra cuts were artefacts, confirmed**: only 8/2022 raw detections
+  inside the 9 cuts move >40px frame-to-frame (0.4%), against 17% of removed time
+  at 5 fps. Mechanism, which is the opposite of what the totals suggest: per-sample
+  stationary went *up* (18.9% -> 20.6%) while spans went *down* (16 -> 9), because
+  at 5 fps misread samples **bridged** short stationary runs into single runs long
+  enough to clear the 5s threshold. Denser sampling breaks the bridges.
+Reviewed: yield is 2%, matching 36258658's 2% on a different camera and venue. Two
+  matches now agree the **ball-only dead-time definition is the binding constraint**
+  — not detection, not sample rate. This job bought correctness of the few cuts, not
+  volume; `trim-empty` is not yet a useful way to shorten a match for a parent.
+Artifacts: `slurm/logs/trim_empty_20260801_123941/` — `.trimmed.mp4` (2.02 GB,
+  59.5 min), `.trim.json` (EDL), `.ball_track.json` (25 MB, 30 fps, smoothed — the
+  best ball track we have for this match, worth reusing).
+Next: the lever is a dead-time criterion beyond ball-only (low ball speed,
+  player-cluster/idle cues) — 36258658's open question, now measured twice and
+  still open. Good candidate for a community issue.
+
+## 38506138 — 2026-08-01 — slurm/submit_identify.sh (U14G full match, re-id, full-match gallery)
+Why: Test whether the second tracklet batch (12 windows across the whole match,
+  620 crops, all 11 players) lifts re-id *recall* on a real query, after the
+  leave-one-frame-out A/B showed it does not lift *accuracy* (42% -> 37-43%,
+  all inside noise; `slurm/ab_gallery_fullmatch.py`). Accuracy and recall are
+  different questions: the 2026-07-31 run named only 803/17,395 lanes (4.6%)
+  off a 47-exemplar gallery skewed to players with 1-2 exemplars
+  (Izabelle 254 lanes off 2 exemplars, Morrighan 6 lanes off 8). The new
+  gallery is balanced at 64/player, which should at minimum redistribute.
+  Target queries: reels for Morgan Lobey and Morrighan "Mo" Wright.
+Gallery: galleries/saints-u14g.fullmatch.npz (620 exemplars, 12 players)
+  = labelled frames + smoke-clip tracklets + full-match tracklets.
+  Prior jerseys.json preserved at runs/saints-u14g-full/jerseys.ocr-backup.json.
+Note: first ran this interactively on the session's 1-CPU allocation — killed at
+  56 min with no output (node load average 187). This job is the right shape:
+  8 CPUs + 1 GPU, 4m28s last time.
+Result: **COMPLETED (exit 0, ~4 min, node c0602a-s14)** — named
+  **1920/17,395 lanes (11.0%)**, up from 803 (4.6%). Balancing the gallery did
+  move recall, but it **moved the attractor rather than removing it**: before,
+  Izabelle 254 / Eveleigh 152 / Lainey 150 off 2, 8 and 1 exemplars; now
+  **Gia Olson alone takes 979 of 1920 (51%)** off 64. Whichever player the
+  gallery over-represents in the *matched* direction wins the mean-of-top-3,
+  and equalising exemplar counts did not stop that.
+  For the two target players it went the wrong way for one:
+  **Morgan 49 -> 29 lanes, Morrighan 6 -> 14.**
+Reels (both built, `--halo`, on-ball fallback since no detector events exist):
+  runs/saints-u14g-full/reel_morgan_fullmatch.mp4  — 4 spans, 38.2 s
+    (16:51, 16:55, 17:39 [6.8 s], 56:16), 29 lanes / 357 track-frames
+  runs/saints-u14g-full/reel_mo_fullmatch.mp4      — 2 spans, 16.4 s
+    (38:39, 59:48), 14 lanes / 529 track-frames
+  Inspected zoomed crops at every span. All four Morgan spans are black-kit
+  Saints players in genuine on-ball moments on the pitch. Of Mo's two, 38:39 is
+  a genuine contested touch; **59:48 puts the halo on a figure up among the
+  far-touchline spectators** — the old middle-70% field rectangle was in force
+  for this run (processed 2026-07-30), and no horizontal cut separates far-side
+  players from the crowd behind them (issue #21).
+  **Identity itself is unverifiable by eye** — teammates in one kit at ~50x21 px
+  — which is exactly issue #25. Kit and on-ball-ness check out; "is this Morgan
+  or Mo" does not, and cannot be settled from these clips.
+Next: do NOT read the recall gain as the gallery working. Fix the scoring
+  (issue #25, top-3-mean punishes players whose good exemplars are few) before
+  spending another annotation round. `jerseys.ocr-backup.json` holds the
+  2026-07-31 naming if a comparison is needed.
+
+## Track linking post-pass — 2026-08-01
+Why: Reels were being cut off mid-touch. Diagnosis: `tracking/bytetrack.py` is a
+  27-line wrapper with no linking, no interpolation and no re-id across lanes, so
+  a lane that dies is gone. **1,184 lanes (6.8%) die with the ball inside the
+  90px on-ball radius** — including Morgan's last span, whose lane ended with the
+  ball 35px from her feet.
+**Not an association-threshold problem.** Consecutive-sample IoU is 0.65 median
+  and only 1.6% of steps fall under supervision's accept floor (which is on IoU
+  *distance*, so it accepts IoU >= 0.2, not >= 0.8). Players move 6px per 0.2s
+  step against a 29px median box width. Lanes die to detector dropout and
+  occlusion, not motion — hence a post-pass, not tracker surgery.
+New: `soccer_vision/tracking/link.py` + `soccer-vision link-tracks`
+  (`cli/link.py`). Gate is kit -> motion-extrapolated position (both directions)
+  -> speed plausibility, optional appearance veto. Writes tracks.linked.json,
+  jerseys.linked.json and track_links.json (every link with its evidence).
+Measured, `slurm/eval_track_linking.py` — cut 400 long lanes in half, delete
+  samples to simulate dropout, drop both halves back among all 17k real lanes,
+  see if the head finds its own tail:
+  | strategy | 0.2s gap | 1.0s | 2.0s |
+  |---|---|---|---|
+  | naive position, greedy | 96% | 91% | 87% |
+  | motion, forward only | 98% | 94% | 88% |
+  | **motion, bidirectional** | **98%** | **94%** | **89%** |
+  | motion, bidir + hungarian | 94% | 91% | 86% |
+  **Hungarian is worse, don't retry it** — minimum-cost assignment also maximises
+  how many pairs match, and not linking costs nothing here, so it reaches for
+  marginal pairs greedy correctly declines. Needs a priced "no-link" column.
+**The important failure, and the fix for it.** Cut a 3.0s hole and use a 3.0s
+  gate so the true tail is just out of reach: the linker made **150 wrong links
+  on 400 heads instead of abstaining**. Precision figures above are all
+  conditioned on the right answer being in range; real lanes often have no
+  continuation at all. An appearance veto fixes this (`slurm/eval_link_appearance.py`):
+  | threshold | wrong links kept (truth absent) | right links kept (truth present) |
+  |---|---|---|
+  | none | 150 | 381 |
+  | 0.70 | **23 (-85%)** | **340 (-11%)** |
+  | 0.80 | 7 | 213 |
+  Note this asks a much easier question than issue #25 — "same person 0.6s later,
+  same pose and light" rather than "which of 11 teammates" — on the same backbone.
+Yield at 3.0s/250px, geometry only, on runs/saints-u14g-full:
+  17,395 lanes -> 10,208 chains; median 1.4s -> 1.8s, max 63s -> 105s;
+  names propagated 1,920 -> 3,608 lanes, 39 chains with conflicting names.
+  **Morgan 4 -> 9 spans (71s -> 201s), Mo 2 -> 13 spans (106s -> 230s).**
+  Reels: runs/saints-u14g-full-linked/reel_{morgan,mo}_linked.mp4 (80s / 115s).
+Bug found en route: `propagate_names` set `name` but not `jersey`, and
+  `identify.resolve.tracks_for` matches on the number — so every inherited lane
+  was invisible to `--player`. Fixed; that alone was Morgan 5 -> 9 spans.
+## 38514244 — FAILED (OUT_OF_MEMORY, 1m57s, 35GB) — appearance pass held all
+  ~35k lane-edge crops for one `embed` call. Now chunked at 2048; resubmitted.
+## 38514469 — 2026-08-01 — slurm/submit_link_tracks.sh (appearance veto, 96GB)
+Result: PENDING
+Next: A/B geometry-only vs appearance-gated links on the same reels; then decide
+  the shipped default (currently --max-gap 1.5 --max-dist 150, conservative).
+
+## Reel windows + halo coverage — 2026-08-01 (user feedback on Morgan's reel)
+Three complaints, all reproduced, two fixed.
+**1. Duplicate/overlapping clips — fixed.** Spans at 1011.0s and 1015.4s produced
+  windows 1006.0-1013.9 and 1010.4-1018.1: 3.5s of the same footage twice, from
+  the same lane. `_merge_windows` now joins windows within `--merge-gap` (2s) into
+  one longer clip carrying the union of track_ids. Morgan 9 spans -> 6 clips,
+  Mo 13 -> 5.
+**2. Padding — increased and exposed.** `reel` gained `--pre` (6.0, was a
+  hardcoded 5.0) and `--post` (5.0, was `pre/2` = 2.5).
+**3. Halo "delayed" — diagnosed, partly fixed.** It is NOT drawing in a wrong
+  place: verified at the touch it sits correctly on the black-kit player. It is
+  *absent* until the lane starts, and the lane usually starts after the clip
+  does — chain 4892 begins 4.8s into a 7.9s clip, so the halo was missing for
+  60% of it and then appeared. `halo_samples_for` now takes `extra_ids` and
+  halos the whole *player* rather than only the lanes the touch happened on.
+  Coverage: Mo 73% -> 75% of clip frames, Morgan 63% -> 58% (the longer padding
+  outruns her lane). Remaining gap is the 3% naming problem, not the halo:
+  during Morgan's lead-in the nearest candidate is a black lane ending 0.8s
+  earlier 215px away that the linker declined, and an 85px one that is white kit.
+## 38514469 — appearance-gated linking, COMPLETED (2m15s, 7.4GB)
+**The appearance veto costs most of the yield on real data.** Links 7,187 ->
+  2,853 (-60%), Morgan 9 -> 4 spans, Mo 13 -> 3. Conflicts fell 39 -> 11, but
+  per-link conflict rate only 0.54% -> 0.39% — so it is rejecting genuine links,
+  not mainly wrong ones. **Why the benchmark over-promised:** it simulated
+  dropouts of <=1.0s, where the same player looks nearly identical; real links
+  span up to 3.0s, over which pose and lighting change enough to fall under a
+  0.70 cosine floor. Next: make the threshold gap-dependent (or ~0.6 at long
+  gaps) and re-measure, rather than accepting either extreme.
+Reels (geometry-only links, merged windows, player-wide halo):
+  runs/saints-u14g-full-linked/reel_morgan_v2.mp4 (6 clips, 91s)
+  runs/saints-u14g-full-linked/reel_mo_v2.mp4     (5 clips, 109s)
+
+## 38526407 — 2026-08-01 — slurm/submit_identify_crosscheck.sh (U14G full match,
+  reid+ocr with the jersey veto)
+Why: User reports players in the reels that "don't match", and can see the number
+  in the footage at moments inside those tracks. Job 38506138 named 1,920/17,395
+  lanes with `--method reid` alone — **no OCR ran at all**, so every legible
+  number in the match was ignored — and **Gia Olson alone took 979 of the 1,920
+  (51%)**, which is an attractor, not a squad. This run re-identifies with
+  `reid+ocr` and the new cross-check: re-id still names, and jersey OCR is allowed
+  only to *veto* a name its reads disprove (4+ reads at >=0.7 confidence holding
+  >=0.75 of the weight). Vetoed lanes drop to unknown rather than taking the read
+  number.
+Baseline preserved at runs/saints-u14g-full/jerseys.reid-only.json;
+  slurm/compare_identify_crosscheck.py diffs the two at the end of the job.
+Three things it should settle:
+  1. What fraction of re-id's named lanes are provably wrong (over the subset
+     carrying a legible number — a biased sample: those lanes are bigger and
+     better lit, which favours re-id too).
+  2. Whether re-id similarity separates the disproved lanes from the corroborated
+     ones. If it does not, no `--min-reid-margin` setting substitutes for reading
+     the shirt.
+  3. Which numbers the disproved shirts actually carry — a number nobody on the
+     roster wears means the gallery is matching *opponents* onto our squad.
+Not passing --conflict-exclude-jersey 1 deliberately: `1` is PARSeq's
+  hallucination class here, but the 0.7 per-read floor may already suppress it,
+  and the report breaks vetoes down by number read. Measure, then decide.
+Cost: unlike the ~4 min re-id-only job, OCR is a per-crop unbatched PARSeq forward
+  over up to 40 samples of all 17,395 lanes (named ones to check, abstained ones
+  to name). Hours; 12h requested.
+Result: **COMPLETED (exit 0, 16 min — not the hours budgeted; PARSeq on 17,395
+  lanes shares the one decode pass re-id already makes).**
+
+**The veto works, and it says re-id is wrong far more often than it is right.**
+  Of 1,920 re-id-named lanes: **38 disproved, 12 corroborated, 1,870 no legible
+  evidence**. So of the 50 lanes a shirt could be read on, **76% were wrong** —
+  worse than the 58% the leave-one-frame-out ceiling predicts, though 50 lanes is
+  a small and biased sample (a legible number means a bigger, better-lit crop,
+  which favours re-id too).
+Over-claimed: Gia Olson 19 of her 979 lanes, Leire 11 of 273, Iris 5 of 312,
+  Morgan 2 of 29, Quinn 1 of 74.
+**Similarity does partly separate them** (agree mean 0.776 vs conflict 0.678,
+  gap +0.098) — but conflict sits exactly on the no-evidence mean (0.679), so the
+  disproved lanes are *typical* re-id matches, not outliers. n=12 on the agree
+  side; suggestive, not a mandate to raise `--min-similarity`.
+Numbers the shirts actually read: #2 x11, #1 x10, #20 x7, #23 x3, #4/#30/#21 x2.
+  Mostly numbers **nobody on our roster wears** — consistent with the gallery
+  pulling opponents onto our squad (the kit gate, not the embedding, is the fix).
+
+**The unasked-for half of this run is the problem: OCR *naming*.** `reid+ocr`
+  also names the lanes re-id abstained on, at the ordinary vote bar (3 reads /
+  0.5 share / 0.15 margin, **no per-read confidence floor**) — and it named
+  **2,589 lanes**, distributed **#1 x982, #4 x380, #2 x299, #7 x204, #3 x134,
+  #6 x81, #5 x60**. A distribution that decays with digit size is the
+  hallucination signature, and nobody on our roster wears 1. 875 of those lanes
+  landed on a roster number, taking **Morgan 29 -> 407 lanes**. Rebuilding a reel
+  off this jerseys.json would pull in 380 unvetted "#4" lanes.
+  (Caveat: an opposing keeper wearing 1 is plausible, and 982 lanes is within
+  one player's lane count on a 17k-lane run. Counts alone cannot separate the two
+  — that needs eyes on a contact sheet of the #1 lanes.)
+Artefacts: baseline `runs/saints-u14g-full/jerseys.reid-only.json`;
+  cross-checked `runs/saints-u14g-full/jerseys.json`;
+  report `slurm/compare_identify_crosscheck.py` (re-runnable on the pair).
+Next, in order:
+  1. Contact-sheet the #1 and #4 OCR-named lanes before trusting any of them; if
+     they are hallucinations, the naming path needs the veto's read-confidence
+     floor (and probably a roster-number restriction) before `reid+ocr` is safe
+     as a default. Until then prefer `--method reid` + the veto.
+  2. Re-run this on `runs/saints-u14g-full-30fps` (job 38546990). 97% of lanes
+     had no legible read *at 5 fps sampling*; at native rate the same lanes carry
+     2.4x the seconds, so the veto should get far more than 50 lanes to rule on.
+  3. Then link-tracks (propagation now refuses a number a lane's own reads
+     contradict) and rebuild the Morgan / Mo reels.
+
+## 2026-08-02 — no job — continuity/identity audit of `runs/saints-u14g-full`
+All numbers below are recomputed from saved artefacts (no GPU), so they are
+reproducible from the run dir alone.
+
+**The pipeline is not losing the football; it is losing the *name*.** On-ball
+spans over every black-kit lane: **745 spans, 1,065 s of our team on the ball**.
+Spans on black lanes that carry an identity: **70 spans, 75 s — 9.4%**. So ~91%
+of the touches a parent watches are detected, tracked, kit-classified and
+span-detected, then discarded for want of a label. Detection/geometry is not the
+bottleneck; identity coverage is.
+
+**Re-id names the *opposing* team 4.4x more often than ours.** Of 1,920 re-id
+names: 1,163 landed on **white**-kit lanes, 296 on black, 461 unstamped. Named
+rate is **18.0% of white lanes vs 4.1% of black** — and Saints U14G are the black
+kit; the gallery contains no white player. Gia Olson alone took 691 white lanes.
+*Why the margin test inverts out of gallery:* for a black-kit query every
+exemplar is close and similar, so the winner's lead collapses and the matcher
+abstains; for a white-kit query every exemplar is far and roughly random, and
+random distances have spread, so someone wins by >0.05 easily. **Abstention
+protects the enrolled team and actively fails on strangers.**
+
+**`min_similarity` is not inert — that claim was measured on the wrong
+population.** CLAUDE.md records 0.0 and 0.7 giving the same answer, from
+`validate_reid.py` on a run where every lane *was* the enrolled squad. Sweeping
+it against kit on the full match:
+
+| min_similarity | black named kept | white (wrong) kept |
+|---|---|---|
+| 0.00 (current) | 296 | 1163 |
+| 0.70 | 235 | 219 |
+| 0.75 | 151 | **14** |
+| 0.80 | 76 | 0 |
+
+0.75 removes 99% of the opponent contamination for half the true names.
+Kit-gating removes 100% of it for none. Do both; gate first.
+
+**The link gate is tuned as a tracking fix, not as the identity-propagation fix
+it actually is.** Sweeping `LinkConfig` on the same run, measuring named
+black-kit on-ball spans (the quantity the user sees):
+
+| max_gap_s / max_dist_px | chains | named lanes | conflicts | named spans | seconds |
+|---|---|---|---|---|---|
+| no linking | 17395 | 296 | — | 70 | 75 |
+| 2.0 / 150 (current) | 12457 | 274 | 18 | 136 | 155 |
+| 5.0 / 250 | 9401 | 258 | 45 | 237 | 302 |
+| 12.0 / 400 | 7340 | 246 | 95 | **418** | **513** |
+
+7% → 48% of the available 1,065 s. Conflicts per link stay under 1% (0.36% →
+0.94%), but read that as weak: only 296 lanes are named, so most chains carry
+≤1 name and conflicts undercount errors badly. The direction is unambiguous; the
+right endpoint is not, and geometry-only greedy linking is the wrong tool at a
+12 s gap — see the GTA reference below.
+
+**Scoring is not the 42% ceiling — four more candidates ruled out.** Leave-one-
+frame-out on the same 45-46 held-out U14G crops, same embeddings, scoring rule
+varied (`scratchpad/reid_scoring.py`):
+
+| rule | frames-only gallery | + 620 tracklet crops |
+|---|---|---|
+| current (mean of top-3) | 19/45 (42%) | 17/46 (37%) |
+| top-1 | 19/45 | 17/46 |
+| player centroid | 18/45 | 22/46 (48%) |
+| hubness centering | 16/45 | 21/46 |
+| closed-set Hungarian per frame | 19/45 | 17/46 |
+| k-reciprocal re-ranking (Zhong CVPR'17) | 20/45 (44%) | 17/46 |
+| k-reciprocal + Hungarian | 21/45 (47%) | 17/46 |
+
+Everything sits inside noise of 42%. Hubness correction and re-ranking, the two
+standard re-ID fixes, buy nothing here — consistent with issue #25. The backbone
+is the constraint.
+
+Follow-up: job 38526638 (fps ablation), and the recommendations written up for
+the user on 2026-08-02.
+
+## 38526638 — 2026-08-02 — slurm/submit_fps_ablation.sh (30 vs 5 fps, U14G 3-min
+  clip, current code both sides) — COMPLETED, 15m00s
+Why: `runs/saints-u14g-full` was detected at 5 fps and every identity number we
+  have comes off it. Commit 9e7acfd moved the default to native rate and told
+  ByteTrack the truth about it, but nothing measured what that buys.
+  `runs/u14g-smoke-rfdetr` is not a valid control — it predates the field-cut
+  change (a3bb247), which alone moves detections/frame ~36%.
+
+Result: **detecting every frame is a large structural win, and the lane-count
+  statistic hides it completely.**
+
+| | 30 fps | 5 fps |
+|---|---|---|
+| lanes | 2,169 | 1,226 |
+| median lane | 0.30 s | 1.00 s |
+| **tracked player-seconds** | **4,576** | **2,616** |
+| share of tracked time in lanes >=5 s | **70.8%** | 48.2% |
+| share in lanes >=10 s | **52.7%** | 20.9% |
+| longest lane | **114.1 s** | 27.6 s |
+| detections/frame carrying a track id | 25.4 | 14.5 |
+| ball visible | 86.0% | 84.5% |
+
+Read the median as a trap: 30 fps creates 1,262 sub-half-second lanes that hold
+  4% of tracked time and drag the median down. Coverage-weighted, 30 fps puts
+  **75% more of the match under a track at all** and **2.5x more of that time in
+  lanes long enough to name**. A 114 s lane is a player; at 5 fps the longest
+  fragment in three minutes was 27.6 s.
+
+This partly *substitutes* for aggressive linking: the 12 s / 400 px link gate
+  exists to rebuild continuity 5 fps destroyed. Re-measure the link sweep on a
+  30 fps run before adopting a loose gate — the right threshold there is almost
+  certainly tighter than the one the 5 fps data argued for.
+
+Cost: 13m for 3 min at 30 fps = ~4.3x realtime, so ~4.3 h for a 60-min match
+  (5 fps was 2m, ~0.7 h). **Halve that for free**: `process` runs the full
+  RF-DETR forward twice per frame — once at conf 0.3 for players (which already
+  splits `ball_dets` out of the result) and again inside `detect_ball_position`
+  at conf 0.2. Take the ball from the first pass.
+Next: fix the double forward, then re-`process` the U14G full match at 30 fps and
+  re-run the identity/linking measurements against it.
+
+## 38546990 — 2026-08-02 — slurm/submit_reprocess_u14g_30fps.sh (U14G full match
+  at native rate, single-forward detector) — COMPLETED, stage 1 335s + stage 2
+  6415s (1h47m)
+Why: every identity number we have was measured on the 5 fps run. Job 38526638
+  showed native rate is a large structural win for lane length, which is what
+  gates identity; the duplicate RF-DETR forward is what made it unaffordable.
+
+**Stage 1 — the refactor is provably a no-op.** Same 3-min clip, `predict_split`
+  vs the two calls it replaces: **2,169 lanes and 5,394 ball samples identical**,
+  in **335 s against 780 s (2.33x)**. Stage 2 was gated on that equality.
+
+**Stage 2 — full match, 5 fps vs 30 fps:**
+
+| | 5 fps | 30 fps |
+|---|---|---|
+| lanes | 17,395 | 44,350 |
+| tracked player-seconds | 48,665 | **97,008** |
+| share of tracked time in lanes >=10 s | 28.4% | **56.0%** |
+| longest lane | 63.5 s | **227.7 s** |
+| black-kit on-ball spans | 745 | 555 |
+| black-kit on-ball **seconds** | 1,065 | **2,584** |
+
+The on-ball line is the one that matters: **fewer spans but 2.4x the seconds**,
+  because lanes no longer die mid-touch and split one action into several. The
+  span *count* falling is the fix working, not a regression.
+
+Wall time came in at 1h47m against the ~2.2 h predicted; it would have been ~4.3 h
+  with the duplicate forward.
+
+**Link sweep on the new run** (chains only — `identify` has not been run against
+  it, and the kit gate is landing separately):
+
+| gap/dist | links | chains (30 fps) | chains (5 fps) |
+|---|---|---|---|
+| 2.0/150 | 18,743 | 25,607 | 12,457 |
+| 5.0/250 | 23,736 | 20,614 | 9,401 |
+| 12.0/400 | 26,528 | 17,822 | 7,340 |
+
+More chains than the 5 fps run had raw lanes, because native rate also mints
+  ~1,262-per-3-min sub-second fragments. Those hold 4% of tracked time, so they
+  cost little, but they mean **chain count is a useless success metric here** —
+  judge on named on-ball seconds, and on the ground truth below.
+
+## 2026-08-02 — no job — linking ground truth staged for annotation
+`runs/saints-u14g-full-30fps/link_gt/` — 3 Label Studio tasks, one 20 s stretch at
+  **34:40** (2080 s), **all 31 black-kit lanes** ringed across 3 passes of 12/12/7.
+Chosen for density (38 s of black on-ball play in 20 s) and for fragmentation
+  (median lane 4.1 s, so there are real continuations to recover); 3 pages is a
+  labelling load someone will actually finish.
+Scored by `slurm/eval_link_ground_truth.py`, smoke-tested both directions on
+  synthetic fixtures — recovers true continuations as the gate loosens, and
+  catches a decoy-player wrong link and names both players.
+Purpose: the 7% -> 48% named-coverage gain from loosening the gate (recorded
+  above) was measured **without ground truth**, and its conflict count undercounts
+  errors badly because only 4% of lanes were named. Do not adopt a loose gate
+  until this is scored.
+
+## 38556018 — 2026-08-02 — slurm/submit_identify_teamgate.sh (U14G full match,
+  reid+ocr with the new `--team black` kit gate)
+Why: User watched `runs/saints-u14g-full-linked/preview_tracks_990s.mp4` (a 60 s
+  overlay of every surviving track and its label, from t=990s) and reported
+  "implausible things with referees and white team getting boxes". Confirmed from
+  saved artefacts: of 1,595 named lanes surviving the link pass, **878 are on the
+  white kit against 256 on our own black**, and a contact sheet of two dozen of
+  them (`runs/saints-u14g-full-linked/named_white_lanes.jpg`) shows three distinct
+  populations wearing Saints names — the opposing squad, the yellow-shirted
+  referees, and players on a *neighbouring pitch* in kits nobody here wears
+  (numbers #33, #42), plus one person in a t-shirt who is walking.
+Cause: not re-id accuracy — a **missing constraint**. `match_track` scores a crop
+  against our eleven players only and cannot answer "none of the above", so a
+  stranger returns whichever of ours is nearest with an ordinary-looking margin.
+  `identify` never read the `teams` block `process` already writes.
+Fix under test (commit d7b7542): `identify --team <kit>` holds back lanes wearing
+  another squad's colours **before any model runs**, so they cost no re-id forward
+  pass and no OCR. A lane with *no* kit stays eligible by default (absence of
+  evidence is not evidence of the wrong kit — the same abstention logic as the OCR
+  veto); `--team-strict` holds those back too. Excluded lanes keep
+  `"excluded": "kit"` in jerseys.json so a gap is always explainable.
+The falsifiable prediction this job exists to test: job 38526407 found 38 re-id
+  names disproved by legible reads, on shirts reading #2/#1/#20/#23 — numbers
+  **nobody on our roster wears**. If those conflicts were opponents, gating on kit
+  should make most of them disappear at the source. If the conflict count instead
+  holds steady on our own kit, the remaining errors are teammate confusions and no
+  gate will touch them.
+Projected effect, computed post hoc on the existing jerseys.json (no GPU): names
+  4,471 -> 2,243 (-50%) on this run; 1,595 -> 717 (-55%) on the linked run.
+  `--team-strict` would keep 1,782 and 256 respectively.
+Also rebuilds the Morgan and Morrighan reels to `reel_*_teamgate.mp4`, leaving the
+  old ones in place to compare against.
+Baseline preserved at runs/saints-u14g-full/jerseys.pre-teamgate.json;
+  slurm/compare_team_gate.py diffs the pair at the end of the job (names kept /
+  removed / added split by kit, per-player deltas, and the veto conflict count
+  before and after).
+Cost: 16 min ungated; the gate skips ~3,100 of 17,395 lanes, so expect less. 4h
+  requested.
+Result: PENDING

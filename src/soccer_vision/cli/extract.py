@@ -200,19 +200,75 @@ def run_extract(args):
 
 
 def _reel_window(
-    event: dict, *, pre_s: float = 5.0, default_s: float = 20.0
+    event: dict, *, pre_s: float = 5.0, post_s: float = 4.0,
+    default_s: float = 20.0
 ) -> tuple[float, float]:
     """``(start_s, duration_s)`` for one reel clip.
 
     A detector event is an instant, so it gets a fixed window. An on-ball span
-    has a real duration, so the window covers the touch plus the same lead-in —
-    otherwise a 1.2s touch and a 40s dribble would both become 20s of footage,
-    and consecutive touches would overlap into near-duplicate clips.
+    has a real duration, so the window covers the touch plus a lead-in and a
+    trail — otherwise a 1.2s touch and a 40s dribble would both become 20s of
+    footage.
     """
     ts = event.get("timestamp_s", event.get("position_ms", 0) / 1000)
     duration = event.get("duration_s")
-    span = default_s if not duration else pre_s + float(duration) + pre_s / 2
-    return max(0.0, ts - pre_s), span
+    if not duration:
+        return max(0.0, ts - pre_s), default_s
+    return max(0.0, ts - pre_s), pre_s + float(duration) + post_s
+
+
+def _merge_windows(events: list[dict], *, pre_s: float, post_s: float,
+                   merge_gap_s: float = 2.0) -> list[dict]:
+    """Collapse events whose clip windows touch into single, longer clips.
+
+    Consecutive touches in one passage of play sit seconds apart, so their padded
+    windows overlap heavily — cutting them separately replays the same footage
+    two or three times and chops a continuous piece of play into jump cuts. One
+    window over the whole passage is both shorter overall and easier to watch.
+
+    ``merge_gap_s`` also joins windows that merely come *close*, since a
+    two-second cutaway between two views of the same passage is more jarring
+    than just keeping the two seconds.
+
+    The merged clip carries the union of every source event's ``track_ids`` so
+    the halo still follows the player across the whole thing.
+    """
+    windows = []
+    for ev in events:
+        start, dur = _reel_window(ev, pre_s=pre_s, post_s=post_s)
+        windows.append((start, start + dur, ev))
+    windows.sort(key=lambda w: w[0])
+
+    merged: list[dict] = []
+    for start, end, ev in windows:
+        if merged and start - merged[-1]["_end"] <= merge_gap_s:
+            cur = merged[-1]
+            cur["_end"] = max(cur["_end"], end)
+            cur["_events"].append(ev)
+            for tid in _event_track_ids(ev):
+                cur["track_ids"].append(tid)
+            continue
+        merged.append({"_start": start, "_end": end, "_events": [ev],
+                       "track_ids": list(_event_track_ids(ev)),
+                       "timestamp_s": ev.get("timestamp_s"),
+                       "label": ev.get("label")})
+
+    out = []
+    for m in merged:
+        m["start_s"] = m.pop("_start")
+        m["duration_s"] = m.pop("_end") - m["start_s"]
+        m["n_events"] = len(m.pop("_events"))
+        m["track_ids"] = sorted(set(m["track_ids"]))
+        out.append(m)
+    return out
+
+
+def _event_track_ids(event: dict) -> list[int]:
+    ids = event.get("track_ids")
+    if ids:
+        return [int(t) for t in ids]
+    tid = event.get("track_id")
+    return [int(tid)] if tid is not None else []
 
 
 def run_reel(args):
@@ -245,12 +301,27 @@ def run_reel(args):
 
     halo_tracks, halo_style, halo_max_gap = _load_halo(run_dir, getattr(args, "halo", None))
 
+    pre_s = getattr(args, "pre", None) or 6.0
+    post_s = getattr(args, "post", None) or 5.0
+    merge_gap = getattr(args, "merge_gap", None)
+    merge_gap = 2.0 if merge_gap is None else merge_gap
+    windows = _merge_windows(events, pre_s=pre_s, post_s=post_s,
+                             merge_gap_s=merge_gap)
+    if len(windows) < len(events):
+        print(f"  merged {len(events)} spans into {len(windows)} clip(s) "
+              f"(windows within {merge_gap:g}s of each other joined)")
+
     with tempfile.TemporaryDirectory() as tmpdir:
         clip_paths = []
-        for i, event in enumerate(events):
-            start, duration = _reel_window(event)
+        for i, window in enumerate(windows):
+            start, duration = window["start_s"], window["duration_s"]
             tmp_path = Path(tmpdir) / f"tmp_{i:03d}.mp4"
-            samples = halo_samples_for(event, halo_tracks)
+            # Halo the *player*, not just the lanes the touch happened on: the
+            # window opens seconds before the touch, and the lane that carried
+            # it usually starts later than the clip does — which reads as the
+            # spotlight arriving late.
+            samples = halo_samples_for(window, halo_tracks,
+                                       extra_ids=player_tracks)
             if samples:
                 from soccer_vision.clips.halo import render_halo_clip
 
@@ -261,4 +332,5 @@ def run_reel(args):
                 ffmpeg_extract_clip(proxy_path, start, duration, tmp_path)
             clip_paths.append(tmp_path)
         out_path = build_reel(clip_paths, args.out)
-    print(f"Reel saved: {out_path} ({len(events)} clips — {_describe(args)})")
+    print(f"Reel saved: {out_path} ({len(windows)} clips from {len(events)} "
+          f"span(s) — {_describe(args)})")

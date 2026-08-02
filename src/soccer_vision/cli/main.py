@@ -99,6 +99,11 @@ def main():
     p_process.add_argument("--out-dir", default="runs", help="Output base directory")
     p_process.add_argument("--match-id", help="Match identifier (auto-generated if omitted)")
     p_process.add_argument("--device", default=None, help="PyTorch device: cpu / cuda / mps")
+    p_process.add_argument("--detect-fps", type=float, default=None,
+                           help="Detection rate (default: every frame). Lowering this "
+                                "is a speed knob with a measured accuracy cost — it "
+                                "breaks ByteTrack association and thins ball_track.json "
+                                "(job 38504772). Config: detector.detect_fps")
     p_process.add_argument(
         "--action-engine", nargs="+", metavar="ENGINE",
         help="Action-detection engine(s) to run: rules (default) / learned / vlm. "
@@ -147,6 +152,64 @@ def main():
                             help="Min gallery cosine similarity to name a track (default: 0.5)")
     p_identify.add_argument("--min-reid-margin", type=float, default=None,
                             help="Min similarity lead over the runner-up player (default: 0.05)")
+    p_identify.add_argument("--team",
+                            help="Only name lanes on this kit colour (e.g. black) — the "
+                                 "gallery holds one squad and cannot say 'none of the "
+                                 "above', so without this it names opponents and referees "
+                                 "after your own players. Uses the `teams` block of "
+                                 "tracks.json")
+    p_identify.add_argument("--team-strict", action="store_true",
+                            help="With --team, also hold back lanes that got no kit "
+                                 "colour at all (precision over reach)")
+    p_identify.add_argument("--no-ocr-verify", action="store_true",
+                            help="Skip cross-checking re-id names against jersey OCR "
+                                 "(reid+ocr only; saves the OCR pass over named tracks)")
+    p_identify.add_argument("--drop-on-conflict", action="store_true",
+                            help="Unname a track whose jersey reads contradict its "
+                                 "re-id name. Off by default: on hand-checked lanes "
+                                 "the reads were the wrong side (see "
+                                 "identity_evidence/ground_truth.md)")
+    p_identify.add_argument("--conflict-min-reads", type=int, default=None,
+                            help="High-confidence reads needed to veto a re-id name "
+                                 "(default: 4)")
+    p_identify.add_argument("--conflict-min-read-conf", type=float, default=None,
+                            help="Min per-read OCR confidence to count toward a veto "
+                                 "(default: 0.7)")
+    p_identify.add_argument("--conflict-min-share", type=float, default=None,
+                            help="Vetoing number's min share of strong-read weight "
+                                 "(default: 0.75)")
+    p_identify.add_argument("--conflict-exclude-jersey", nargs="+", type=int,
+                            help="Numbers that may never veto (OCR hallucination "
+                                 "classes, e.g. 1)")
+
+    # link-tracks
+    p_link = subparsers.add_parser(
+        "link-tracks",
+        help="Rejoin fragmented ByteTrack lanes across detector dropouts")
+    p_link.add_argument("--run", required=True, help="Run directory path")
+    p_link.add_argument("--max-gap", type=float, default=1.5,
+                        help="Max dropout to bridge, seconds (default: 1.5)")
+    p_link.add_argument("--max-dist", type=float, default=150.0,
+                        help="Max px between where motion says the player should "
+                             "be and where the next lane starts (default: 150)")
+    p_link.add_argument("--no-motion", action="store_true",
+                        help="Compare raw positions instead of extrapolating "
+                             "velocity across the gap (worse; for comparison)")
+    p_link.add_argument("--ignore-kit", action="store_true",
+                        help="Allow links between different kit colours")
+    p_link.add_argument("--appearance", action="store_true",
+                        help="Also require the two lane edges to look like the "
+                             "same person. Needs the proxy video; rejects 85%% of "
+                             "the links made when no true continuation exists")
+    p_link.add_argument("--min-appearance", type=float, default=0.70,
+                        help="Cosine similarity floor for --appearance (default: 0.70)")
+    p_link.add_argument("--no-interpolate", action="store_true",
+                        help="Don't fill positions across bridged gaps")
+    p_link.add_argument("--in-place", action="store_true",
+                        help="Overwrite tracks.json/jerseys.json so reel and "
+                             "extract use the linked ones (originals kept as "
+                             "*.unlinked.json)")
+    p_link.add_argument("--device", default=None, help="PyTorch device for --appearance")
 
     # enroll
     p_enroll = subparsers.add_parser(
@@ -194,6 +257,17 @@ def main():
     p_enroll.add_argument("--max-lanes", type=int, default=12,
                           help="Lanes ringed per window, longest first (default: 12). "
                                "Fixes the number of dropdowns in the config")
+    p_enroll.add_argument("--at", type=float, default=None, metavar="SEC",
+                          help="Pin the windows at this point in the match instead of "
+                               "spreading them; --n-windows then run back to back from "
+                               "here. For measuring track linking, which needs one "
+                               "contiguous stretch rather than a sample of the match")
+    p_enroll.add_argument("--all-lanes", action="store_true",
+                          help="Ring every lane in the window, paging them --max-lanes "
+                               "at a time, instead of keeping only the longest. Several "
+                               "passes over the same footage. Needed for a linking "
+                               "measurement: truncating drops the short lanes, which are "
+                               "exactly the ones linking exists to join")
     p_enroll.add_argument("--n-frames", type=int, default=20,
                           help="Frames to export for labelling, spread across the match "
                                "(default: 20)")
@@ -260,6 +334,14 @@ def main():
 
     # reel
     p_reel = subparsers.add_parser("reel", help="Build highlight reel")
+    p_reel.add_argument("--pre", type=float, default=6.0,
+                        help="Seconds of lead-in before each touch (default: 6)")
+    p_reel.add_argument("--post", type=float, default=5.0,
+                        help="Seconds kept after each touch (default: 5)")
+    p_reel.add_argument("--merge-gap", type=float, default=2.0,
+                        help="Join clips whose windows are within this many "
+                             "seconds, so one passage of play is one clip "
+                             "instead of several overlapping ones (default: 2)")
     p_reel.add_argument("--run", required=True)
     p_reel.add_argument("--event", help="Filter by event label")
     p_reel.add_argument("--team", help="Filter by team colour (e.g. blue)")
@@ -283,10 +365,12 @@ def main():
     p_trim.add_argument("--out", help="Output video path (default: <video>.trimmed.mp4)")
     p_trim.add_argument("--edl", help="Edit-decision-list JSON path (default: <video>.trim.json)")
     p_trim.add_argument("--save-track", help="Where to save an auto-built ball track")
-    p_trim.add_argument("--sample-fps", type=float, default=15.0,
-                        help="Sample rate when building a track (default: 15; the "
-                             "flickery ball detector needs a dense track for Kalman "
-                             "smoothing to lock on — lower rates over-reject)")
+    p_trim.add_argument("--sample-fps", type=float, default=30.0,
+                        help="Sample rate when building a track (default: 30, native. "
+                             "The flickery ball detector needs a dense track for Kalman "
+                             "smoothing to lock on: 22.1%% of detections rejected at 30 "
+                             "fps against 33.1%% at 5, and a 5 fps plan cut live play "
+                             "17%% of the time — job 38504772)")
     p_trim.add_argument("--min-dead", type=float, default=5.0,
                         help="Min seconds of dead time before a span is cut (default: 5)")
     p_trim.add_argument("--stationary-px", type=float, default=40.0,
@@ -396,6 +480,9 @@ def main():
     elif args.command == "identify":
         from soccer_vision.cli.identify import run_identify
         run_identify(args)
+    elif args.command == "link-tracks":
+        from soccer_vision.cli.link import run_link_tracks
+        run_link_tracks(args)
     elif args.command == "enroll":
         from soccer_vision.cli.enroll import run_enroll
         run_enroll(args)

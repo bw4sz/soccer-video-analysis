@@ -16,10 +16,10 @@ def run_pipeline(args):
 
     from soccer_vision.broadcast.virtual_cam import BroadcastConfig, generate_broadcast_proxy
     from soccer_vision.clips.extract import extract_event_clips
-    from soccer_vision.detection.ball import detect_ball_position
+    from soccer_vision.detection.ball import ball_position_from
     from soccer_vision.cli.main import field_filter_kwargs
     from soccer_vision.detection.field_filter import filter_spectators
-    from soccer_vision.detection.rfdetr import ALL_PERSON_CLASS_IDS, RFDETRSoccerDetector
+    from soccer_vision.detection.rfdetr import RFDETRSoccerDetector
     from soccer_vision.events.associate import associate_events, stamp_event_positions
     from soccer_vision.events.phases import classify_phase
     from soccer_vision.events.sources import ActionContext, active_detectors, run_detectors
@@ -91,9 +91,15 @@ def run_pipeline(args):
     # default 0.3). Overhead cameras may need lower (e.g. 0.15) to recover
     # small players.
     conf_threshold = config.get("detector", {}).get("conf_threshold", 0.3)
+    # The ball is small and dim enough to want a looser floor than a player;
+    # 0.2 is the default `detect_ball_position` has always used. Both classes
+    # come out of one forward now (see `predict_split`), so the two thresholds
+    # cost nothing extra.
+    BALL_CONF_THRESHOLD = config.get("detector", {}).get("ball_conf_threshold", 0.2)
     player_detector = ball_detector  # Use RF-DETR for both
     player_detector.conf_threshold = conf_threshold
-    print(f"  Detector: RF-DETR (conf_threshold: {conf_threshold})")
+    print(f"  Detector: RF-DETR (conf_threshold: {conf_threshold}, "
+          f"ball: {BALL_CONF_THRESHOLD})")
     if getattr(args, "broadcast", False):
         print("\n[Step 2] Generating broadcast proxy...")
         generate_broadcast_proxy(
@@ -114,14 +120,43 @@ def run_pipeline(args):
     print("\n[Step 3] Ball detection...")
     proxy_reader = VideoReader(run_dir.broadcast_proxy)
     proxy_fps = proxy_reader.fps
-    detect_interval = max(1, int(round(proxy_fps / 5)))  # 5 fps detection
+    # Detect on **every frame** by default. This used to be a hardcoded 5 fps,
+    # chosen for wall time, and it was quietly paying for that in accuracy on
+    # two separate axes:
+    #
+    #   1. ByteTrack was told `frame_rate=proxy_fps` (30) while being fed every
+    #      6th frame, so its motion model expected players to move a 30 fps
+    #      step and they moved a 5 fps one. Association fails on that mismatch,
+    #      which is a large part of the fragmentation `enroll`/`identify` exist
+    #      to paper over (856 lanes in 3 min, median lane 7 frames).
+    #   2. `ball_track.json` inherited the sparse rate, and the Kalman gate in
+    #      `trim-empty` needs a dense track: at 5 fps it rejects 33.1% of
+    #      detections against 22.1% at 30, and 17% of the time a 5 fps trim plan
+    #      removed sat on frames where the ball was visibly moving (job 38504772).
+    #
+    # Detection is ~0.045 s/frame and decode is paid whatever the rate, so a
+    # 60-min match goes from ~1.6 h to ~2.3 h. Lower it only if that stops being
+    # affordable; it is a speed knob with a measured accuracy cost, not a
+    # free one.
+    detect_fps = getattr(args, "detect_fps", None)
+    if detect_fps is None:
+        detect_fps = config.get("detector", {}).get("detect_fps")
+    detect_interval = max(1, int(round(proxy_fps / detect_fps))) if detect_fps else 1
+    effective_fps = proxy_fps / detect_interval
+    print(f"  Detection rate: {effective_fps:.1f} fps"
+          + ("" if detect_interval == 1 else
+             f" (every {detect_interval} frames — below native {proxy_fps:.1f}; "
+             "costs tracking association and ball-track density)"))
 
     ball_positions = []
     ball_samples: list[dict] = []
 
     # Step 4: Player tracking
     print("\n[Step 4] Player tracking...")
-    tracker = create_tracker(frame_rate=int(proxy_fps))
+    # ByteTrack must be told the rate it is actually *fed* at, not the video's
+    # native rate — it sizes its motion model and lost-track buffer off this.
+    # These agreed only by accident when detection ran at native rate.
+    tracker = create_tracker(frame_rate=max(1, int(round(effective_fps))))
     # Which slice of the frame counts as on-field. Printed because it silently
     # decides whether a player near an edge ever gets a track id at all.
     field_cut = field_filter_kwargs(args)
@@ -135,22 +170,30 @@ def run_pipeline(args):
     team_clf = TeamClassifier()
 
     for fn, frame in proxy_reader.sample_frames(detect_interval):
-        # Detect players and ball
-        person_dets = player_detector.predict(frame)
-
-        # RF-DETR returns mixed detections; separate ball from people by class_id
-        person_mask = np.isin(person_dets.class_id, list(ALL_PERSON_CLASS_IDS))
-        ball_dets = person_dets[~person_mask]
-        person_dets = person_dets[person_mask]
+        # People and ball out of ONE forward pass. This used to be two — a
+        # `predict()` at the player threshold plus a `detect_ball_position()`
+        # that ran the whole model again at the looser ball threshold — which
+        # doubled the detection cost of every run for nothing (job 38526638).
+        person_dets, ball_dets = player_detector.predict_split(
+            frame, player_conf=conf_threshold, ball_conf=BALL_CONF_THRESHOLD
+        )
 
         # Filter spectators: keep only field players
         person_dets = filter_spectators(person_dets, frame.shape, **field_cut)
-        detections = sv.Detections.merge([ball_dets, person_dets])
+        # The tracker sees the ball only at the *player* threshold. Feeding it
+        # the looser ball detections would mint extra ball lanes in tracks.json,
+        # which is a behaviour change, not a speedup — the ball track below is
+        # where the looser threshold belongs.
+        tracked_ball = (
+            ball_dets[ball_dets.confidence >= conf_threshold]
+            if len(ball_dets) else ball_dets
+        )
+        detections = sv.Detections.merge([tracked_ball, person_dets])
 
         tracked = track_detections(tracker, detections)
 
         # Ball
-        ball = detect_ball_position(frame, ball_detector)
+        ball = ball_position_from(ball_dets)
         # Record every sampled frame (visible or not) for the persisted ball
         # track. Kept separate from `ball_positions`, which the action engines
         # consume and which only carries frames where the ball was found.

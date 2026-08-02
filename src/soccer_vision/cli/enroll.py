@@ -173,6 +173,8 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
         track_samples, fps=fps, window_s=args.window,
         n_windows=args.n_windows, min_track_frames=args.min_track_frames,
         max_lanes=args.max_lanes, teams=teams, team=args.team,
+        start_s=getattr(args, "at", None),
+        all_lanes=getattr(args, "all_lanes", False),
     )
     if not windows:
         print(f"No lane lasted {args.min_track_frames} frames"
@@ -186,8 +188,15 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
 
     total_lanes = sum(len(w["lanes"]) for w in windows)
     crops = sum(lane["n_frames"] for w in windows for lane in w["lanes"])
-    print(f"{len(windows)} windows x {args.window:.0f}s, {total_lanes} lanes ringed "
+    n_stretches = len({w["start_frame"] for w in windows})
+    print(f"{len(windows)} tasks over {n_stretches} x {args.window:.0f}s of play, "
+          f"{total_lanes} lanes ringed "
           f"({crops} crops behind them, {crops / max(1, total_lanes):.0f} per lane)")
+    if getattr(args, "all_lanes", False):
+        pages = max(w.get("n_pages", 1) for w in windows)
+        print(f"  --all-lanes: every lane ringed, up to {pages} passes over the same "
+              f"footage. Pages are longest-lane-first, so stopping early leaves a "
+              f"gap you can measure rather than a biased sample.")
 
     urls = {}
     for w in windows:
@@ -264,6 +273,13 @@ def _enroll_from_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
     print(f"Source: tracklets — {summary['lanes_named']} lanes named across "
           f"{summary['windows']} windows ({summary['lanes_skipped']} skipped as "
           f"not-ours/unsure), {len(boxes)} crops")
+    if summary["matched_by_filename"]:
+        print(f"  ({summary['matched_by_filename']} tasks matched on clip filename — "
+              "the export lost its 'window' field, which Label Studio drops unless "
+              "the tasks JSON itself was imported)")
+    if summary["unmatched_tasks"]:
+        print(f"  WARNING: {summary['unmatched_tasks']} task(s) matched no window in "
+              f"{manifest_path} — is this the manifest that produced these clips?")
     for name, n in sorted(summary["per_player"].items(), key=lambda kv: -kv[1]):
         print(f"  {roster_full_name(profile, name):<24} {n} crops")
     if not boxes:

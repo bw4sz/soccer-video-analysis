@@ -24,6 +24,7 @@ longer clips).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -62,6 +63,8 @@ def choose_windows(
     max_lanes: int,
     teams: dict[int, str] | None = None,
     team: str | None = None,
+    start_s: float | None = None,
+    all_lanes: bool = False,
 ) -> list[dict]:
     """Pick evenly spread windows and the lanes to ring in each.
 
@@ -73,6 +76,25 @@ def choose_windows(
 
     Lanes are capped at ``max_lanes`` because the number of dropdowns is fixed
     by the config, and a window ringing thirty players is one nobody will finish.
+
+    Two options exist for a different job than building a gallery — measuring how
+    well **track linking** works, which needs to know every lane in one stretch
+    rather than a sample of lanes across the match:
+
+    ``start_s``
+        Pin the window at one moment instead of spreading. With ``n_windows``
+        above 1 the windows run *consecutively* from there, covering a
+        contiguous stretch.
+
+    ``all_lanes``
+        Don't drop the lanes past ``max_lanes``; **page** them. A 20 s window at
+        native frame rate holds far more lanes than any form can carry, and
+        truncating biases the measurement precisely where linking matters —
+        short lanes are the ones that most need joining. So the same window is
+        emitted once per page of ``max_lanes``, longest lanes first, and the
+        annotator makes several passes over the same clip. Each page is a task
+        in its own right with its own slot→track map, so stopping after page 2
+        leaves a partial answer whose gaps are known rather than a biased one.
     """
     if not track_samples:
         return []
@@ -93,14 +115,19 @@ def choose_windows(
     window_frames = int(round(window_s * fps))
 
     starts = []
-    if n_windows == 1 or span_frames <= window_frames:
+    if start_s is not None:
+        # Pinned: run the windows back to back from here, so N of them cover one
+        # contiguous N x window_s stretch rather than sampling the whole match.
+        base = int(round(start_s * fps))
+        starts = [base + i * window_frames for i in range(max(1, n_windows))]
+    elif n_windows == 1 or span_frames <= window_frames:
         starts = [first]
     else:
         step = (span_frames - window_frames) / (n_windows - 1)
         starts = [int(round(first + i * step)) for i in range(n_windows)]
 
     windows = []
-    for w, start in enumerate(starts):
+    for start in starts:
         end = start + window_frames
         present = []
         for tid, samples in eligible.items():
@@ -109,30 +136,39 @@ def choose_windows(
                 present.append((len(inside), tid, inside))
         if not present:
             continue
-        # Pick the longest lanes — they yield the most crops and are the easiest
-        # to follow — but *number* them in the order they first appear. Numbering
-        # by length scatters the sequence across the clip: on the U14G run that
-        # put slot 10 on screen at 0.0s and slot 1 at 1.8s, so an annotator
-        # scrubbing through met "2, 10, 3" and reasonably concluded the numbering
-        # was broken. Chronological order means playing the clip once walks the
-        # form from top to bottom.
+        # Longest first, so page 1 carries the most player-time and an annotator
+        # who stops early leaves a gap whose size is known.
         present.sort(reverse=True, key=lambda x: (x[0], -x[1]))
-        chosen = sorted(present[:max_lanes], key=lambda x: (x[2][0][0], -x[0]))
-        lanes = [
-            {"slot": i + 1, "track_id": tid, "n_frames": n,
-             "first_frame": inside[0][0], "last_frame": inside[-1][0],
-             "enters_s": round((inside[0][0] - start) / fps, 1),
-             "leaves_s": round((inside[-1][0] - start) / fps, 1)}
-            for i, (n, tid, inside) in enumerate(chosen)
-        ]
-        windows.append({
-            "window": w + 1,
-            "start_frame": start,
-            "end_frame": end,
-            "start_s": round(start / fps, 2),
-            "duration_s": round(window_frames / fps, 2),
-            "lanes": lanes,
-        })
+        pages = (
+            [present[i:i + max_lanes] for i in range(0, len(present), max_lanes)]
+            if all_lanes else [present[:max_lanes]]
+        )
+        for page_no, page in enumerate(pages, start=1):
+            # Pick the longest lanes — they yield the most crops and are the
+            # easiest to follow — but *number* them in the order they first
+            # appear. Numbering by length scatters the sequence across the clip:
+            # on the U14G run that put slot 10 on screen at 0.0s and slot 1 at
+            # 1.8s, so an annotator scrubbing through met "2, 10, 3" and
+            # reasonably concluded the numbering was broken. Chronological order
+            # means playing the clip once walks the form from top to bottom.
+            chosen = sorted(page, key=lambda x: (x[2][0][0], -x[0]))
+            lanes = [
+                {"slot": i + 1, "track_id": tid, "n_frames": n,
+                 "first_frame": inside[0][0], "last_frame": inside[-1][0],
+                 "enters_s": round((inside[0][0] - start) / fps, 1),
+                 "leaves_s": round((inside[-1][0] - start) / fps, 1)}
+                for i, (n, tid, inside) in enumerate(chosen)
+            ]
+            windows.append({
+                "window": len(windows) + 1,
+                "start_frame": start,
+                "end_frame": end,
+                "start_s": round(start / fps, 2),
+                "duration_s": round(window_frames / fps, 2),
+                "lanes": lanes,
+                "page": page_no,
+                "n_pages": len(pages),
+            })
     return windows
 
 
@@ -310,7 +346,17 @@ def onscreen_guide(window: dict, max_lanes: int) -> str:
     if unused:
         parts.append(f"(Players {', '.join(unused)} are not in this clip "
                      f"— leave them blank)")
-    return "On screen —  " + "  ·  ".join(parts)
+    guide = "On screen —  " + "  ·  ".join(parts)
+    # Under --all-lanes the same footage comes round several times ringing
+    # different people. Say so, or page 2 reads as a duplicate task and gets
+    # skipped — and the pages that carry the short lanes are exactly the ones a
+    # linking measurement cannot do without.
+    if window.get("n_pages", 1) > 1:
+        guide = (f"PASS {window['page']} of {window['n_pages']} over this same "
+                 f"{window['duration_s']:.0f}s of play, at "
+                 f"{_clock(window['start_s'])} — each pass rings a different set "
+                 f"of players, so the footage repeating is expected.\n" + guide)
+    return guide
 
 
 def build_tasks(windows: list[dict], clip_urls: dict[int, str], fps: float,
@@ -328,6 +374,8 @@ def build_tasks(windows: list[dict], clip_urls: dict[int, str], fps: float,
                 "timestamp": _clock(w["start_s"]),
                 "slots": {str(lane["slot"]): lane["track_id"] for lane in w["lanes"]},
                 "n_lanes": len(w["lanes"]),
+                "page": w.get("page", 1),
+                "n_pages": w.get("n_pages", 1),
             }
         })
     return tasks
@@ -351,15 +399,65 @@ def boxes_from_tracklet_export(
     named ``NOT_OURS`` / ``UNSURE`` contribute nothing, and a lane is sampled at
     most ``max_samples_per_lane`` times — 129 near-identical crops from one lane
     would swamp a gallery built from a dozen views.
+
+    **Matching a task back to its window.** The task's ``window`` field is the
+    first choice, but Label Studio only preserves it when the tasks JSON itself
+    was imported: point a project at the clips directory instead (or re-import
+    after retargeting) and every field but ``video`` is dropped, so a fully
+    labelled export matches nothing. The clip filename carries the window number
+    too, so fall back to that — and count what still fails to match, because
+    silently returning zero crops from a good export reads as "the labelling
+    didn't take" and costs an annotation round to rediscover.
+    """
+    named, summary = named_lanes_from_export(export, manifest)
+    out: list[tuple[int, np.ndarray, str]] = []
+    summary["lanes_named"] = 0
+    summary["per_player"] = {}
+
+    for lane, name in named:
+        samples = [
+            (f, b) for f, b in track_samples.get(lane["track_id"], [])
+            if lane["first_frame"] <= f <= lane["last_frame"]
+        ]
+        if not samples:
+            continue
+        step = max(1, len(samples) // max_samples_per_lane)
+        kept = samples[::step][:max_samples_per_lane]
+        out.extend((f, b, name) for f, b in kept)
+        summary["lanes_named"] += 1
+        summary["per_player"][name] = summary["per_player"].get(name, 0) + len(kept)
+    return out, summary
+
+
+def named_lanes_from_export(
+    export: list[dict], manifest: dict
+) -> tuple[list[tuple[dict, str]], dict]:
+    """``[(lane, player_name), ...]`` for every slot an annotator actually named.
+
+    Split out of :func:`boxes_from_tracklet_export` because the same export
+    answers a second question that has nothing to do with crops: **two lanes
+    labelled with the same name are the same player**, which is ground truth for
+    whether track linking rejoined them (``slurm/eval_link_ground_truth.py``).
+
+    ``NOT_OURS`` / ``UNSURE`` are dropped — they are a refusal to identify, not
+    an identity, and treating them as one would merge every opponent on the pitch
+    into a single "player".
     """
     windows = {w["window"]: w for w in manifest["windows"]}
-    out: list[tuple[int, np.ndarray, str]] = []
-    summary = {"lanes_named": 0, "lanes_skipped": 0, "windows": 0, "per_player": {}}
+    named: list[tuple[dict, str]] = []
+    summary = {"lanes_skipped": 0, "windows": 0,
+               "unmatched_tasks": 0, "matched_by_filename": 0}
 
     for task in export:
         data = task.get("data", {}) or {}
-        window = windows.get(data.get("window"))
+        key = data.get("window")
+        if key not in windows:
+            key = _window_of_clip(data.get("video"))
+            if key in windows:
+                summary["matched_by_filename"] += 1
+        window = windows.get(key)
         if window is None:
+            summary["unmatched_tasks"] += 1
             continue
         lane_of = {lane["slot"]: lane for lane in window["lanes"]}
         seen_window = False
@@ -375,21 +473,21 @@ def boxes_from_tracklet_export(
                 if name.lower() in (NOT_OURS, UNSURE, ""):
                     summary["lanes_skipped"] += 1
                     continue
-                lane = lane_of[slot]
-                samples = [
-                    (f, b) for f, b in track_samples.get(lane["track_id"], [])
-                    if lane["first_frame"] <= f <= lane["last_frame"]
-                ]
-                if not samples:
-                    continue
-                step = max(1, len(samples) // max_samples_per_lane)
-                kept = samples[::step][:max_samples_per_lane]
-                out.extend((f, b, name) for f, b in kept)
-                summary["lanes_named"] += 1
-                summary["per_player"][name] = summary["per_player"].get(name, 0) + len(kept)
+                named.append((lane_of[slot], name))
                 seen_window = True
         summary["windows"] += int(seen_window)
-    return out, summary
+    return named, summary
+
+
+def _window_of_clip(video) -> int | None:
+    """``".../window_004_986s.mp4"`` → 4, whatever routing prefix precedes it.
+
+    The URL is rewritten freely — ``/data/local-files/?d=…`` against one document
+    root or another, or a plain HTTP base — but the basename is written once by
+    ``enroll`` and survives all of it.
+    """
+    m = re.search(r"window_(\d+)_", str(video or ""))
+    return int(m.group(1)) if m else None
 
 
 def _slot_of(from_name) -> int | None:
