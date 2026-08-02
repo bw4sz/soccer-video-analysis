@@ -409,9 +409,43 @@ def boxes_from_tracklet_export(
     silently returning zero crops from a good export reads as "the labelling
     didn't take" and costs an annotation round to rediscover.
     """
-    windows = {w["window"]: w for w in manifest["windows"]}
+    named, summary = named_lanes_from_export(export, manifest)
     out: list[tuple[int, np.ndarray, str]] = []
-    summary = {"lanes_named": 0, "lanes_skipped": 0, "windows": 0, "per_player": {},
+    summary["lanes_named"] = 0
+    summary["per_player"] = {}
+
+    for lane, name in named:
+        samples = [
+            (f, b) for f, b in track_samples.get(lane["track_id"], [])
+            if lane["first_frame"] <= f <= lane["last_frame"]
+        ]
+        if not samples:
+            continue
+        step = max(1, len(samples) // max_samples_per_lane)
+        kept = samples[::step][:max_samples_per_lane]
+        out.extend((f, b, name) for f, b in kept)
+        summary["lanes_named"] += 1
+        summary["per_player"][name] = summary["per_player"].get(name, 0) + len(kept)
+    return out, summary
+
+
+def named_lanes_from_export(
+    export: list[dict], manifest: dict
+) -> tuple[list[tuple[dict, str]], dict]:
+    """``[(lane, player_name), ...]`` for every slot an annotator actually named.
+
+    Split out of :func:`boxes_from_tracklet_export` because the same export
+    answers a second question that has nothing to do with crops: **two lanes
+    labelled with the same name are the same player**, which is ground truth for
+    whether track linking rejoined them (``slurm/eval_link_ground_truth.py``).
+
+    ``NOT_OURS`` / ``UNSURE`` are dropped — they are a refusal to identify, not
+    an identity, and treating them as one would merge every opponent on the pitch
+    into a single "player".
+    """
+    windows = {w["window"]: w for w in manifest["windows"]}
+    named: list[tuple[dict, str]] = []
+    summary = {"lanes_skipped": 0, "windows": 0,
                "unmatched_tasks": 0, "matched_by_filename": 0}
 
     for task in export:
@@ -439,21 +473,10 @@ def boxes_from_tracklet_export(
                 if name.lower() in (NOT_OURS, UNSURE, ""):
                     summary["lanes_skipped"] += 1
                     continue
-                lane = lane_of[slot]
-                samples = [
-                    (f, b) for f, b in track_samples.get(lane["track_id"], [])
-                    if lane["first_frame"] <= f <= lane["last_frame"]
-                ]
-                if not samples:
-                    continue
-                step = max(1, len(samples) // max_samples_per_lane)
-                kept = samples[::step][:max_samples_per_lane]
-                out.extend((f, b, name) for f, b in kept)
-                summary["lanes_named"] += 1
-                summary["per_player"][name] = summary["per_player"].get(name, 0) + len(kept)
+                named.append((lane_of[slot], name))
                 seen_window = True
         summary["windows"] += int(seen_window)
-    return out, summary
+    return named, summary
 
 
 def _window_of_clip(video) -> int | None:
