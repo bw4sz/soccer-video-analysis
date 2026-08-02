@@ -396,10 +396,16 @@ def propagate_names(jerseys: dict, result: LinkResult) -> tuple[dict, dict]:
     higher-similarity name and are reported, because a conflict is evidence that
     either a link or a name is wrong and the count is the honest error signal
     available without hand labelling.
+
+    A lane whose jersey reads vetoed its re-id name (``conflict`` in
+    ``jerseys.json``, see :mod:`soccer_vision.identify.crosscheck`) will not
+    inherit a *different* number than the one read off its shirt — otherwise
+    linking would quietly hand back the identity the reader just disproved.
     """
     tracks = jerseys.get("tracks", {})
     chains = result.chains()
     conflicts = []
+    blocked = 0
     out = {tid: dict(rec) for tid, rec in tracks.items()}
     for root, members in chains.items():
         named = [(tracks[t].get("similarity") or 0.0, t, tracks[t]["name"])
@@ -419,6 +425,9 @@ def propagate_names(jerseys: dict, result: LinkResult) -> tuple[dict, dict]:
         jersey = tracks[src].get("jersey")
         for t in members:
             rec = out.setdefault(t, {})
+            if _vetoed_against(rec, jersey):
+                blocked += 1
+                continue
             if not rec.get("name"):
                 rec["name"] = name
                 rec["jersey"] = jersey
@@ -433,6 +442,16 @@ def propagate_names(jerseys: dict, result: LinkResult) -> tuple[dict, dict]:
             if any(tracks.get(t, {}).get("name") for t in m)),
         "conflicts": len(conflicts),
         "conflict_detail": conflicts[:50],
+        "blocked_by_jersey": blocked,
         "named_before": sum(1 for r in tracks.values() if r.get("name")),
         "named_after": sum(1 for r in out.values() if r.get("name")),
     }
+
+
+def _vetoed_against(rec: dict, jersey) -> bool:
+    """True when this lane's own jersey reads contradict the number being propagated."""
+    conflict = rec.get("conflict")
+    if not conflict or jersey is None:
+        return False
+    read = conflict.get("ocr_jersey")
+    return read is not None and int(read) != int(jersey)

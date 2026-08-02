@@ -10,8 +10,13 @@ Two ways to put a name on a ByteTrack lane, and this drives both:
   enrolment, so it's the cold-start path and the fallback.
 
 ``--method reid+ocr`` (what ``auto`` picks when a gallery exists) runs re-id
-first and sends only the tracks it abstained on to OCR — the gallery can't name a
-player it never enrolled, and OCR occasionally can.
+first and sends the tracks it abstained on to OCR — the gallery can't name a
+player it never enrolled, and OCR occasionally can. It also sends the tracks
+re-id *did* name, not to rename them but to **cross-check** them: several
+high-confidence reads agreeing on a number that isn't the named player's is
+proof the re-id match is wrong, and that track is dropped back to unknown
+(:mod:`soccer_vision.identify.crosscheck`; ``--no-ocr-verify`` skips this pass
+and the OCR it costs).
 
 Runs as its own opt-in step (not part of `process`) over an already-processed
 run, and writes ``jerseys.json``: per track, the matched name and/or voted
@@ -64,34 +69,44 @@ def run_identify(args):
     if method.startswith("reid"):
         _run_reid(args, track_boxes, proxy_path, gallery_path, reid_cfg, profile, results)
 
+    verify = method == "reid+ocr" and not args.no_ocr_verify
+
     if method.endswith("ocr"):
-        # In reid+ocr, OCR only sees the tracks the gallery couldn't name.
+        # OCR sees the tracks the gallery couldn't name, plus — when verifying —
+        # the ones it did, to check their numbers against the reads.
         todo = {t: b for t, b in track_boxes.items()
-                if method == "ocr" or results[t]["name"] is None}
-        _run_ocr(args, todo, proxy_path, profile, results)
+                if method == "ocr" or verify or results[t]["name"] is None}
+        _run_ocr(args, todo, proxy_path, profile, results,
+                 verify=verify, reid_cfg=reid_cfg)
 
     doc = {
         "video": proxy_path.name,
         "method": method,
         "gallery": str(gallery_path) if gallery_path else None,
         "model": args.model or "parseq",
+        "ocr_verify": verify,
         "tracks": {str(t): r for t, r in results.items()},
     }
     jerseys_path.write_text(json.dumps(doc, indent=2))
 
     named = sum(1 for r in results.values() if r["name"] or r["jersey"] is not None)
+    dropped = sum(1 for r in results.values() if r["conflict"])
     by_source: dict[str, int] = {}
     for r in results.values():
         if r["source"]:
             by_source[r["source"]] = by_source.get(r["source"], 0) + 1
     breakdown = ", ".join(f"{k}: {v}" for k, v in sorted(by_source.items())) or "none"
     print(f"\nIdentified {named}/{len(results)} tracks ({breakdown}). Saved: {jerseys_path}")
+    if dropped:
+        print(f"{dropped} re-id match(es) dropped on a jersey conflict — see the "
+              f"`conflict` records in jerseys.json")
     print(f"Next: soccer-vision reel --run {run_dir} --player <name>   (or --number <N>)")
 
 
 def _blank() -> dict:
     return {"jersey": None, "name": None, "source": None, "confidence": 0.0,
-            "n_obs": 0, "legible_frac": 0.0, "similarity": None}
+            "n_obs": 0, "legible_frac": 0.0, "similarity": None,
+            "crosscheck": None, "conflict": None}
 
 
 def _resolve_gallery(flag, reid_cfg: dict, run_dir: Path) -> Path | None:
@@ -153,12 +168,16 @@ def _jersey_for(name: str, profile: dict | None) -> int | None:
     return get_jersey_by_name(profile, name) if profile else None
 
 
-def _run_ocr(args, track_boxes, proxy_path, profile, results):
+def _run_ocr(args, track_boxes, proxy_path, profile, results, *,
+             verify=False, reid_cfg=None):
     from soccer_vision.identify.jersey_ocr import JerseyNumberRecognizer, assign_jerseys
     from soccer_vision.io.video import VideoReader
     from soccer_vision.profiles.loader import get_player
 
-    print(f"OCR on {len(track_boxes)} tracks...")
+    to_check = sum(1 for t in track_boxes if results[t]["source"] == "reid")
+    detail = (f" ({len(track_boxes) - to_check} to name, "
+              f"{to_check} to cross-check re-id)") if verify else ""
+    print(f"OCR on {len(track_boxes)} tracks{detail}...")
     if not track_boxes:
         return
 
@@ -182,14 +201,73 @@ def _run_ocr(args, track_boxes, proxy_path, profile, results):
     finally:
         reader.close()
 
+    cc_kwargs = _crosscheck_kwargs(args, reid_cfg or {})
+    checked: dict[str, int] = {}
+
     for tid, v in votes.items():
         r = results[tid]
+        if r["source"] == "reid":
+            # Never rename a re-id match — only corroborate or veto it.
+            verdict = _apply_crosscheck(tid, r, v, cc_kwargs)
+            checked[verdict] = checked.get(verdict, 0) + 1
+            continue
         r.update(jersey=v.jersey, confidence=round(v.confidence, 3),
                  n_obs=v.n_obs, legible_frac=round(v.legible_frac, 3))
         if v.jersey is not None:
             player = get_player(profile, v.jersey) if profile else None
             r["name"] = (player or {}).get("name") or f"#{v.jersey}"
             r["source"] = "ocr"
+
+    if verify:
+        from soccer_vision.identify.crosscheck import AGREE, CONFLICT, NO_EVIDENCE
+
+        print(f"Cross-checked {sum(checked.values())} re-id matches: "
+              f"{checked.get(AGREE, 0)} corroborated, "
+              f"{checked.get(CONFLICT, 0)} dropped on a jersey conflict, "
+              f"{checked.get(NO_EVIDENCE, 0)} no legible evidence "
+              f"(min_reads={cc_kwargs['min_reads']}, "
+              f"min_read_conf={cc_kwargs['min_read_conf']})")
+
+
+def _apply_crosscheck(tid, r, vote, cc_kwargs) -> str:
+    """Weigh a re-id-named track's jersey reads; drop the track if they contradict it.
+
+    Returns the verdict. On a conflict the name and number are cleared — the
+    reads say who this *isn't*, not who it is — while ``similarity`` and the
+    ``conflict`` record stay so the drop is auditable in ``jerseys.json``.
+    """
+    from soccer_vision.identify.crosscheck import crosscheck_jersey
+
+    cc = crosscheck_jersey(r["jersey"], vote.reads, **cc_kwargs)
+    r["crosscheck"] = cc.verdict
+    r["legible_frac"] = round(vote.legible_frac, 3)
+    if not cc.conflicts:
+        return cc.verdict
+
+    r["conflict"] = {
+        "reid_name": r["name"], "reid_jersey": r["jersey"],
+        "ocr_jersey": cc.jersey, "ocr_confidence": round(cc.confidence, 3),
+        "n_obs": cc.n_obs,
+    }
+    print(f"  track {tid}: re-id said {r['name']} (#{r['jersey']}) but "
+          f"{cc.n_obs} strong reads say #{cc.jersey} "
+          f"(conf {cc.confidence:.2f}) — dropped", flush=True)
+    r.update(jersey=None, name=None, source=None, confidence=0.0)
+    return cc.verdict
+
+
+def _crosscheck_kwargs(args, reid_cfg: dict) -> dict:
+    """Veto thresholds from the flags, else the profile's ``reid:`` block, else defaults."""
+    return {
+        "min_reads": _first_set(args.conflict_min_reads,
+                                reid_cfg.get("conflict_min_reads"), 4),
+        "min_read_conf": _first_set(args.conflict_min_read_conf,
+                                    reid_cfg.get("conflict_min_read_conf"), 0.7),
+        "min_share": _first_set(args.conflict_min_share,
+                                reid_cfg.get("conflict_min_share"), 0.75),
+        "exclude": args.conflict_exclude_jersey
+                   or reid_cfg.get("conflict_exclude_jersey") or (),
+    }
 
 
 def _first_set(*values):

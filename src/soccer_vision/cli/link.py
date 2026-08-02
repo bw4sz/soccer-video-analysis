@@ -152,6 +152,9 @@ def run_link_tracks(args):
         if jstats["conflicts"]:
             print(f"  {jstats['conflicts']:,} chains carry two different names — "
                   "each is a wrong link or a wrong name; see track_links.json")
+        if jstats.get("blocked_by_jersey"):
+            print(f"  {jstats['blocked_by_jersey']:,} lanes refused an inherited "
+                  "name their own jersey reads contradict")
         out_j = jerseys_path if args.in_place else run_dir / "jerseys.linked.json"
         if args.in_place:
             shutil.copy2(jerseys_path, run_dir / "jerseys.unlinked.json")

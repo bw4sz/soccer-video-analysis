@@ -152,6 +152,21 @@ def main():
                             help="Min gallery cosine similarity to name a track (default: 0.5)")
     p_identify.add_argument("--min-reid-margin", type=float, default=None,
                             help="Min similarity lead over the runner-up player (default: 0.05)")
+    p_identify.add_argument("--no-ocr-verify", action="store_true",
+                            help="Skip cross-checking re-id names against jersey OCR "
+                                 "(reid+ocr only; saves the OCR pass over named tracks)")
+    p_identify.add_argument("--conflict-min-reads", type=int, default=None,
+                            help="High-confidence reads needed to veto a re-id name "
+                                 "(default: 4)")
+    p_identify.add_argument("--conflict-min-read-conf", type=float, default=None,
+                            help="Min per-read OCR confidence to count toward a veto "
+                                 "(default: 0.7)")
+    p_identify.add_argument("--conflict-min-share", type=float, default=None,
+                            help="Vetoing number's min share of strong-read weight "
+                                 "(default: 0.75)")
+    p_identify.add_argument("--conflict-exclude-jersey", nargs="+", type=int,
+                            help="Numbers that may never veto (OCR hallucination "
+                                 "classes, e.g. 1)")
 
     # link-tracks
     p_link = subparsers.add_parser(

@@ -570,12 +570,12 @@ gallery entries.
 
 **Config / fallback.** `identify --method` takes `auto` (default — `reid+ocr`
 when a gallery is present, else `ocr`), `ocr`, `reid`, or `reid+ocr`. `reid+ocr`
-matches on appearance first and sends only the tracks the gallery *abstained* on
-to OCR: the gallery can't name a player it never enrolled (an opponent, a
-referee), and abstaining is deliberate — mislabelling a clip is worse than
-leaving it unnamed. Thresholds are `--min-similarity` (0.5) and
-`--min-reid-margin` (0.05, the winner's lead over the runner-up). Settle them
-once in the profile and drop the flags:
+matches on appearance first and sends the tracks the gallery *abstained* on to
+OCR: the gallery can't name a player it never enrolled (an opponent, a referee),
+and abstaining is deliberate — mislabelling a clip is worse than leaving it
+unnamed. Thresholds are `--min-similarity` (0.5) and `--min-reid-margin` (0.05,
+the winner's lead over the runner-up). Settle them once in the profile and drop
+the flags:
 
 ```yaml
 reid:
@@ -586,6 +586,42 @@ reid:
 
 `jerseys.json` gains `source` (`"reid"` / `"ocr"` / `null`) and `similarity` per
 track, so which route named a clip is always auditable.
+
+### OCR vetoes re-id, it never renames it
+
+`reid+ocr` also sends the tracks re-id *did* name to OCR, to **cross-check**
+them (`soccer_vision.identify.crosscheck`). Re-id is right about 42% of the time
+on teammates in one kit and confidently wrong the rest, which is how another
+child's clip lands in a reel; OCR reads nothing on most crops, but several
+high-confidence reads agreeing on a number across one lane are near-proof of what
+that shirt says. So they are combined **asymmetrically** — re-id names, OCR is
+only ever allowed to *veto*:
+
+- **Conflict** (strong reads back a number that isn't the named player's) — the
+  track is **dropped back to unknown**, and `--player` / `--number` stop
+  selecting it. It is not relabelled to the read number: the evidence says who
+  this lane *isn't*, and the reader may be looking at an opponent or a number
+  belonging to nobody on the roster.
+- **Agree / no evidence** — the re-id name stands. OCR abstaining is the normal
+  case and means nothing.
+
+Every checked track records `crosscheck` (`"agree"` / `"conflict"` /
+`"no_evidence"`) in `jerseys.json`, and a dropped one keeps a `conflict` block
+(`reid_name`, `reid_jersey`, `ocr_jersey`, `ocr_confidence`, `n_obs`) plus its
+original `similarity`, so no identity vanishes unexplained.
+
+**The veto bar sits far above the bar for naming a track from OCR** (3 reads /
+0.5 share / 0.15 margin). Reads are first floored at `--conflict-min-read-conf`
+0.7 — low-confidence PARSeq output on this footage hallucinates digits, notably
+`1` — and the survivors must number `--conflict-min-reads` 4 and hold
+`--conflict-min-share` 0.75 of the weight. `--conflict-exclude-jersey 1` bars a
+number from ever vetoing. A wrong veto costs one dropped clip; a missed veto puts
+the wrong child in a parent's reel, so this is asymmetric on purpose. The same
+keys work in the profile's `reid:` block (`conflict_min_reads`,
+`conflict_min_read_conf`, `conflict_min_share`, `conflict_exclude_jersey`).
+
+The pass costs OCR over the re-id-named tracks as well as the abstained ones —
+roughly double the OCR work. `--no-ocr-verify` skips it.
 
 **Validation.** `slurm/validate_reid.py` does leave-one-track-out on a processed
 run: hold out one ByteTrack lane, build the gallery from the others, and see if
