@@ -1182,6 +1182,55 @@ tracklet windows staged for exactly this and they are **not annotated**;
 gate change by rendering the chain and looking at it — `scripts/follow_player.py`
 takes about a minute.
 
+### What a rebuilt reel actually costs — job 38562933, 2026-08-02
+
+First `identify` against `runs/saints-u14g-full-30fps`, with the ball track gated
+offline (`scripts/smooth_saved_ball_track.py`), lanes deduped and linked, and the
+one-lane halo. Against the same match at 5 fps:
+
+| | 5 fps | 30 fps |
+|---|---|---|
+| lanes / named | 17,395 / 2,224 | 44,350 / **1,450** |
+| Morgan named seconds (pre → post link) | 899 → 1,333 | 101 → 198 |
+| her frames carrying 2+ lanes of her name | 18.4% → **28.4%** | 0.5% → **1.1%** |
+| worst concurrency, any player | 4 → 6 | 2 → 2 |
+| Morgan spans / touch seconds | 58 / 41 s | 14 / 22 s |
+| reel length | 8.7 min | **2.1 min** |
+
+**The reel is watchable now and the name collision is gone — but not because
+anything fixed it.** Re-id simply names far less at 30 fps and what it names is
+right, so issue #28 is *masked* here rather than solved. Read the two columns as
+a precision/recall trade, not as progress on the constraint.
+
+**A reel's length is a padding policy, not a detection result.** `reel` pads each
+span 6 s before and 5 s after and merges within 2 s, so Morgan's **41 s** of
+touches on the 5 fps run became an **8.7-minute** reel — 7.9% signal.
+`slurm/report_on_ball_coverage.py` prints touch seconds and projected reel
+minutes side by side for exactly this reason. Shorten a reel with `--pre` /
+`--post` / `--merge-gap`; it is a different problem from finding the moments.
+
+**Gating the ball changes *selection*, not just the jump statistics.** Saints
+on-ball time went 2,626 s raw → **1,831 s gated** (-30%) while the span count
+went **535 → 694**: the gate breaks long false spans — the ball teleporting onto
+a player and staying "on" them — into shorter true ones.
+
+**Coverage is the binding constraint, by a lot.** Ceiling 1,831 s of Saints
+on-ball time; named at all 365 s (20%); Morgan **22 s (1.2%)** against a fair
+share of roughly 166 s. We catch about **13% of her touches**. And only *one*
+named lane in her reel came from re-id directly (the hand-verified 14185, sim
+0.845) — every other carries `source: "linked"`, so the reel is name propagation
+off a handful of decisions and a wrong seed takes a whole chain with it.
+
+**Within-lane drift is real and is not measurable without labels.** Lane 37964
+(50.5 s, 7 of her 14 spans) holds the right black-kit player, **drifts onto an
+adjacent white-kit player at 3012 s and 3019 s**, then returns. The kit gate
+cannot see it (the lane is stamped black overall) and linking did not cause it —
+the raw ByteTrack lane contains two people, the case gta-link's *splitter* exists
+for. Counting frames where a black lane's box overlaps a white lane's box at
+IoU>0.5 **does not detect it** (lane 37964 scores 0.4%), because when the black
+lane grabs the white player, that player's own lane has usually just died — which
+is why the grab happened.
+
 **Camera pan is measured and is not the lever it looks like.** This Veo camera
 moves 1.35 px/frame at the median and 10.8 px/frame at p99 (~325 px/s), so every
 motion model in the stack — ByteTrack's Kalman, the linker's velocity

@@ -1519,5 +1519,58 @@ it buys named coverage by putting her name on lanes concurrent with her own.
 Linking is still what makes the *halo* smooth; these are different axes and the
 job prints both.
 
-**Result:** _pending_
+**Result: 9 min. The reel is watchable, short, and mostly her — coverage is now
+the whole problem.**
+
+| | 5 fps run | 30 fps run |
+|---|---|---|
+| lanes / named by re-id | 17,395 / 2,224 (incl. OCR) | 44,350 / **1,450** |
+| Morgan named seconds, pre-link | 899 | 101 |
+| Morgan named seconds, post-link | 1,333 | 198 |
+| Morgan frames with 2+ lanes of her name | 18.4% -> **28.4%** | 0.5% -> **1.1%** |
+| worst concurrency, any player | 4 -> 6 | 2 -> 2 |
+| all named players, 2+ concurrent | 17.9% -> 21.9% | 2.9% -> 13.8% |
+| Morgan on-ball spans / touch seconds | 58 / 41 s | 14 / 22 s |
+| reel length | 8.7 min | **2.1 min** |
+
+**The name collision essentially vanished** (Morgan 28.4% -> 1.1%, worst case 6
+-> 2). Not because anything fixed it — because re-id names far less at 30 fps
+and what it names is right. That is the correct trade and it is why the reel is
+watchable, but it means issue #28 is *masked* here, not solved.
+
+**Ball gate changed selection substantially**, which the jump statistics alone
+never showed: Saints on-ball time 2,626 s raw -> **1,831 s gated** (-30%), while
+the span *count* went **535 -> 694**. The gate breaks long false spans — the ball
+teleporting near a player and staying "on" them — into shorter true ones.
+
+**Coverage is now the binding constraint, and by a lot.** Ceiling is 1,831 s of
+Saints on-ball time in 694 spans. Named at all: 365 s (20%). Morgan: **22 s
+(1.2%)**. Her share of team on-ball time should be roughly 1/11 ~ 166 s, so we
+are catching about **13% of her touches**.
+
+**Only one lane in the reel was named by re-id directly** (14185, sim 0.845, the
+hand-verified one). Every other named lane carries `source: "linked"` — the reel
+is name propagation from a handful of re-id decisions, so a wrong seed name
+takes a whole chain with it.
+
+**New failure mode, seen in pixels: within-lane drift during a duel.** Lane
+37964 (50.5 s, 7 of the 14 spans) sits on the right black-kit player for
+2988-3009 s, **drifts onto an adjacent white-kit player at 3012 s and 3019 s**,
+then returns. The kit gate cannot catch it (the lane is stamped black overall)
+and linking did not cause it — the raw ByteTrack lane contains two people. This
+is exactly the case gta-link's *splitter* exists for (DBSCAN over per-box
+embeddings; ours can only merge, never split) and it is already flagged in
+CLAUDE.md as a missing component.
+
+Tried and rejected as a cheap detector for it: counting frames where a black
+lane's box overlaps a *white* lane's box at IoU>0.5. Lane 37964 scores 0.4% by
+that test despite the visible drift, because when the black lane grabs the white
+player, the white player's own lane has usually just died — that is why the grab
+happened. **So this cannot be measured without labels**, the same blocker as
+link precision (`runs/saints-u14g-full-30fps/link_gt/`, still unannotated).
+
+Outputs:
+- `/orange/ewhite/b.weinstein/soccer-video-analysis/runs/saints-u14g-full-30fps/reel_morgan_30fps.mp4` (2.1 min, 5 clips from 14 spans)
+- `/orange/ewhite/b.weinstein/soccer-video-analysis/runs/saints-u14g-full-30fps/reel_morrighan_30fps.mp4` (2 clips from 4 spans)
+- `jerseys.prelink.json` / `jerseys.json`, `tracks.unlinked.json` / `tracks.json`
 
