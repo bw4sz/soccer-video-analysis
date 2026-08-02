@@ -233,13 +233,12 @@ RF-DETR path rather than paying 30x compute for.
 **Two known costs of the RF-DETR path**, both measured on a 3-min U14G Veo clip
 (job 38178685, `runs/u14g-smoke-rfdetr`, 2m45s):
 
-1. **Ball jitter.** RF-DETR's ball is flickery on overhead footage: 84.5% of
-   frames detected, but median frame-to-frame jump 54px and **p95 905px** on a
-   1920px-wide frame. `process` writes `ball_track.json` **raw**, so on-ball
-   spans — the only working selection pathway — inherit that jitter.
-   `soccer_vision.tracking.ball_kalman` exists for exactly this and is *not*
-   wired into `process`; see *Trim empty* below, including the caveat that it
-   over-rejects at the 5 fps `process` samples at.
+1. **Ball jitter — fixed 2026-08-02, see *Ball smoothing* below.** RF-DETR's
+   ball is flickery on overhead footage: 84.5% of frames detected, but median
+   frame-to-frame jump 54px and **p95 905px** on a 1920px-wide frame. `process`
+   used to write `ball_track.json` **raw**, so on-ball spans — the only working
+   selection pathway — inherited that jitter. It now gates the flicker out
+   (p95 707px → 32px on the validation clip).
 
 2. **Track fragmentation.** ByteTrack ids are ephemeral: **856 lanes** in three
    minutes, median lane length 7 detection-frames (~1.4 s), only 32 lanes
@@ -284,6 +283,66 @@ lightness (`lightness_split_kits`): black/white and blue/white qualify, red/blue
 does not, and there the code falls back to colour clustering, where hue separates
 them. Tracks that never see grass (about 1 in 662) are placed by nearest cluster
 colour. `process` prints which route it took as `Team split by:`.
+
+---
+
+## Ball smoothing — gate the flicker, don't model the motion
+
+`process` now writes a **gated** `ball_track.json`
+(`soccer_vision.tracking.ball_smooth`). `--no-smooth-ball` restores the old raw
+file; the track records `"smoothed": true` either way so a run is never
+ambiguous.
+
+**The raw track is bimodal, and that is the whole story.** On the 30 fps U14G
+clip the median step between frames is 4px — the ball really does move smoothly —
+but **18% of steps exceed 70px/frame**, which is impossible (a 30 m/s ball is
+~35px/frame on this framing). Looking at those frames, the detector has latched
+onto a white boot, a jersey number, a line marking, or someone in the far crowd.
+The excursions are **short**: median 2 frames, longest 0.6s, and 219 of 470
+episodes are a single frame.
+
+**A causal filter cannot exploit that, which is why `ball_kalman` barely helped.**
+It must decide *at* the excursion whether the ball relocated or the detector
+lied, and the evidence arrives afterwards; its `reacquire_after` guess re-locks
+onto a 3-frame flicker. Measured on the same clip, with a reference set of
+detections independently within 60px of their local median:
+
+| method | p95 step | >70px/frame | coverage |
+|---|---|---|---|
+| raw (what `process` used to write) | 707px | 18.2% | 86.0% |
+| causal Kalman (`ball_kalman`) | 322px | 8.3% | 86.0% |
+| **median gate (`ball_smooth`)** | **32px** | **1.4%** | 78.4% |
+
+Reproduced on the full 60-minute match (657px → 46px, 18.1% → 3.1%).
+
+**The motion model is worth nothing here — do not add one back.** A
+Rauch-Tung-Striebel smoother on top of the gate made every metric *worse*
+(median step 2.7px → 4.5px: it injects wobble between detections). Rejecting
+outliers is the entire gain.
+
+**It is a pure post-process**, so an existing run is fixed in seconds rather
+than by re-running ~2h of detection — and the raw file is kept:
+
+```bash
+python scripts/smooth_ball_track.py runs/<match> --dry-run   # report only
+python scripts/smooth_ball_track.py runs/<match>             # → ball_track.raw.json backup
+```
+
+**What it costs, and what is still open.** Coverage falls ~8pp because rejected
+detections are dropped rather than replaced (short gaps ≤0.5s are interpolated;
+longer ones stay `visible: false`, or trimming would lose real dead time). About
+**6% of rejections are consistent with a straight-line continuation of the
+ball's velocity**, i.e. some genuine fast motion is cut with the flicker. Fixing
+that needs the detector to emit **more than one ball candidate per frame** —
+`soccer_vision.detection.ball.ball_position_from` keeps only the argmax, so when
+the top box is a jersey number the real ball is thrown away before any filter
+sees it. With top-k this gate becomes a shortest-path problem over candidates,
+which is the principled version. Note also that pixel speed includes **camera
+motion** (Veo pans and zooms), so a step is never purely the ball's.
+
+**5 fps is much harder and stays that way**: 41.6% → 11.2% unphysical, coverage
+84.5% → 62.2%, because the ball genuinely moves ~200px between samples. One more
+reason to detect on every frame.
 
 ---
 

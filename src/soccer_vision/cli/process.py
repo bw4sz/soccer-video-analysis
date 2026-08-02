@@ -28,6 +28,7 @@ def run_pipeline(args):
     from soccer_vision.io.video import VideoReader
     from soccer_vision.pitch import FIELD_H_M, FIELD_W_M
     from soccer_vision.store.db import MatchDB
+    from soccer_vision.tracking.ball_smooth import smooth_samples as smooth_ball_samples
     from soccer_vision.tracking.bytetrack import create_tracker, track_detections
     from soccer_vision.tracking.teams import TeamClassifier
     from soccer_vision.verify.sheets import build_contact_sheet
@@ -260,6 +261,18 @@ def run_pipeline(args):
             if p.get("bbox") is not None:
                 tracks_by_id.setdefault(tid, []).append({"frame": fn, "bbox": p["bbox"]})
     # Persist the ball trajectory (previously computed then discarded).
+    #
+    # Gate the detector's flicker before writing. Raw, 18% of frame-to-frame
+    # steps exceed 70 px — impossible for a ball, which tops out near 35 px/frame
+    # on this framing — because for a frame or two the detector latches onto a
+    # boot, a jersey number or the far crowd. The median gate cuts that to ~2%
+    # and every rejected detection is preserved in-place under `raw_pixel_x` /
+    # `raw_pixel_y`, so nothing is lost and `--no-smooth-ball` reproduces the old
+    # file exactly. See `soccer_vision.tracking.ball_smooth` for why this is a
+    # median gate rather than the causal Kalman filter next to it.
+    n_raw_vis = sum(1 for s_ in ball_samples if s_["visible"])
+    if ball_samples and not getattr(args, "no_smooth_ball", False):
+        ball_samples = smooth_ball_samples(ball_samples)
     n_vis = sum(1 for s_ in ball_samples if s_["visible"])
     with open(run_dir.ball_track, "w") as f:
         json.dump(
@@ -270,13 +283,18 @@ def run_pipeline(args):
                 "width": int(proxy_reader.width),
                 "height": int(proxy_reader.height),
                 "total_frames": int(proxy_reader.total_frames),
+                "smoothed": not getattr(args, "no_smooth_ball", False),
                 "samples": ball_samples,
             },
             f,
         )
     if ball_samples:
+        n_out = sum(1 for s_ in ball_samples if s_.get("outlier"))
         print(f"  Ball track: {n_vis}/{len(ball_samples)} samples visible "
               f"({100 * n_vis / len(ball_samples):.1f}%) -> {run_dir.ball_track}")
+        if n_out:
+            print(f"    flicker gated: {n_out} of {n_raw_vis} detections rejected "
+                  f"({100 * n_out / n_raw_vis:.1f}%), raw kept per-sample")
 
     # track id -> kit colour, so on-ball spans (built from this file) can be
     # filtered by --team without re-running the classifier.

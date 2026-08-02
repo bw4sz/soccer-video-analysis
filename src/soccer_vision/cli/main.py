@@ -109,6 +109,14 @@ def main():
         help="Action-detection engine(s) to run: rules (default) / learned / vlm. "
              "Overrides the config; engines without a runtime/checkpoint are skipped.",
     )
+    p_process.add_argument(
+        "--no-smooth-ball", action="store_true",
+        help="Write ball_track.json raw. By default the detector's flicker (a "
+             "frame or two latched onto a boot, a jersey number or the far "
+             "crowd — 18%% of raw steps are physically impossible for a ball) is "
+             "removed by a local-median gate, with every raw detection kept "
+             "in-place under raw_pixel_x/raw_pixel_y.",
+    )
     _add_field_filter_args(p_process)
     p_process.add_argument(
         "--broadcast", action="store_true",
