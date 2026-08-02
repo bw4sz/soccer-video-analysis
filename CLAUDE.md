@@ -179,6 +179,29 @@ clips (jobs 38223174 / 38223284):
 | FOOTPASS broadcast F1 @IoU 0.5 | 0.902 |
 | FOOTPASS broadcast recall | 0.977 |
 
+**Detect on every frame. `--detect-fps` is a speed knob with a measured accuracy
+cost, not a free one.** Job 38526638 ran the same 3-min U14G clip at both rates
+through identical code:
+
+| | 30 fps | 5 fps |
+|---|---|---|
+| tracked player-seconds | **4,576** | 2,616 |
+| share of tracked time in lanes ≥10 s | **52.7%** | 20.9% |
+| longest lane | **114.1 s** | 27.6 s |
+| detections/frame carrying a track id | 25.4 | 14.5 |
+
+**Read the lane *count* as a trap**: 30 fps produces *more* lanes (2,169 vs
+1,226) with a *shorter* median (0.30 s vs 1.00 s), because it mints 1,262
+sub-half-second fragments that together hold 4% of the tracked time. Weighted by
+coverage the picture inverts. Lane length is what gates identity — a lane too
+short to carry a confident re-id vote can never be named however good the gallery
+is — so this is an identity lever as much as a tracking one.
+
+Cost is ~2.2 h for a 60-min match. It was ~4.3 h until `predict_split` stopped
+`process` running the full RF-DETR forward twice per frame (once for players,
+once inside `detect_ball_position` for the ball); both classes come out of one
+pass now, verified byte-identical on 2,169 lanes and 5,394 ball samples.
+
 If a run comes back thin, try `conf_threshold: 0.15`
 (`examples/saints-u11-0.15-threshold.yaml`). RF-DETR is also **fine-tunable**
 (`rfdetr`'s `train()`; our checkpoint is already a SoccerNet fine-tune), which is
@@ -479,6 +502,29 @@ soccer-vision enroll --run runs/<match> \
     --out galleries/<team>.npz --append
 ```
 
+**Labelling one stretch completely, to measure track linking instead.** The
+defaults above sample the match, which is what a gallery wants. Asking whether
+the linker rejoined a player needs the opposite — one contiguous stretch with
+nothing left out:
+
+```bash
+soccer-vision enroll --run runs/<match> --dump-tracklets runs/<match>/link_gt \
+    --profile examples/profiles/<team>.yaml --team black \
+    --at 1200 --window 20 --n-windows 1 --all-lanes --max-lanes 12
+
+python slurm/eval_link_ground_truth.py --run runs/<match> \
+    --tracklets runs/<match>/link_gt
+```
+
+`--at SEC` pins the windows (with `--n-windows` they run back to back from
+there). `--all-lanes` rings *every* lane, paging them `--max-lanes` at a time
+across several passes over the same footage — truncating is not a neutral sample
+here, because the lanes it drops are the short ones linking exists to join, so a
+recall number off a truncated window flatters the linker exactly where it is
+weakest. Pages are longest-lane-first, so stopping early leaves a gap of known
+size. Two lanes labelled with the same name are the same player, which is the
+ground truth `eval_link_ground_truth.py` scores precision and recall against.
+
 **Slot numbers are per window, and the manifest is not optional.** Label Studio
 fixes its labelling config for a whole project, but ByteTrack ids differ in every
 window — so a config naming real track ids cannot exist. Each window ranks its
@@ -553,10 +599,34 @@ and a tracklet crop matched against other tracklet frames scores 106/120 (88%,
 inflated by same-lane near-duplicates but conclusive that boxes, labels and
 frame-seeking are all aligned).
 
-So **do not spend more annotation effort on tracklets hoping to cross 42%.** The
-open lead is still the scoring — the correct player is in the top-3 exemplars 62%
-of the time — and, failing that, a backbone fine-tuned on these players rather
-than one trained to separate people by clothing. Filed as issue #25.
+So **do not spend more annotation effort on tracklets hoping to cross 42%.**
+Filed as issue #25.
+
+**And the scoring lead is now closed too (2026-08-02).** "The correct player is
+in the top-3 exemplars 62% of the time" looked like signal the scoring wasn't
+extracting. It isn't. Same 45-46 held-out crops, same embeddings, only the
+scoring rule varied (`slurm/../scratchpad/reid_scoring.py`):
+
+| rule | frames-only | + tracklet crops |
+|---|---|---|
+| current (mean of top-3) | 19/45 (42%) | 17/46 |
+| top-1 | 19/45 | 17/46 |
+| player centroid | 18/45 | 22/46 |
+| hubness centering | 16/45 | 21/46 |
+| closed-set Hungarian (one identity per frame) | 19/45 | 17/46 |
+| k-reciprocal re-ranking (Zhong CVPR'17) | 20/45 | 17/46 |
+| k-reciprocal + Hungarian | 21/45 (47%) | 17/46 |
+
+Everything sits inside noise of 42%. **Hubness correction and re-ranking are the
+two standard fixes for exactly this symptom and they buy nothing**, and neither
+does exploiting the closed-set constraint. That leaves one lead: a backbone
+fine-tuned on these players rather than one trained to separate people by
+clothing. [PRTreID](https://github.com/VlSomers/prtreid) (part-based, jointly
+trained for re-id + team + role) is the candidate.
+
+Read the ceiling narrowly, though — it is about telling *teammates* apart, and
+that is not the biggest identity loss in the pipeline. See *Identity coverage*
+below.
 
 **Nicknames.** A roster entry may carry `nickname: Mo`, which replaces the first
 name in the annotator's label list — a squad clicking "Mo" twenty times a frame
@@ -854,6 +924,73 @@ separates them — that is issue #21, not this function.
   `shots.py::detect_shots_from_events` (a label filter, coordinate-free).
 - Old `runs/` from before this change still contain `field_x` / `field_y`. They
   are ignored, not trusted — `associate.py` reads pixels only.
+
+---
+
+## Identity coverage — the pipeline loses the *name*, not the football
+
+Measured on `runs/saints-u14g-full` (2026-08-02, all from saved artefacts, no
+GPU). On-ball spans over every black-kit lane, no identity filter:
+
+| | spans | seconds |
+|---|---|---|
+| Saints on the ball, detected and tracked | 745 | **1,065 s** |
+| …of those, carrying a name | 70 | **75 s (9.4%)** |
+
+**~91% of the touches a parent watches are already detected, tracked,
+kit-classified and turned into a clean on-ball span, then discarded for want of a
+label.** Detection, the ball track and the on-ball geometry are not the
+bottleneck. Identity coverage is. Weigh any proposed work against this number.
+
+The 42% teammate-separation ceiling (issue #25) is real but is *not* the dominant
+loss here — only 4.1% of black-kit lanes get named at all. The losses that matter
+are coverage ones:
+
+1. **Lane length.** Re-id cannot name a lane too short to carry a confident vote.
+   At 5 fps the median black lane was 2.0 s and the longest in three minutes was
+   27.6 s; at native rate the longest was 114.1 s and 2.5x more of the tracked
+   time sat in lanes over 10 s (job 38526638). **Detection rate is an identity
+   lever, not just a tracking one.**
+2. **Linking.** A chain inherits the identity of whichever member got named, so
+   this is label propagation, not a tracking nicety. Loosening the gate on the
+   5 fps run took named on-ball coverage from 7% to 48% — but that sweep had no
+   ground truth, which is what `--all-lanes` labelling and
+   `slurm/eval_link_ground_truth.py` now supply. Don't adopt a loose gate on the
+   strength of the coverage number alone.
+3. **Naming the wrong team**, which the kit gate addresses — see above.
+
+**Where the field is.** This whole stack is
+[SoccerNet Game State Reconstruction](https://arxiv.org/abs/2404.11335)
+([sn-gamestate](https://github.com/SoccerNet/sn-gamestate) on
+[TrackLab](https://github.com/TrackingLaboratory/tracklab)), whose GS-HOTA went
+29.0 → 63.9 in one year, almost all of it identity rather than detection. Three
+components worth importing rather than re-deriving:
+
+- **[gta-link](https://github.com/sjc042/gta-link)**
+  ([GTA, arXiv 2411.08216](https://arxiv.org/abs/2411.08216)) — what
+  `tracking/link.py` wants to be. A *splitter* (DBSCAN over per-box embeddings,
+  catching lanes that contain two people — ours can only merge, never split) and
+  a *connector* (hierarchical clustering on appearance plus spatial constraints,
+  not greedy edge-to-edge). +3.7 HOTA on SoccerNet-Tracking, and a post-pass on
+  saved tracks, which is already our architecture.
+- **[Deep-EIoU](https://github.com/hsiangwei0903/Deep-EIoU)**
+  ([arXiv 2306.13074](https://arxiv.org/abs/2306.13074)) — drops the Kalman
+  filter, whose linear-motion assumption is what ByteTrack's association rests
+  on and what athletes violate. 85.4 HOTA on SoccerNet-Tracking.
+  [GTATrack](https://arxiv.org/abs/2602.00484) is both together.
+- **[jersey-number-pipeline](https://github.com/mkoshkina/jersey-number-pipeline)**
+  ([arXiv 2405.13896](https://arxiv.org/abs/2405.13896)) — puts a **legibility
+  classifier and pose-based torso localisation in front of PARSeq**, then
+  aggregates per tracklet. We feed PARSeq every crop including the illegible
+  ones, which is where the hallucinated `1`s come from.
+
+Also worth reading before redesigning the linker:
+**[SportsSUSHI](https://github.com/mkoshkina/sports-SUSHI)**
+([WACV'25](https://arxiv.org/abs/2502.21242)) feeds jersey number, team id and
+field position in as *association features* over a hierarchy of graphs spanning
+progressively longer gaps — the principled version of "link at 12 seconds" — and
+its hockey dataset is a fixed whole-surface camera, i.e. our geometry rather than
+broadcast.
 
 ---
 
