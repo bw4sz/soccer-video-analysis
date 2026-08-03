@@ -75,6 +75,10 @@ def run_identify(args):
     # can't be one of ours, so naming it is wrong and embedding it is wasted.
     kit = args.team or reid_cfg.get("team")
     eligible = _apply_team_gate(track_boxes, tracks_path, kit, args.team_strict, results)
+    # …and so does the length gate: a lane too short to carry a confident vote
+    # can never be worth a clip, and naming it seeds a whole linked chain.
+    min_lane_s = _first_set(args.min_lane_seconds, reid_cfg.get("min_lane_seconds"), 1.0)
+    eligible &= _apply_length_gate(track_boxes, tracks_path, min_lane_s, results)
     namable = {t: b for t, b in track_boxes.items() if t in eligible}
 
     if method.startswith("reid"):
@@ -98,6 +102,7 @@ def run_identify(args):
         "ocr_verify": verify,
         "team": kit,
         "team_strict": bool(kit and args.team_strict),
+        "min_lane_seconds": min_lane_s,
         "tracks": {str(t): r for t, r in results.items()},
     }
     jerseys_path.write_text(json.dumps(doc, indent=2))
@@ -120,7 +125,8 @@ def run_identify(args):
 def _blank() -> dict:
     return {"jersey": None, "name": None, "source": None, "confidence": 0.0,
             "n_obs": 0, "legible_frac": 0.0, "similarity": None,
-            "crosscheck": None, "conflict": None, "kit": None, "excluded": None}
+            "crosscheck": None, "conflict": None, "kit": None, "span_s": None,
+            "excluded": None}
 
 
 def _apply_team_gate(track_boxes, tracks_path: Path, kit, strict: bool,
@@ -158,6 +164,41 @@ def _apply_team_gate(track_boxes, tracks_path: Path, kit, strict: bool,
     print(f"Team gate: naming the {kit} kit only — {counts['ours']} lanes ours, "
           f"{counts['other']} on another kit (excluded), "
           f"{counts['unassigned']} with no kit assigned ({held})")
+    return eligible
+
+
+def _apply_length_gate(track_boxes, tracks_path: Path, min_seconds: float,
+                       results: dict[int, dict]) -> set[int]:
+    """Hold back lanes too short to be worth naming.
+
+    Like the kit gate this runs before any model does, so the excluded lanes cost
+    no re-id forward passes and no OCR — it makes the step faster, not slower.
+    Excluded lanes stay in ``jerseys.json`` carrying ``excluded: "short"`` (unless
+    the kit already explained them) and their measured ``span_s``.
+    """
+    from soccer_vision.identify.length_gate import EXCLUDED_SHORT, gate_by_length, lane_span_s
+
+    fps = json.loads(tracks_path.read_text()).get("fps") or 0.0
+    frames = {tid: [f for f, _ in samples] for tid, samples in track_boxes.items()}
+    for tid, fr in frames.items():
+        results[tid]["span_s"] = round(lane_span_s(fr, fps), 3) if fps else None
+
+    if not fps:
+        print("Length gate: off — tracks.json has no `fps`, so lane length is unknown")
+        return set(track_boxes)
+
+    eligible, counts = gate_by_length(frames, fps, min_seconds)
+    if not min_seconds:
+        print("Length gate: off — every lane is eligible, including single-frame "
+              "fragments that give re-id one crop to vote on")
+        return eligible
+
+    for tid in track_boxes:
+        if tid not in eligible and not results[tid]["excluded"]:
+            results[tid]["excluded"] = EXCLUDED_SHORT
+    print(f"Length gate: naming lanes of at least {min_seconds:g}s — "
+          f"{counts['long_enough']} long enough, {counts['too_short']} too short "
+          f"(excluded)")
     return eligible
 
 

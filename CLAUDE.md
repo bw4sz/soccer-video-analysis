@@ -760,6 +760,58 @@ colours (issue #21 — no horizontal cut separates them either). And the kit
 classifier itself errs: a few plainly black-kit lanes are stamped `white` and are
 now excluded, which is the recall this buys its precision with.
 
+### A lane too short to vote on is not evidence — `--min-lane-seconds`
+
+**81% of re-id's naming decisions on the 30 fps run were made on lanes shorter
+than one second**, 968 of them on lanes under half a second — mostly a *single
+detection frame*, i.e. one crop, one pose, one instant of motion blur. Their mean
+winning similarity is 0.654 against 0.732 for lanes over 5 s, comfortably above
+`min_similarity` 0.5, so **a similarity threshold cannot separate them and lane
+length can**. This is the same lever as *Identity coverage* item 1, applied from
+the other side: lane length gates identity, so it should gate *eligibility to be
+named* too.
+
+The damage escapes the fragment. `propagate_names` seeds a chain from its
+highest-similarity member, and **52% of propagated names trace back to a seed
+lane under a second** — one bad crop names everything the linker joined to it.
+
+`identify` now holds those lanes back before any model runs (default
+`--min-lane-seconds 1.0`, `0` disables, `reid: min_lane_seconds:` in the
+profile). Like the kit gate it costs no forward passes, and excluded lanes stay
+in `jerseys.json` with `excluded: "short"` and their measured `span_s`.
+
+Simulated on `runs/saints-u14g-full-30fps` from saved artefacts (gate the
+prelink names, re-run `propagate_names`, recount):
+
+| gate | naming seeds | chains named | named on-ball | Morgan | frames with one name on 2+ lanes |
+|---|---|---|---|---|---|
+| off | 1,450 | 437 | 285 spans / 352 s | 22 s | **20.3%** |
+| **1.0 s** | **278** | 225 | 228 spans / **279 s** | **21 s** | **12.2%** |
+| 2.0 s | 200 | 159 | 200 spans / 230 s | 21 s | 7.2% |
+
+So it discards **81% of the naming decisions to lose 21% of the named football**
+and cuts the measurable name-collision rate by 40%. Morgan's reel loses 1 second.
+
+**Read the collision column narrowly** — two lanes carrying one name means at
+least one is wrong, so it is a *lower bound* on error and the only wrongness
+proxy available without labels. It is not accuracy.
+
+Three things this is not:
+
+- **Not a minimum action length.** How long a touch must last to be worth a clip
+  is `--on-ball-min-span` (0.4 s), asked of the *span*, not the lane. A player can
+  be on the ball for three seconds while the tracker splits her across six
+  fragments — which is why the gate belongs after linking, not instead of it.
+- **Not a fix for issue #28.** On the 5 fps run (median lane already 3.6 s) it
+  moves the collision rate 34.5% → 34.4%. Those collisions are *long* lanes
+  sharing a name, and only mutual exclusion fixes them. This removes the cheapest
+  and most worthless half of the input to that bug.
+- **Not free at 5 fps and nearly free at 30.** Lanes under 1 s are 57% of the
+  30 fps run's lanes but **1.7% of its tracked time**.
+
+**Run `link-tracks --in-place` before `identify`** where you can: the gate then
+asks how long the *player* was tracked rather than how long an id survived.
+
 ### OCR vetoes re-id, it never renames it
 
 `reid+ocr` also sends the tracks re-id *did* name to OCR, to **cross-check**
