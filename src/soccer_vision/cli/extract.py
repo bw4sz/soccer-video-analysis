@@ -136,13 +136,14 @@ def _on_ball_fallback(
 
 
 def _load_halo(run_dir: Path, style: str | None):
-    """Resolve a ``--halo`` request to ``(track_boxes, style, max_gap_frames)``.
+    """Resolve a ``--halo`` request to ``(track_boxes, style, max_gap_frames, fps)``.
 
-    Returns ``(None, None, 0)`` when halos aren't requested or ``tracks.json`` is
-    missing (in which case a warning is printed and extraction proceeds plainly).
+    Returns ``(None, None, 0, 30.0)`` when halos aren't requested or
+    ``tracks.json`` is missing (in which case a warning is printed and extraction
+    proceeds plainly).
     """
     if not style:
-        return None, None, 0
+        return None, None, 0, 30.0
 
     import json
 
@@ -152,11 +153,12 @@ def _load_halo(run_dir: Path, style: str | None):
     if not tracks_path.exists():
         print(f"--halo requested but {tracks_path} is missing "
               "(re-run `process` to generate it). Extracting plain clips.")
-        return None, None, 0
+        return None, None, 0, 30.0
 
     meta = json.loads(tracks_path.read_text())
     max_gap = int(meta.get("sample_interval", 5)) * 4
-    return load_track_boxes(tracks_path), style, max_gap
+    return (load_track_boxes(tracks_path), style, max_gap,
+            float(meta.get("fps") or 30.0))
 
 
 def run_extract(args):
@@ -187,7 +189,8 @@ def run_extract(args):
         print(f"No matching events found ({_describe(args)}).")
         return
 
-    halo_tracks, halo_style, halo_max_gap = _load_halo(run_dir, getattr(args, "halo", None))
+    halo_tracks, halo_style, halo_max_gap, halo_fps = _load_halo(
+        run_dir, getattr(args, "halo", None))
 
     clip_paths = extract_event_clips(
         proxy_path, events, clips_dir,
@@ -299,7 +302,8 @@ def run_reel(args):
         print(f"No matching events found ({_describe(args)}).")
         return
 
-    halo_tracks, halo_style, halo_max_gap = _load_halo(run_dir, getattr(args, "halo", None))
+    halo_tracks, halo_style, halo_max_gap, halo_fps = _load_halo(
+        run_dir, getattr(args, "halo", None))
 
     pre_s = getattr(args, "pre", None) or 6.0
     post_s = getattr(args, "post", None) or 5.0
@@ -321,7 +325,7 @@ def run_reel(args):
             # it usually starts later than the clip does — which reads as the
             # spotlight arriving late.
             samples = halo_samples_for(window, halo_tracks,
-                                       extra_ids=player_tracks)
+                                       extra_ids=player_tracks, fps=halo_fps)
             if samples:
                 from soccer_vision.clips.halo import render_halo_clip
 

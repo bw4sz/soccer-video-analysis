@@ -218,6 +218,166 @@ def score_pair(a: _Edge, b: _Edge, fps: float, cfg: LinkConfig) -> Link | None:
                 naive_dist_px=naive, speed_px_s=speed, appearance=app)
 
 
+def _same_player_box(a, b, *, max_centre_frac: float, max_scale: float) -> float:
+    """Agreement that two boxes in the *same frame* are on the same player, or 0.
+
+    **IoU is the wrong test here.** When the detector mints a duplicate box the
+    two boxes sit on one player but disagree on extent — the handoff that breaks
+    Morgan's chain on the U14G run pairs a 30x59 box with a 51x83 one, same
+    player, IoU 0.40, below any threshold loose enough to be safe. IoU penalises
+    that scale disagreement twice; centre distance measured in box heights does
+    not, and a separate ratio test still keeps a near player from being merged
+    with a far one.
+    """
+    ha, hb = a[3] - a[1], b[3] - b[1]
+    if ha <= 0 or hb <= 0:
+        return 0.0
+    ratio = ha / hb if ha < hb else hb / ha
+    if ratio < 1.0 / max_scale:
+        return 0.0
+    ca = ((a[0] + a[2]) / 2.0, (a[1] + a[3]) / 2.0)
+    cb = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)
+    d = math.dist(ca, cb) / ((ha + hb) / 2.0)
+    if d > max_centre_frac:
+        return 0.0
+    return (1.0 - d / max_centre_frac) * ratio
+
+
+def merge_duplicate_lanes(doc: dict, *, max_overlap_s: float = 0.5,
+                          max_centre_frac: float = 0.4,
+                          max_scale: float = 2.0) -> tuple[dict, dict]:
+    """Collapse lanes that are one player under two ids. Returns ``(doc, stats)``.
+
+    **This is dedup, not linking, and it has to run first.** ``link_tracks``
+    requires ``b.first_frame > a.last_frame`` — a successor born *before* its
+    predecessor died is rejected as "overlapping in time". But a duplicate
+    detection is exactly that: a second box lands on a player already tracked,
+    takes a fresh id, and the old lane dies a frame or two later, overlapping.
+    On the 30 fps U14G run that is how **9.9% of lanes lasting >=10 s end**, and
+    it is the single easiest link in the file — same player, same frame — that
+    the gate refuses by construction. Following one hand-verified player through
+    it took her chain from 12.4 s to 23.5 s.
+
+    Doing it as a pre-pass rather than as extra edges inside ``link_tracks``
+    matters: unioning dedup groups into already-linked chains cascades, because
+    one bad merge fuses two long chains. Measured on the same run, merging into
+    the link result put 5.6 bad handoffs on the average chain (one chain
+    collected 705) where dedup-then-link left it at 0.45, below the 0.50 that
+    linking alone already carried.
+
+    Kit agreement is required and lanes with no kit are left alone. Geometry
+    cannot tell one player under two ids from two players in contact, and
+    without that gate 16.3% of these merges joined lanes the team classifier had
+    placed in *different* kits — one of them stitching a 62 s white-kit lane onto
+    Morgan's black one.
+    """
+    tracks = doc["tracks"]
+    teams = doc.get("teams", {}) or {}
+    fps = float(doc["fps"])
+
+    births: dict[int, list[str]] = {}
+    for tid, s in tracks.items():
+        if s:
+            births.setdefault(s[0]["frame"], []).append(tid)
+    by_frame = {tid: {s["frame"]: s["bbox"] for s in samples}
+                for tid, samples in tracks.items()}
+
+    win = int(round(max_overlap_s * fps))
+    pairs: list[tuple[float, str, str]] = []
+    for tid, samples in tracks.items():
+        if not samples:
+            continue
+        death = samples[-1]["frame"]
+        kit = teams.get(tid)
+        if kit is None:
+            continue
+        for df in range(-win, 1):
+            for cand in births.get(death + df, ()):
+                if cand == tid or teams.get(cand) != kit:
+                    continue
+                cbox = by_frame[cand].get(death + df)
+                pbox = by_frame[tid].get(death + df)
+                if cbox is None or pbox is None:
+                    continue
+                v = _same_player_box(pbox, cbox, max_centre_frac=max_centre_frac,
+                                     max_scale=max_scale)
+                if v > 0:
+                    pairs.append((v, tid, cand))
+
+    parent = {tid: tid for tid in tracks}
+    claimed: set[str] = set()
+    used_pred: set[str] = set()
+    n = 0
+    for _v, pred, succ in sorted(pairs, key=lambda p: -p[0]):
+        if succ in claimed or pred in used_pred:
+            continue
+        ra, rb = _find(parent, pred), _find(parent, succ)
+        if ra == rb:
+            continue
+        parent[rb] = ra
+        claimed.add(succ)
+        used_pred.add(pred)
+        n += 1
+
+    groups: dict[str, list[str]] = {}
+    for tid in tracks:
+        groups.setdefault(_find(parent, tid), []).append(tid)
+
+    new_tracks: dict[str, list[dict]] = {}
+    new_teams: dict[str, str] = {}
+    for root, members in groups.items():
+        rows = [s for m in members for s in tracks[m]]
+        rows.sort(key=lambda s: s["frame"])
+        seen: set[int] = set()
+        deduped = []
+        for r in rows:
+            if r["frame"] in seen:
+                continue
+            seen.add(r["frame"])
+            deduped.append(r)
+        new_tracks[root] = deduped
+        kit = next((teams[m] for m in members if m in teams), None)
+        if kit is not None:
+            new_teams[root] = kit
+
+    out = dict(doc)
+    out["tracks"] = new_tracks
+    out["teams"] = new_teams
+    # ``alias`` maps every original lane id to the lane that now carries it, so a
+    # caller holding a lane id from before the merge (a hand-verified seed, a
+    # jerseys.json key) can still find it.
+    return out, {"lanes_before": len(tracks), "lanes_after": len(new_tracks),
+                 "merges": n,
+                 "alias": {tid: _find(parent, tid) for tid in tracks}}
+
+
+def remap_jerseys(jerseys: dict, alias: dict[str, str]) -> tuple[dict, int]:
+    """Re-key ``jerseys.json`` onto deduped lane ids. Returns ``(doc, n_conflicts)``.
+
+    Dedup gives merged lanes a single id, so identities read against the old ids
+    have to follow. Two lanes that turn out to be one player can carry two
+    different names — that is a naming error the merge has just exposed — so the
+    higher-similarity name wins and the disagreement is counted rather than
+    silently resolved.
+    """
+    tracks = jerseys.get("tracks", {})
+    out: dict[str, dict] = {}
+    conflicts = 0
+    for tid, rec in tracks.items():
+        key = alias.get(tid, tid)
+        prev = out.get(key)
+        if prev is None:
+            out[key] = dict(rec)
+            continue
+        if prev.get("name") and rec.get("name") and prev["name"] != rec["name"]:
+            conflicts += 1
+        if (rec.get("similarity") or 0.0) > (prev.get("similarity") or 0.0):
+            out[key] = dict(rec)
+    doc = dict(jerseys)
+    doc["tracks"] = out
+    return doc, conflicts
+
+
 def link_tracks(doc: dict, cfg: LinkConfig | None = None) -> LinkResult:
     """Join lanes end-to-start across dropouts. Never merges overlapping lanes.
 

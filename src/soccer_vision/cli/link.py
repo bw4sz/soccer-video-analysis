@@ -15,7 +15,8 @@ from pathlib import Path
 import numpy as np
 
 from soccer_vision.tracking.link import (LinkConfig, apply_links, link_tracks,
-                                         propagate_names)
+                                         merge_duplicate_lanes, propagate_names,
+                                         remap_jerseys)
 
 
 def _appearance_fn(run_dir: Path, doc: dict, cfg: LinkConfig, device=None):
@@ -115,6 +116,17 @@ def run_link_tracks(args):
           f"kit {'must match' if cfg.require_kit else 'ignored'}, "
           f"motion {'on' if cfg.use_motion else 'off'}")
 
+    # Dedup first, and as a separate pass. A duplicate detection produces a lane
+    # that *overlaps* its predecessor, which the linking gate rejects by
+    # construction — and folding the two passes together instead of ordering
+    # them cascades, because one bad merge fuses two already-built chains.
+    alias: dict[str, str] = {}
+    if not args.no_dedup:
+        doc, dstats = merge_duplicate_lanes(doc)
+        alias = dstats["alias"]
+        print(f"Dedup: {dstats['lanes_before']:,} -> {dstats['lanes_after']:,} lanes "
+              f"({dstats['merges']:,} duplicate-id handoffs collapsed)")
+
     if args.appearance:
         cfg.appearance_fn = _appearance_fn(run_dir, doc, cfg, device=args.device)
         if cfg.appearance_fn is not None:
@@ -146,6 +158,11 @@ def run_link_tracks(args):
     jerseys_path = run_dir / "jerseys.json"
     if jerseys_path.exists():
         jerseys = json.loads(jerseys_path.read_text())
+        if alias:
+            jerseys, n_clash = remap_jerseys(jerseys, alias)
+            if n_clash:
+                print(f"\n{n_clash:,} deduped lanes carried two different names — "
+                      "the merge exposed a naming error; the stronger name kept")
         j2, jstats = propagate_names(jerseys, result)
         print(f"\nNames propagated along chains: "
               f"{jstats['named_before']:,} -> {jstats['named_after']:,} lanes named")
