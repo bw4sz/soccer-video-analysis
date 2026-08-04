@@ -1574,3 +1574,72 @@ Outputs:
 - `/orange/ewhite/b.weinstein/soccer-video-analysis/runs/saints-u14g-full-30fps/reel_morrighan_30fps.mp4` (2 clips from 4 spans)
 - `jerseys.prelink.json` / `jerseys.json`, `tracks.unlinked.json` / `tracks.json`
 
+
+## 38634128 — 2026-08-03 — slurm/submit_all_reels.sh (a reel for every roster
+## player, plus one for the whole black kit, on the 30 fps run)
+
+**Why.** Every reel to date has been Morgan — the player the gallery is deepest
+on and the anchor of every measurement in `CLAUDE.md`. Thirteen reels asks a
+different question: what does a parent of *any* child on this squad get today?
+And the team reel asks what the pipeline finds with identity taken out of the
+loop entirely.
+
+Off saved artefacts only — no detector, no GPU, no re-`identify`.
+`runs/saints-u14g-full-30fps`, `--on-ball-dist 90`, `--on-ball-min-span 0.4`.
+
+**Census taken before submitting** (this is the selection, prior to any render):
+
+| selection | lanes | spans | touch_s | reel_min | signal |
+|---|---|---|---|---|---|
+| ALL black lanes | 7519 | 694 | 1831 | 59.2 | 51.6% |
+| ALL named black | 447 | 296 | 365 | 34.3 | 17.7% |
+| Morgan Lobey (#4) | 14 | 14 | 22 | 2.1 | 17.8% |
+| Catherine Conroy (#6) | 114 | 59 | 58 | 7.8 | 12.3% |
+| Gia Olson (#7) | 86 | 74 | 93 | 10.1 | 15.3% |
+| Izabelle Scott-Snow (#8) | 82 | 77 | 76 | 8.9 | 14.2% |
+| **Joelle Fontenot (#9)** | **0** | **0** | **0** | **0.0** | — |
+| Leire Cabral (#10) | 59 | 39 | 35 | 5.1 | 11.6% |
+| Eveleigh Bottorff (#11) | 24 | 14 | 32 | 2.6 | 20.5% |
+| Ila Sheets (#17) | 6 | 3 | 5 | 0.6 | 14.0% |
+| Morrighan Wright (#21) | 5 | 4 | 2 | 0.6 | 5.5% |
+| **Lainey Jarvis (#26)** | **0** | **0** | **0** | **0.0** | — |
+| Riley McNicholas (#37) | 18 | 19 | 15 | 2.0 | 12.6% |
+| Iris McDonald (#50) | 23 | 12 | 7 | 1.8 | 6.3% |
+| Quinn Perrin (#88) | 16 | 32 | 25 | 3.5 | 12.0% |
+
+**Two players get no reel at all** — not for want of playing, but because re-id
+named none of their lanes. That is the *Identity coverage* figure seen from the
+parent's side instead of in aggregate: 1,831 s of our football detected, 365 s
+(20%) named, and the distribution of that 20% is grossly unequal — Catherine,
+Gia and Izabelle hold 227 s of the 365 between them while four players share 29 s
+and two share none.
+
+**Code change this required.** `reel --team black` with no player used to return
+nothing: `cli/extract.py::_on_ball_fallback` refused a team-only query as "not a
+player query". But the question *when was one of ours on the ball* needs no
+identity, which is exactly why it is worth cutting — it is the widest true view
+of a match available, and the control the player reels should be read against.
+It now anchors on every lane of the kit (resolved off the `teams` block of
+tracks.json, inside the function that already loads that file). `--player` /
+`--track` still take precedence, and a query with neither team nor player still
+returns nothing. Verified against the census: 694 events, identical to the
+figure above.
+
+Team reel renders **without** a halo on purpose — the one-halo-per-player rule
+(issue #28) has no player to be about here, so a spotlight would ring whichever
+lane won an arbitrary pick.
+
+**Caveat on the naming layer.** This run's `jerseys.json` was written on
+2026-08-02, *before* `--min-lane-seconds` landed (commit 0461000), so no lane in
+it carries `excluded: "short"`. Simulated, the 1.0 s gate discards 81% of the
+naming decisions for 21% of the named football, so these player reels are the
+ungated — wider and dirtier — selection. `RE_IDENTIFY=1 sbatch ...` rebuilds
+naming with current defaults first (needs a GPU partition, ~1 h).
+
+Render cost is small: a haloed reel runs sub-realtime, and the per-invocation
+cost is dominated by loading the 336 MB tracks.json (~60 s each).
+
+**Result:** _(pending)_
+
+Outputs: `runs/saints-u14g-full-30fps/reels/reel_team_black.mp4` and
+`reels/reel_<full_name>.mp4` per player.

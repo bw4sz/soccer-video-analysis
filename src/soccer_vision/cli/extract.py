@@ -71,13 +71,18 @@ def _resolve_player_tracks(args, run_dir: Path) -> set[int] | None:
     return tids
 
 
-def _on_ball_events(args, run_dir: Path, target_ids: set[int]) -> list[dict]:
+def _on_ball_events(args, run_dir: Path, target_ids: set[int] | None) -> list[dict]:
     """On-ball spans for ``target_ids``, as events. Empty list if unavailable.
 
     Reads ``ball_track.json`` + ``tracks.json`` from the run; both are written by
     `process`. Prints why it came back empty rather than failing silently, since
     this runs as a fallback and a silent empty result looks like "this player did
     nothing" instead of "the run predates ball_track.json".
+
+    ``target_ids=None`` means *every lane wearing ``--team``'s kit* — the team
+    query of `_on_ball_fallback`. Resolved here rather than by the caller because
+    the kit of each lane lives in the ``teams`` block of the ``tracks.json`` this
+    function already loads, and that file is hundreds of MB.
     """
     import json
 
@@ -92,6 +97,17 @@ def _on_ball_events(args, run_dir: Path, target_ids: set[int]) -> list[dict]:
 
     ball_track = json.loads(ball_path.read_text())
     tracks = json.loads(tracks_path.read_text())
+    if target_ids is None:
+        kit = getattr(args, "team", None)
+        teams = tracks.get("teams") or {}
+        target_ids = {int(t) for t in tracks.get("tracks", {})
+                      if teams.get(str(t)) == kit}
+        if not target_ids:
+            print(f"  no lane in this run was classified as kit {kit!r} — "
+                  f"`process` writes the `teams` block of tracks.json.")
+            return []
+        print(f"  team query: anchoring on-ball spans on all {len(target_ids)} "
+              f"{kit}-kit lanes (identity not required).")
     spans = select_on_ball_spans(
         ball_track, tracks, target_ids,
         max_ball_dist_px=getattr(args, "on_ball_dist", 90.0),
@@ -117,6 +133,14 @@ def _on_ball_fallback(
     ``--events pass`` returning on-ball touches instead would answer a different
     question than the one asked. ``--on-ball`` forces it anyway; ``--no-on-ball``
     disables it entirely.
+
+    A bare ``--team`` *is* answerable, and anchors on every lane of that kit. It
+    used to be refused as "not a player query", but the question it asks — when
+    was one of ours on the ball — needs no identity at all, and identity is where
+    this pipeline loses ~80% of the football (``CLAUDE.md``, *Identity coverage*).
+    A team reel is therefore the widest true view of a match we can cut, and on
+    ``runs/saints-u14g-full-30fps`` it holds 1,831 s of touches against 365 s
+    over named lanes. ``--player``/``--track`` still win when given.
     """
     if not getattr(args, "on_ball", True) and not getattr(args, "on_ball_force", False):
         return []
@@ -125,7 +149,9 @@ def _on_ball_fallback(
     if getattr(args, "track", None) is not None:
         targets.add(args.track)
     if not targets:
-        return []  # nothing to anchor on — a team-only query isn't a player query
+        if not getattr(args, "team", None):
+            return []  # nothing to anchor on at all
+        targets = None  # every lane of --team's kit; resolved off tracks.json
 
     if labels and not getattr(args, "on_ball_force", False):
         print("  (no on-ball fallback: an explicit event label was requested. "

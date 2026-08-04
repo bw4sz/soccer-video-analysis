@@ -2,8 +2,16 @@
 
 `process` writes tracks.json and ball_track.json but nothing you can watch, so
 judging a detector meant reading numbers. This draws them over the source video:
-one box per track (coloured by the team stamped in tracks.json), the ball with a
-short trail, and a HUD carrying the counts.
+one box per track, the ball with a short trail, and a HUD carrying the counts.
+
+**Box colour is the kit, not the colour on screen.** A box is coloured by the kit
+`process` stamped into tracks.json, and "black" and "white" are unreadable as
+drawing colours on a sunlit pitch — so black maps to orange and white to cyan,
+with grey for a lane that got no kit at all. Pass `--team black` to have the
+legend mark which one is ours.
+
+Every tracked lane is drawn whatever its kit. `identify --team` gates the *name*,
+never the box, so an opponent still gets a box — it just carries a bare lane id.
 
 When the run has been through `identify`, jerseys.json is picked up too and each
 box carries the name (and jersey number) that lane was given, so you can watch
@@ -97,7 +105,7 @@ def nearest_sample(frame_no: int, keys: list[int], interval: int) -> int | None:
 
 
 def draw_hud(img, frame_no, t_s, n_tracks, n_named, ball_vis, teams_seen,
-             interval, fps, has_names):
+             interval, fps, has_names, ours=None):
     h, w = img.shape[:2]
     pad = 12
     lines = [
@@ -119,12 +127,15 @@ def draw_hud(img, frame_no, t_s, n_tracks, n_named, ball_vis, teams_seen,
         cv2.putText(img, line, (pad + 12, pad + 26 + i * 26),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.62, colour, 2, cv2.LINE_AA)
 
-    # legend, bottom-left
+    # Legend, bottom-left. The swatch is the drawing hue and the word beside it is
+    # the *kit* — an orange chip labelled "black" reads as a bug unless the legend
+    # says so, so it spells out "black kit" and marks which one is ours.
     y = h - pad - 12
-    items = [(name, TEAM_COLOURS.get(name, UNKNOWN_COLOUR)) for name in teams_seen]
-    items.append(("unassigned", UNKNOWN_COLOUR))
+    items = [(f"{name} kit" + (" (ours)" if name == ours else ""),
+              TEAM_COLOURS.get(name, UNKNOWN_COLOUR)) for name in teams_seen]
+    items.append(("no kit assigned", UNKNOWN_COLOUR))
     items.append(("ball", BALL_COLOUR))
-    lw = 200 * len(items) // 2 + 260
+    lw = sum(40 + 12 * len(name) for name, _ in items) + 24
     overlay = img.copy()
     cv2.rectangle(overlay, (pad, y - 30), (pad + lw, y + 12), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
@@ -135,9 +146,16 @@ def draw_hud(img, frame_no, t_s, n_tracks, n_named, ball_vis, teams_seen,
                     0.55, (255, 255, 255), 1, cv2.LINE_AA)
         x += 40 + 12 * len(name)
 
-    caption = f"RF-DETR + ByteTrack | detections at {fps / interval:.1f} fps, held between samples"
-    cv2.putText(img, caption, (pad + 12, pad + box_h + 26), cv2.FONT_HERSHEY_SIMPLEX,
-                0.55, (200, 200, 200), 1, cv2.LINE_AA)
+    captions = [
+        f"RF-DETR + ByteTrack | detections at {fps / interval:.1f} fps, held between samples",
+    ]
+    if has_names:
+        # Every tracked lane is drawn whatever its kit; only the *name* is gated.
+        captions.append("box colour = kit assigned by process | label = lane id, "
+                        "then the name identify gave it (thick box = named)")
+    for i, caption in enumerate(captions):
+        cv2.putText(img, caption, (pad + 12, pad + box_h + 26 + i * 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
 
 
 def main():
@@ -154,6 +172,9 @@ def main():
                     help="identities to label boxes with (default: jerseys.json in the run)")
     ap.add_argument("--named-only", action="store_true",
                     help="draw only the lanes identify was willing to name")
+    ap.add_argument("--team", default=None,
+                    help="our squad's kit for this match — marks it '(ours)' in the "
+                         "legend. Does not filter: every tracked lane is still drawn")
     args = ap.parse_args()
 
     run = args.run.resolve()
@@ -233,7 +254,7 @@ def main():
             cv2.drawMarker(frame, (bx, by), BALL_COLOUR, cv2.MARKER_CROSS, 12, 1)
 
         draw_hud(frame, fn, fn / fps, len(rows), n_named, ball_vis, teams_seen,
-                 interval, fps, bool(names))
+                 interval, fps, bool(names), ours=args.team)
         if args.scale != 1.0:
             frame = cv2.resize(frame, (W, H), interpolation=cv2.INTER_AREA)
         writer.write(frame)

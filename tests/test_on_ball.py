@@ -197,11 +197,21 @@ def test_detector_event_gets_the_fixed_window():
 
 
 def test_on_ball_span_window_tracks_its_duration():
-    """A short touch and a long dribble must not both become 20s of footage."""
-    _, short = _reel_window({"timestamp_s": 100.0, "duration_s": 1.0})
-    _, long_ = _reel_window({"timestamp_s": 100.0, "duration_s": 30.0})
+    """A short touch and a long dribble must not both become 20s of footage.
+
+    The padding is passed explicitly rather than left to the defaults: those are
+    a *policy* and get retuned (c1a0e9e raised post_s from 2.5 to 4.0, and this
+    test failed for weeks pinning the old constant). What must not change is the
+    rule — a span's window is its own duration plus the lead-in and the trail.
+    """
+    pre, post = 5.0, 4.0
+    _, short = _reel_window({"timestamp_s": 100.0, "duration_s": 1.0},
+                            pre_s=pre, post_s=post)
+    _, long_ = _reel_window({"timestamp_s": 100.0, "duration_s": 30.0},
+                            pre_s=pre, post_s=post)
     assert short < long_
-    assert short == 5.0 + 1.0 + 2.5
+    assert short == pre + 1.0 + post
+    assert long_ == pre + 30.0 + post
 
 
 def test_window_start_is_clamped_at_zero():
@@ -247,9 +257,25 @@ def test_no_on_ball_disables_the_fallback(tmp_path):
     assert _on_ball_fallback(_args(on_ball=False), _run(tmp_path), {3}, None) == []
 
 
-def test_no_player_selection_means_no_fallback(tmp_path):
-    """A team-only query isn't a player query — nothing to anchor spans on."""
-    assert _on_ball_fallback(_args(team="black"), _run(tmp_path), None, None) == []
+def test_a_bare_team_query_anchors_on_every_lane_of_that_kit(tmp_path):
+    """"When was one of ours on the ball" needs no identity, so it is answerable.
+
+    This used to be refused as "not a player query". But identity is where the
+    pipeline loses most of the football — 1,831 s of Saints touches against 365 s
+    over named lanes on the 30 fps U14G run — so a team reel is the widest true
+    view of a match we can cut, and it is the control the player reels are read
+    against.
+    """
+    assert len(_on_ball_fallback(_args(team="black"), _run(tmp_path), None, None)) == 1
+
+
+def test_a_team_with_no_lanes_in_that_kit_falls_back_to_nothing(tmp_path):
+    assert _on_ball_fallback(_args(team="green"), _run(tmp_path), None, None) == []
+
+
+def test_no_selection_at_all_still_means_no_fallback(tmp_path):
+    """No player, no track, no kit — there is nothing to anchor spans on."""
+    assert _on_ball_fallback(_args(), _run(tmp_path), None, None) == []
 
 
 def test_raw_track_id_anchors_the_fallback(tmp_path):
