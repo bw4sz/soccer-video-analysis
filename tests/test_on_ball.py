@@ -15,10 +15,15 @@ from soccer_vision.events.on_ball import (
 FPS = 10.0
 
 
-def _ball(frames_xy):
-    """Ball track from ``{frame: (x, y) or None}``; None = offscreen."""
+def _ball(frames_xy, sample_fps=FPS):
+    """Ball track from ``{frame: (x, y) or None}``; None = offscreen.
+
+    ``sample_fps`` mirrors what `process` writes and is what tells span
+    selection how much time one sample stands for.
+    """
     return {
         "fps": FPS,
+        "sample_fps": sample_fps,
         "samples": [
             {"frame": f, "visible": xy is not None,
              "pixel_x": xy[0] if xy else None, "pixel_y": xy[1] if xy else None}
@@ -133,24 +138,46 @@ def test_span_is_tagged_with_the_closest_lane():
 
 
 def test_incidental_single_sample_span_is_dropped():
-    ball = _ball({0: (100.0, 200.0), 60: (100.0, 200.0)})
-    tracks = _tracks({3: {0: (105.0, 205.0), 60: (105.0, 205.0)}})
-    assert select_on_ball_spans(ball, tracks, {3}) == []
+    """One frame near the ball is a brush past, not a touch.
+
+    The ball track is dense here on purpose. A span is credited with one
+    ``_sample_step_frames`` of coverage, so the *sampling rate* sets what a
+    single sample is worth: a two-sample fixture 6s apart makes one sample mean
+    6s of ball time, which clears any sane floor and tests nothing. At the real
+    sample rate one sample is one frame, which is what should be dropped.
+    """
+    ball = _ball({f: (100.0, 200.0) for f in range(61)})
+    near_once = {0: (105.0, 205.0)}
+    near_once.update({f: (900.0, 800.0) for f in range(1, 61)})
+    assert select_on_ball_spans(ball, _tracks({3: near_once}), {3}) == []
 
 
-def test_a_multi_sample_span_still_has_to_clear_min_span_s():
+def test_three_dense_frames_are_not_a_touch():
     """Several samples are not a touch if they cover no time.
 
-    At a dense detection rate three consecutive frames are 0.07 s, and a
-    duplicate detection box lives exactly that long. The old test exempted any
-    span of two or more samples from ``min_span_s``, which put 0.07 s "touches"
-    into player reels once the run moved from 5 fps to 30.
+    Sampling every frame, three consecutive frames is 0.1 s — the lifetime of a
+    duplicate detection box, not of a touch. The old test exempted any span of
+    two or more samples from ``min_span_s``, so raising the detection rate from
+    5 fps to 30 silently put 0.1 s "touches" into players' reels.
     """
-    ball = _ball({f: (100.0, 200.0) for f in range(3)})
+    ball = _ball({f: (100.0, 200.0) for f in range(3)}, sample_fps=FPS)
     tracks = _tracks({3: {f: (105.0, 205.0) for f in range(3)}})
     assert select_on_ball_spans(ball, tracks, {3}, min_span_s=0.4) == []
-    # The same three samples do make a span when the bar is set below them.
-    assert len(select_on_ball_spans(ball, tracks, {3}, min_span_s=0.1)) == 1
+
+
+def test_the_duration_bar_means_the_same_thing_at_either_sampling_rate():
+    """A real touch must not be dropped merely for being sampled sparsely.
+
+    The same 0.5 s of football, sampled every frame and every 6th frame, has to
+    clear a 0.4 s bar both times — otherwise the threshold is really a statement
+    about the detection rate.
+    """
+    dense = _ball({f: (100.0, 200.0) for f in range(5)}, sample_fps=FPS)
+    dense_tracks = _tracks({3: {f: (105.0, 205.0) for f in range(5)}})
+    sparse = _ball({0: (100.0, 200.0), 4: (100.0, 200.0)}, sample_fps=FPS / 4)
+    sparse_tracks = _tracks({3: {0: (105.0, 205.0), 4: (105.0, 205.0)}})
+    assert len(select_on_ball_spans(dense, dense_tracks, {3}, min_span_s=0.4)) == 1
+    assert len(select_on_ball_spans(sparse, sparse_tracks, {3}, min_span_s=0.4)) == 1
 
 
 # --- spans -> events ------------------------------------------------------
