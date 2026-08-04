@@ -1202,6 +1202,25 @@ have run there in the gap. This cannot make the halo *correct* — the name it
 started from may be wrong — but it makes it coherent, which is the difference
 between a viewer seeing one player and seeing a strobe.
 
+**The anchors skipped that check until 2026-08-04, and the strobe came back
+through that door.** A span's `track_ids` were accepted *unconditionally* — the
+overlap and reachability tests applied only to the extra same-name lanes. The
+comment justified it as "the lanes a player fragments across mid-touch", which is
+the usual case but is guaranteed by nothing: a span's lanes are whichever lanes
+came near the ball, and two of those can be alive in the same frames. Measured
+across the 142 merged reel windows of the 13 player reels, **37 windows had more
+than one anchor and 35 of those had anchors overlapping in time** — a quarter of
+every clip cut was blending two or more concurrent lanes, with the per-frame
+dedupe picking between them arbitrarily. The longest anchor now seeds the halo
+and every other anchor has to earn its place on the same terms as an extra
+(ahead of them in the queue, so ball-proximity still outranks a bare name).
+
+**Rank the anchors, don't just vet them.** 14 of those windows had an anchor lane
+under a second, and the first-listed id won by construction — so a 3-frame
+duplicate box could outrank a 20 s lane of the same player and leave the clip
+essentially un-haloed. This is *Identity coverage* item 1 again: a lane too short
+to vote on is too short to point a spotlight with.
+
 **The tracking underneath is genuinely good, at 30 fps.** Seeded from lane 14185
 of `runs/saints-u14g-full-30fps` (Morgan, hand-verified through the 5 fps run's
 lane 5188), motion linking alone follows her for **23.5 s across a lane handoff
@@ -1387,6 +1406,47 @@ kit colour into the `teams` block of `tracks.json`.
 
 Key options: `--on-ball-dist 90` (max px from ball to the player's feet),
 `--on-ball-min-span 0.4` (drop shorter spans as incidental).
+
+### `--on-ball-min-span` was unenforceable at 30 fps — fixed 2026-08-04
+
+The duration test read `end_s - start_s < min_span_s and n_samples < 2`, so
+**any span holding two or more ball samples skipped the floor entirely**. At
+5 fps that hatch was nearly invisible (two samples *are* 0.4 s apart), which is
+why it survived; at 30 fps two samples is 0.07 s. Raising the detection rate
+therefore lowered the bar for what counts as a touch, silently.
+
+What that let through, found by watching a reel rather than a metric: at 29 s
+into `reel_eveleigh_bottorff.mp4` the halo vanishes for six seconds, flashes
+orange on the player with the ball for **three frames**, and vanishes again. The
+clip exists because of a **0.07 s span on lane 8109** — a *duplicate detection
+box*, alive 3 frames, IoU 0.72 with the 30 s lane 7627 on the same player.
+Re-id named the 3-frame ghost (`Eveleigh Bottorff`, sim 0.769) and **abstained on
+the 30 s lane** (sim 0.748). Meanwhile lane 7999 — also named Eveleigh, sim
+0.833, covering the whole clip — was rejected from the halo for overlapping the
+anchor in time, which is why most of the clip has no spotlight at all.
+
+A span is now credited with `last - first + one sampling step`
+(`_sample_step_frames`, off the `sample_fps` `process` writes), so **the
+threshold means the same thing at either rate** instead of being six times
+stricter at 5 fps than at 30. Census on `runs/saints-u14g-full-30fps`
+(`slurm/census_span_fixes.py`, no GPU, reads saved artefacts):
+
+| | spans | touch seconds |
+|---|---|---|
+| all 13 players, old rule | 365 | 375 |
+| all 13 players, new rule | **218** | **355** |
+| black kit, no identity | 694 → **588** | 1831 → **1814** |
+
+**It discards 40% of the "touches" to lose 5% of the football** — the same shape
+as `--min-lane-seconds`, and for the same reason: what it removes is sub-frame
+noise that a padded reel window inflates into a full clip. Morgan's 14 spans
+become 11 with her 22 touch-seconds untouched.
+
+**Dedup cannot catch these, and that is a separate open problem.**
+`merge_duplicate_lanes` only pairs a lane's *death* with another's *birth* within
+0.5 s. Lane 8109 was born and died entirely **inside** lane 7627's life, so the
+pair was never even considered. That is the containment case, and it is
+`gta-link`'s *splitter* territory (see *Identity coverage*).
 
 **Caveat.** This is proximity, not action recognition — it says #6 was on the
 ball, not that #6 *passed*. It's the honest answer available today; once the

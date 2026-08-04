@@ -1643,3 +1643,44 @@ cost is dominated by loading the 336 MB tracks.json (~60 s each).
 
 Outputs: `runs/saints-u14g-full-30fps/reels/reel_team_black.mp4` and
 `reels/reel_<full_name>.mp4` per player.
+
+## 38723488 — 2026-08-04 19:55 — slurm/submit_all_reels.sh
+Why: Re-cut all 14 reels after fixing two defects that a viewer found before any
+metric did. At 29 s into `reel_eveleigh_bottorff.mp4` the halo drops out for six
+seconds, flashes on the player with the ball for three frames, and drops out
+again. Traced to a **0.07 s on-ball span on lane 8109** — a duplicate detection
+box, alive 3 frames, IoU 0.72 with the 30 s lane 7627 on the same player. Re-id
+named the ghost (sim 0.769) and abstained on the real lane (sim 0.748).
+
+Two independent bugs, both fixed:
+
+1. **`--on-ball-min-span 0.4` was unenforceable at 30 fps.** The test read
+   `end_s - start_s < min_span_s and n_samples < 2`, so any span of 2+ samples
+   skipped the floor. Harmless at 5 fps (two samples = 0.4 s), meaningless at 30
+   (0.07 s). Spans are now credited `last - first + one sampling step`, so the
+   bar means the same thing at either rate.
+2. **Halo anchors skipped the one-player-one-halo check.** `track_ids` were
+   accepted unconditionally; only the *extra* same-name lanes were vetted. 35 of
+   the 37 multi-anchor windows across the 13 reels had anchors alive at the same
+   time, and 14 windows had a sub-second anchor winning by list order. The
+   longest anchor now seeds and the rest compete on the normal terms.
+
+Census before rendering (`slurm/census_span_fixes.py`, saved artefacts, no GPU):
+
+| selection | spans old → new | touch s old → new |
+|---|---|---|
+| 13 players | 365 → **218** | 375 → **355** |
+| black kit, no identity | 694 → **588** | 1831 → **1814** |
+
+**40% of the spans go, 5% of the football goes with them** — same shape as
+`--min-lane-seconds`. Morgan: 14 → 11 spans, 22 touch-seconds unchanged.
+
+Note: job **38722518** was cancelled. It was submitted at 19:36, before both
+source files were written (19:38 and 19:46), so its 14 sequential `reel`
+invocations would have imported a mix of pre- and post-fix code. 38723488 is the
+clean run — all 287 tests pass at the commit it renders from.
+
+**Result:** _(pending)_
+
+Outputs: `runs/saints-u14g-full-30fps/reels/reel_team_black.mp4` and
+`reels/reel_<full_name>.mp4` per player (overwrites the 38722518-era files).
