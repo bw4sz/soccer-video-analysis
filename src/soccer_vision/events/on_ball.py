@@ -46,6 +46,25 @@ def _foot_point(bbox) -> tuple[float, float]:
     return (x1 + x2) / 2.0, float(y2)
 
 
+def _sample_step_frames(ball_track: dict, fps: float) -> int:
+    """Frames between consecutive ball samples, at least 1.
+
+    A sample is evidence about the interval running up to the *next* sample, so
+    a span covers ``last - first + one step``. Without that term the credited
+    duration depends on the sampling rate rather than on the football: the same
+    real touch measures 0.4 s shorter at 5 fps than at 30, and a single-sample
+    span always measures zero. ``sample_fps`` is written by `process`; the
+    minimum observed gap is the fallback for older tracks, chosen over the mean
+    or median because it can only under-credit, never over-.
+    """
+    sample_fps = ball_track.get("sample_fps")
+    if sample_fps:
+        return max(1, int(round(float(fps) / float(sample_fps))))
+    frames = [int(s["frame"]) for s in ball_track.get("samples", [])[:512]]
+    diffs = [b - a for a, b in zip(frames, frames[1:]) if b > a]
+    return max(1, min(diffs)) if diffs else 1
+
+
 def select_on_ball_spans(
     ball_track: dict,
     tracks: dict,
@@ -67,8 +86,22 @@ def select_on_ball_spans(
     enough to read as an actual touch/challenge. Consecutive samples (bridging
     gaps up to ``max_gap_s``) merge into spans; spans shorter than ``min_span_s``
     are dropped as incidental.
+
+    **``min_span_s`` is a duration, and nothing exempts a span from it.** The
+    test used to read ``end_s - start_s < min_span_s and s["n"] < 2``, so any
+    span holding two or more samples cleared the floor however brief it was. At
+    5 fps that hatch was nearly harmless — two samples *are* 0.4 s apart — which
+    is why it survived; at 30 fps it let a **three-frame, 0.07 s span** through a
+    0.4 s minimum. Not hypothetical: on ``runs/saints-u14g-full-30fps`` such a
+    span was a duplicate detection box (lane 8109 — alive 3 frames, IoU 0.72 with
+    the 30 s lane 7627 on the same player) that re-id had named, and it cut a
+    whole clip into a player's reel with a halo that flashed for a tenth of a
+    second. **Detecting more often must not lower the bar for what counts as a
+    touch**, so the span is credited with ``_sample_step_frames`` of coverage and
+    the threshold means the same thing at either rate.
     """
     fps = ball_track.get("fps") or tracks.get("fps") or 30.0
+    step_frames = _sample_step_frames(ball_track, fps)
 
     # index every target lane's bbox by frame, once
     boxes_by_frame: dict[int, list[tuple[int, list]]] = {}
@@ -125,7 +158,7 @@ def select_on_ball_spans(
     out = []
     for s in spans:
         start_s, end_s = s["first"] / fps, s["last"] / fps
-        if end_s - start_s < min_span_s and s["n"] < 2:
+        if (s["last"] - s["first"] + step_frames) / fps < min_span_s:
             continue
         out.append(OnBallSpan(
             track_id=s["tid"], start_frame=s["first"], end_frame=s["last"],

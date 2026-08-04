@@ -683,6 +683,42 @@ fine-tuned on these players rather than one trained to separate people by
 clothing. [PRTreID](https://github.com/VlSomers/prtreid) (part-based, jointly
 trained for re-id + team + role) is the candidate.
 
+**Read that hubness row narrowly — it is about *accuracy on 45 crops*, not about
+the assignment distribution over a match, and those come apart.** Across the
+2,311 named lanes of `runs/saints-u14g-full-30fps`, naming is wildly skewed and
+gallery depth does not explain it:
+
+| player | gallery exemplars | lanes named | vs an even split |
+|---|---|---|---|
+| Catherine Conroy | 63 | 670 | 3.77x |
+| Gia Olson | 64 | 638 | 3.59x |
+| Izabelle Scott-Snow | 22 | 352 | 1.98x |
+| Morgan Lobey | 64 | 77 | 0.43x |
+| Quinn Perrin | 64 | 24 | 0.14x |
+| Morrighan Wright | 64 | 21 | 0.12x |
+| Ila Sheets | 45 | 18 | 0.10x |
+
+**Seven players hold 63-64 exemplars each and their named-lane counts span 21 to
+670 — a 32x range on equal gallery depth.** These girls are all on the pitch for
+comparable stretches, so most of that spread is error, and it has the signature
+of hubness: a few gallery identities sit near the centre of the embedding space
+and absorb nearest-neighbour matches. The 45-crop test above could not have seen
+this — it measured rank-1 accuracy on a tiny balanced sample, which is a
+different quantity from how 2,311 decisions distribute. Worth re-testing
+hubness correction *on the assignment skew* before writing it off.
+
+**Two players get no reel at all, and one of those is not a research problem.**
+Joelle Fontenot has **zero** gallery exemplars — she was never enrolled, so she
+can never be named and her reel is empty by construction. Lainey Jarvis has one
+exemplar and one named lane. Check gallery coverage against the roster before
+concluding anything about a player's reel:
+
+```python
+g = np.load("galleries/<team>.npz", allow_pickle=True)
+# names is the label vocabulary; label indexes into it, one row per exemplar
+collections.Counter(str(g["names"][i]) for i in g["label"])
+```
+
 Read the ceiling narrowly, though — it is about telling *teammates* apart, and
 that is not the biggest identity loss in the pipeline. See *Identity coverage*
 below.

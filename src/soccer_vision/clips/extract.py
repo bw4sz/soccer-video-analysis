@@ -66,15 +66,23 @@ def halo_samples_for(event: dict, halo_tracks: dict[int, list] | None,
         tid = event.get("track_id")
         ids = [int(tid)] if tid is not None else []
 
-    accepted: list[list] = []
-    for tid in ids:
-        lane = halo_tracks.get(tid)
-        if lane:
-            accepted.append(sorted(lane, key=lambda s: s[0]))
+    # Anchors are preferred but not privileged absolutely: they used to be
+    # accepted unconditionally, including several at once, so two anchor lanes
+    # alive in the same frames both fed the halo and the per-frame dedupe below
+    # picked between them arbitrarily — the exact strobe this function exists to
+    # stop, reintroduced through the one door that skipped the check. The
+    # longest anchor seeds the halo; every other anchor has to earn its place on
+    # the same terms as an extra, just ahead of them in the queue.
+    anchors = sorted(
+        (sorted(halo_tracks[tid], key=lambda s: s[0])
+         for tid in ids if halo_tracks.get(tid)),
+        key=len, reverse=True,
+    )
+    accepted: list[list] = [anchors.pop(0)] if anchors else []
     if not accepted and not extra_ids:
         return None
 
-    candidates = [
+    candidates = anchors + [
         sorted(halo_tracks[int(t)], key=lambda s: s[0])
         for t in (extra_ids or ())
         if int(t) not in set(ids) and halo_tracks.get(int(t))

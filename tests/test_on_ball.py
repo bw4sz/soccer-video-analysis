@@ -138,6 +138,21 @@ def test_incidental_single_sample_span_is_dropped():
     assert select_on_ball_spans(ball, tracks, {3}) == []
 
 
+def test_a_multi_sample_span_still_has_to_clear_min_span_s():
+    """Several samples are not a touch if they cover no time.
+
+    At a dense detection rate three consecutive frames are 0.07 s, and a
+    duplicate detection box lives exactly that long. The old test exempted any
+    span of two or more samples from ``min_span_s``, which put 0.07 s "touches"
+    into player reels once the run moved from 5 fps to 30.
+    """
+    ball = _ball({f: (100.0, 200.0) for f in range(3)})
+    tracks = _tracks({3: {f: (105.0, 205.0) for f in range(3)}})
+    assert select_on_ball_spans(ball, tracks, {3}, min_span_s=0.4) == []
+    # The same three samples do make a span when the bar is set below them.
+    assert len(select_on_ball_spans(ball, tracks, {3}, min_span_s=0.1)) == 1
+
+
 # --- spans -> events ------------------------------------------------------
 
 def _span(tid=3, start=10, end=25):
@@ -171,12 +186,40 @@ def test_team_filter_drops_other_teams_and_unknown_lanes():
 
 # --- halo across a lane handoff -------------------------------------------
 
+def _box(x, y):
+    """A 20x40 bbox with its foot point at ``(x, y)``."""
+    return [x - 10.0, y - 40.0, x + 10.0, y]
+
+
 def test_halo_follows_every_lane_in_a_span():
     """The spotlight must not drop out when the player changes lane mid-clip."""
-    halo_tracks = {3: [(0, "a"), (1, "b")], 11: [(4, "c"), (5, "d")]}
+    halo_tracks = {3: [(0, _box(100, 200)), (1, _box(105, 200))],
+                   11: [(4, _box(120, 200)), (5, _box(125, 200))]}
     event = {"track_id": 11, "track_ids": [3, 11]}
     samples = halo_samples_for(event, halo_tracks)
     assert [f for f, _ in samples] == [0, 1, 4, 5]
+
+
+def test_two_anchor_lanes_alive_at_once_do_not_both_halo():
+    """Anchors are vetted like any other candidate — one player, one halo.
+
+    Two lanes of one name alive in the same frames means at least one is another
+    child (issue #28). Accepting both let the per-frame dedupe pick between them
+    arbitrarily, which is the strobing halo. The longer lane seeds; the
+    overlapping one is dropped rather than blended in.
+    """
+    halo_tracks = {3: [(f, _box(100 + f, 200)) for f in range(10)],
+                   11: [(4, _box(900, 700)), (5, _box(905, 700))]}
+    samples = halo_samples_for({"track_id": 11, "track_ids": [3, 11]}, halo_tracks)
+    assert [f for f, _ in samples] == list(range(10))
+
+
+def test_a_short_anchor_does_not_outrank_a_longer_one():
+    """The longest anchor seeds the halo, not whichever id came first."""
+    halo_tracks = {3: [(4, _box(900, 700))],
+                   11: [(f, _box(100 + f, 200)) for f in range(10)]}
+    samples = halo_samples_for({"track_id": 3, "track_ids": [3, 11]}, halo_tracks)
+    assert [f for f, _ in samples] == list(range(10))
 
 
 def test_halo_falls_back_to_the_single_track_id():

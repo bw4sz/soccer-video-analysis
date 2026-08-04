@@ -183,3 +183,30 @@ def test_halo_without_an_anchor_starts_from_the_longest_lane():
     tracks = {1: _lane(0, 100.0, n=2), 2: _lane(0, 900.0, n=9)}
     samples = halo_samples_for({}, tracks, extra_ids={1, 2}, fps=30.0)
     assert [s[1][0] for s in samples] == [900.0] * 9
+
+
+def test_halo_rejects_a_second_anchor_alive_at_the_same_time():
+    """Anchors get no exemption from the one-player-one-place rule.
+
+    An on-ball span carries every lane it covers in ``track_ids``, and those are
+    normally a player's successive lanes through a handoff. But nothing
+    guarantees it: two lanes named for her can both be near the ball at once, and
+    accepting both put the strobe back through the one door that skipped the
+    check. The longest anchor seeds the halo; the rest queue up like extras.
+    """
+    tracks = {1: _lane(0, 100.0, n=9), 2: _lane(0, 900.0, n=9)}
+    samples = halo_samples_for({"track_ids": [1, 2]}, tracks, fps=30.0)
+    assert [s[1][0] for s in samples] == [100.0] * 9
+
+
+def test_halo_prefers_the_longest_anchor_when_two_overlap():
+    tracks = {1: _lane(0, 100.0, n=2), 2: _lane(0, 900.0, n=9)}
+    samples = halo_samples_for({"track_ids": [1, 2]}, tracks, fps=30.0)
+    assert [s[1][0] for s in samples] == [900.0] * 9
+
+
+def test_halo_still_follows_an_anchor_handoff():
+    """The case track_ids exists for: successive lanes of one touch."""
+    tracks = {1: _lane(0, 100.0, n=5), 2: _lane(60, 120.0, n=5)}
+    samples = halo_samples_for({"track_ids": [1, 2]}, tracks, fps=30.0)
+    assert len(samples) == 10
