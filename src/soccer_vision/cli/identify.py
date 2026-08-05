@@ -211,13 +211,20 @@ def _resolve_gallery(flag, reid_cfg: dict, run_dir: Path) -> Path | None:
 
 
 def _run_reid(args, track_boxes, proxy_path, gallery_path, reid_cfg, profile, results):
-    from soccer_vision.identify.gallery import load_gallery, match_track
+    from soccer_vision.identify.gallery import (
+        EXCLUDED_NEGATIVE, NEGATIVE_LABEL, load_gallery, match_track,
+    )
     from soccer_vision.identify.reid import ReIDEmbedder, embed_tracks
     from soccer_vision.io.video import VideoReader
 
     gallery = load_gallery(gallery_path)
-    print(f"Gallery: {len(gallery['names'])} players, "
+    n_players = sum(1 for n in gallery["names"] if n != NEGATIVE_LABEL)
+    print(f"Gallery: {n_players} players, "
           f"{len(gallery['emb'])} exemplars ({gallery_path})")
+    if NEGATIVE_LABEL in gallery["names"]:
+        n_neg = int((gallery["label"] == gallery["names"].index(NEGATIVE_LABEL)).sum())
+        print(f"  + a '{NEGATIVE_LABEL}' class of {n_neg} exemplars — lanes matching "
+              f"it are rejected rather than named")
 
     min_sim = _first_set(args.min_similarity, reid_cfg.get("min_similarity"), 0.5)
     min_margin = _first_set(args.min_reid_margin, reid_cfg.get("min_margin"), 0.05)
@@ -238,7 +245,9 @@ def _run_reid(args, track_boxes, proxy_path, gallery_path, reid_cfg, profile, re
         m = match_track(emb, gallery, min_similarity=min_sim, min_margin=min_margin)
         results[tid]["similarity"] = round(m.similarity, 3)
         results[tid]["n_obs"] = m.n_crops
-        if m.name is not None:
+        if m.rejected:
+            results[tid]["excluded"] = EXCLUDED_NEGATIVE
+        elif m.name is not None:
             results[tid].update(name=m.name, source="reid",
                                 confidence=round(m.similarity, 3),
                                 jersey=_jersey_for(m.name, profile))
@@ -246,6 +255,10 @@ def _run_reid(args, track_boxes, proxy_path, gallery_path, reid_cfg, profile, re
     matched = sum(1 for r in results.values() if r["source"] == "reid")
     print(f"Re-id matched {matched}/{len(track_boxes)} tracks "
           f"(min_similarity={min_sim}, min_margin={min_margin})")
+    if NEGATIVE_LABEL in gallery["names"]:
+        rejected = sum(1 for r in results.values() if r["excluded"] == EXCLUDED_NEGATIVE)
+        print(f"  {rejected} lane(s) matched '{NEGATIVE_LABEL}' and were rejected "
+              f"as not our players")
 
 
 def _jersey_for(name: str, profile: dict | None) -> int | None:

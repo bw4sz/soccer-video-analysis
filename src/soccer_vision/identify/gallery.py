@@ -28,6 +28,22 @@ from pathlib import Path
 
 import numpy as np
 
+#: Reserved gallery label for exemplars that are *not* one of our players —
+#: spectators, the neighbouring pitch, officials. A gallery holding only our
+#: squad has no way to answer "none of the above": handed a stranger,
+#: :func:`match_track` returns whichever of ours is nearest and the margin test
+#: sees an ordinary win. Enrolling negatives under this label turns that
+#: rejection into an ordinary nearest-neighbour outcome, and ``match_track``
+#: reports it as an abstention with ``rejected=True`` rather than as a name.
+NEGATIVE_LABEL = "not ours"
+
+#: ``excluded`` value written to jerseys.json for a lane the negative class
+#: claimed. Unlike ``"kit"`` and ``"short"``, which gate *before* any model runs,
+#: this one is a model output — the lane was embedded and scored, and lost to the
+#: negatives. Kept distinct so "we never looked" and "we looked and said no" are
+#: never confused when auditing why a lane went unnamed.
+EXCLUDED_NEGATIVE = "not_ours"
+
 
 @dataclass(frozen=True)
 class GalleryMatch:
@@ -37,12 +53,18 @@ class GalleryMatch:
     the winner's mean cosine score (0..1 for same-hemisphere embeddings) and
     ``margin`` its lead over the runner-up; ``n_crops`` is how many crops of the
     track were scored.
+
+    ``rejected`` distinguishes the two ways of arriving at ``name=None``: the
+    gallery positively matched :data:`NEGATIVE_LABEL` (this is not one of our
+    players), versus nothing cleared the thresholds (no claim either way). Only
+    the first is evidence.
     """
 
     name: str | None
     similarity: float
     margin: float
     n_crops: int
+    rejected: bool = False
 
 
 def build_gallery(
@@ -136,6 +158,13 @@ def match_track(
     *and* leads the runner-up by ``min_margin`` — an unenrolled player (the other
     team, a referee) resembles everyone equally, and abstaining sends the track
     to the OCR fallback instead of mislabelling a clip.
+
+    When :data:`NEGATIVE_LABEL` is enrolled and wins on those same terms, the
+    result is ``name=None, rejected=True``: the gallery is claiming this is not
+    one of our players, which is a stronger statement than failing a threshold.
+    A negative win that *doesn't* clear the thresholds is an ordinary
+    abstention — the class gets no special authority, only its own entry in the
+    ranking.
     """
     embeddings = np.atleast_2d(np.asarray(embeddings, dtype=np.float32))
     n_crops = len(embeddings)
@@ -161,7 +190,10 @@ def match_track(
 
     if best < min_similarity or margin < min_margin:
         return GalleryMatch(None, float(best), margin, n_crops)
-    return GalleryMatch(gallery["names"][order[0]], float(best), margin, n_crops)
+    winner = gallery["names"][order[0]]
+    if winner == NEGATIVE_LABEL:
+        return GalleryMatch(None, float(best), margin, n_crops, rejected=True)
+    return GalleryMatch(winner, float(best), margin, n_crops)
 
 
 def _l2_normalise(x: np.ndarray) -> np.ndarray:

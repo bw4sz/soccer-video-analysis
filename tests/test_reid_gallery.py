@@ -10,6 +10,7 @@ import pytest
 
 from soccer_vision.identify.enroll import boxes_from_label_studio, names_from_jerseys
 from soccer_vision.identify.gallery import (
+    NEGATIVE_LABEL,
     build_gallery,
     load_gallery,
     match_track,
@@ -106,3 +107,47 @@ def test_parses_label_studio_boxes_to_pixels():
     assert frame == 1200
     assert name == "Simon Weinstein"
     np.testing.assert_allclose(bbox, [100.0, 100.0, 150.0, 250.0])
+
+
+def _two_class_gallery():
+    """One player and one negative class, on orthogonal synthetic directions."""
+    player = np.tile(np.eye(1, 8, 0), (6, 1))
+    negative = np.tile(np.eye(1, 8, 1), (6, 1))
+    return build_gallery(
+        np.concatenate([player, negative]).astype(np.float32),
+        ["Simon Weinstein"] * 6 + [NEGATIVE_LABEL] * 6,
+    )
+
+
+def test_negative_class_rejects_rather_than_names():
+    """A crop matching the negatives abstains, and says so with `rejected`.
+
+    This is the "none of the above" a squad-only gallery cannot express: without
+    the class, a spectator's nearest neighbour is whichever player is closest and
+    the margin test sees an ordinary win.
+    """
+    gallery = _two_class_gallery()
+
+    stranger = match_track(np.eye(1, 8, 1).astype(np.float32), gallery)
+    assert stranger.name is None
+    assert stranger.rejected is True
+
+    ours = match_track(np.eye(1, 8, 0).astype(np.float32), gallery)
+    assert ours.name == "Simon Weinstein"
+    assert ours.rejected is False
+
+
+def test_negative_class_gets_no_authority_below_threshold():
+    """A negative win that fails the thresholds is an ordinary abstention.
+
+    The class is one more entry in the ranking, not a veto — otherwise a weak
+    match to a spectator would outrank the threshold logic protecting every
+    other decision.
+    """
+    gallery = _two_class_gallery()
+    # equidistant from both classes: nothing clears the margin
+    tie = ((np.eye(1, 8, 0) + np.eye(1, 8, 1)) / np.sqrt(2)).astype(np.float32)
+
+    got = match_track(tie, gallery, min_margin=0.05)
+    assert got.name is None
+    assert got.rejected is False
