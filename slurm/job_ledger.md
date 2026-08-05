@@ -1680,7 +1680,34 @@ source files were written (19:38 and 19:46), so its 14 sequential `reel`
 invocations would have imported a mix of pre- and post-fix code. 38723488 is the
 clean run — all 287 tests pass at the commit it renders from.
 
-**Result:** _(pending)_
+**Result:** Done in 43 min (19:54-20:37), 12 reels + 2 empty. The reported clip
+is gone: Eveleigh's reel is **10 clips / 156.0 s -> 8 clips / 129.2 s**, and no
+window now covers src 648-660 s where the three-frame flash was. Halo coverage
+across her 8 clips is 37-93% of frames (median ~85%) against **0.9%** in the
+clip that prompted this.
+
+| reel | min | | reel | min |
+|---|---|---|---|---|
+| team black (control) | 58.4 | | Leire Cabral | 3.3 |
+| Gia Olson | 7.7 | | Quinn Perrin | 2.8 |
+| Izabelle Scott-Snow | 6.5 | | Eveleigh Bottorff | 2.2 |
+| Catherine Conroy | 5.4 | | Morgan Lobey | 2.0 |
+| Iris McDonald / Riley McNicholas | 1.2 | | Ila Sheets | 0.5 |
+| Morrighan Wright | 0.2 | | Joelle Fontenot, Lainey Jarvis | **none** |
+
+**Most reels barely changed, and that is the point.** A dropped sub-0.4 s span
+usually sat inside a passage of play whose window absorbed it, so the rendered
+footage is identical — `reel_leire_cabral.mp4` came out byte-for-byte the same
+size. The change bites only where a fragment stood **alone** and became a clip of
+its own, which is exactly the failure reported.
+
+Two clips of Eveleigh's went: the 0.07 s duplicate-box span at 654.85 s and a
+0.33 s one at 3581.5 s.
+
+**Still open, unchanged by this.** Naming predates `--min-lane-seconds`, so these
+are still the ungated selection. Joelle (0 gallery exemplars) and Lainey (1) get
+no reel for want of enrolment, not for want of playing. And `merge_duplicate_lanes`
+still cannot see a lane contained inside a living one.
 
 Outputs: `runs/saints-u14g-full-30fps/reels/reel_team_black.mp4` and
 `reels/reel_<full_name>.mp4` per player (overwrites the 38722518-era files).
