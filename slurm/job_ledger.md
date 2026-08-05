@@ -1684,3 +1684,54 @@ clean run — all 287 tests pass at the commit it renders from.
 
 Outputs: `runs/saints-u14g-full-30fps/reels/reel_team_black.mp4` and
 `reels/reel_<full_name>.mp4` per player (overwrites the 38722518-era files).
+
+## 38722518 (cancelled) / 38723488 — 2026-08-04 — slurm/submit_all_reels.sh
+## (a reel for every player, plus the whole kit, off saved artefacts)
+
+**Why.** Every reel so far had been Morgan, the player the gallery is deepest on
+and the anchor of every measurement in `CLAUDE.md`. Thirteen reels answers the
+question a parent actually asks: what does the parent of *any* child on this
+squad get today?
+
+38722518 was cancelled at 16:40 (SIGTERM, not OOM — peak RSS 897 MB); 38723488
+is the completed run, 42:39 on CPU. No GPU, no detector, no re-`identify`.
+
+**Result: 11 of 13 players get a reel, and their lengths track the naming skew
+rather than their football.**
+
+| player | gallery exemplars | on-ball spans | reel |
+|---|---|---|---|
+| Gia Olson | 64 | 48 | 7.7 min |
+| Izabelle Scott-Snow | 22 | 51 | 6.5 min |
+| Catherine Conroy | 63 | 36 | 5.4 min |
+| Leire Cabral | 64 | 23 | 3.3 min |
+| Quinn Perrin | 64 | 17 | 2.8 min |
+| Eveleigh Bottorff | 64 | 10 | 2.2 min |
+| Morgan Lobey | 64 | 11 | 2.0 min |
+| Riley McNicholas | 41 | 10 | 1.2 min |
+| Iris McDonald | 64 | 7 | 1.2 min |
+| Ila Sheets | 45 | 2 | 0.5 min |
+| Morrighan Wright | 64 | 1 | **0.2 min** |
+| Lainey Jarvis | 1 | 0 | **none** |
+| Joelle Fontenot | **0** | — | **none** |
+
+These girls all played comparable minutes. **Morrighan gets 12 seconds and Gia
+gets 7.7 minutes off equal gallery depth (64 exemplars each)** — a 38x spread
+that is naming skew, not football. See the hubness note in `CLAUDE.md`.
+
+**Joelle was never enrolled** (zero exemplars), so `--player` resolves to no lane
+at all and her reel cannot exist. That is a missing labelling session, not a
+model limitation, and it is the cheapest fix available. Lainey has one exemplar,
+one named lane, and that lane never came within the on-ball radius.
+
+**The team reel is 58.4 minutes of a 60.4-minute match** — 588 spans padded 6 s
+before / 5 s after and merged within 2 s collapse into 13 clips covering 97% of
+the footage. Two things follow. It works perfectly as the *control* it was built
+to be: the football is all there, on 7,519 black-kit lanes, with no identity
+required. But **"one of ours was near the ball" is not a highlight criterion** —
+even at zero padding it is 1,831 s, half the match, because in football somebody
+on your team usually *is* near the ball. A useful team reel needs a tighter
+question (shots, entries into the final third, possession changes), not tighter
+padding.
+
+Outputs in `/orange/ewhite/b.weinstein/soccer-video-analysis/runs/saints-u14g-full-30fps/reels/`.
