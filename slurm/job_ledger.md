@@ -1762,3 +1762,53 @@ question (shots, entries into the final third, possession changes), not tighter
 padding.
 
 Outputs in `/orange/ewhite/b.weinstein/soccer-video-analysis/runs/saints-u14g-full-30fps/reels/`.
+
+## 38746007 — `identify` with a "not ours" class (2026-08-05)
+
+**Why.** The kit gate stopped re-id naming the *opposing squad*; it does nothing
+about people who are not playing. A standing spectator in dark clothes is stamped
+`black` by a classifier that judges lightness against turf, so the gate passes
+them and the gallery names them. At t=2400s on `runs/saints-u14g-full-30fps`,
+~13 of 33 tracked boxes are adults on the far touchline, two labelled
+"Catherine" (`runs/saints-u14g-full-30fps/spectator_evidence/`).
+
+Root cause is a missing constraint, not detector error: RF-DETR is *correct*
+that a spectator is a person, so neither an ensemble nor a fine-tune addresses
+it. `match_track` ranks our eleven and returns the nearest, with no way to say
+"none of the above".
+
+**What changed.** `NEGATIVE_LABEL = "not ours"` in the gallery; a lane matching
+it gets `excluded: "not_ours"` instead of a name. Gallery
+`galleries/saints-u14g.fullmatch-neg64.npz` = 11 players + 64 negative exemplars
+drawn from 66 hand-confirmed off-pitch lanes (1,283 crops).
+
+**Two counter-intuitive results from the sweep** (`slurm/sweep_negative_class.py`,
+189 off-pitch / 425 on-pitch lanes, enrolled lanes held out):
+
+| pool | cap | rejects off-pitch | rejects on-pitch | names off/on |
+|---|---|---|---|---|
+| baseline | - | - | - | 4/62 |
+| broad | 32 | 27 (14%) | 0 (0.0%) | 3/62 |
+| **broad** | **64** | **98 (52%)** | **10 (2.4%)** | **2/54** |
+| broad | 128 | 116 (61%) | 53 (12%) | 0/37 |
+| hard | 64 | 71 (38%) | 25 (5.9%) | 0/37 |
+| hard | 256 | 149 (79%) | 86 (20%) | 0/19 |
+
+1. **Hard negative mining made it worse.** Enrolling the 99 off-pitch lanes the
+   class had failed to reject is dominated by the broad sample at every cap —
+   fewer off-pitch rejections *and* more on-pitch ones. There is no boundary to
+   sharpen in a k-NN gallery: the lanes that survived rejection are the ones that
+   look most like players, so enrolling them extends the class into player space.
+2. **Bigger is not better.** Past cap 64 it starts eating real players.
+
+All ten on-pitch rejections at broad/64 were rendered and checked by eye
+(`negative_class_sheets/rej64_on_01.jpg`) — every one is a spectator at the
+*near* touchline, plus a bag and a folding chair, that the foot-y proxy mis-binned.
+So 2.4% is an upper bound on cost, not an estimate.
+
+**Result.** _pending_
+
+**Follow-up.** Baseline kept at `jerseys.pre-negclass.json`; diff with
+`slurm/compare_negclass_run.py`. Watch whether the whole-match number matches the
+windowed sample — the sample's baseline named only 4/189 off-pitch lanes, so the
+name-level effect there rested on small n.
