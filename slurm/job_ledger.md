@@ -1888,3 +1888,74 @@ lanes still left the wrong ones. Worth sheeting her 7 surviving lanes next.
 length gates, `saints-u14g.fullmatch.npz` vs `saints-u14g.fullmatch-neg64.npz`,
 propagation either on in both or off in both. Until then no number here isolates
 the negative class.
+
+## No job — why Morgan's and Mo's reels are empty: the margin gate (2026-08-05)
+
+**Why.** Ben watched `reels_negclass/` and reported Eveleigh and Gia good,
+Catherine all spectators, and **Morgan and Morrighan far too conservative — we
+know there are touches being missed**. Diagnosed off saved artefacts only
+(`slurm/diagnose_margin_gate.py`, no GPU: `query_embeddings.npz` holds 8,316
+crops over 1,071 lanes, of which 541 pass the kit and length gates).
+
+**Morgan is rank-1 more often than any other player and is named on none of it.**
+Scoring those 541 lanes against `saints-u14g.fullmatch.npz` exactly as
+`match_track` does:
+
+| player | lanes it ranks 1st | named at margin 0.05 | conversion |
+|---|---|---|---|
+| Morgan Lobey | **138** | 1 | **0.7%** |
+| Catherine Conroy | 97 | 2 | 2.1% |
+| Morrighan Wright | 73 | 1 | 1.4% |
+| Gia Olson | 68 | 3 | 4.4% |
+| Eveleigh Bottorff | 48 | 3 | 6.2% |
+| Riley McNicholas | 9 | 2 | 22.2% |
+| Quinn Perrin | 8 | 4 | **50.0%** |
+
+**The relationship is monotone and inverted: the more often the gallery ranks a
+player first, the less often she survives the gate.** That is the hubness
+signature read from the other end — a hub identity sits near the centre of the
+embedding space, so it wins often and *never by much*. `--min-reid-margin` is
+therefore an implicit anti-hub filter, and Morgan is the biggest hub on this
+squad. It also explains why Quinn's and Riley's reels came out **identical**
+before and after the negative class: they are the decisive winners, and nothing
+upstream touches them.
+
+**Nothing abstains on similarity — every abstention is a margin abstention.**
+Median margin over eligible lanes is **0.009** (0.017 with the negative class
+enrolled) against a gate of **0.05**, i.e. the gate sits above the *p90* of the
+distribution it filters. `CLAUDE.md` already records `min_similarity` as inert
+because re-id cosines bunch high; the same bunching makes an *absolute* margin
+the wrong shape of test.
+
+Recovery curve for Morgan on this sample (no negative class):
+
+| margin | total named | Morgan lanes | Morrighan |
+|---|---|---|---|
+| 0.05 (default) | 19 | 1 | 1 |
+| 0.03 | 45 | 4 | 6 |
+| 0.02 | 105 | 20 | 13 |
+| 0.01 | 244 | 53 | 26 |
+| 0.00 | 541 | 138 | 73 |
+
+**Do not just lower it.** Morgan at rank-1 on 138 of 541 lanes is ~2.8x a fair
+share of eleven outfielders, so most of what a looser gate returns to her is
+other children. Leave-one-frame-out already puts accuracy at 42% with no margin
+(issue #25). Loosening trades a thin correct reel for a thick wrong one.
+
+**The negative class is exonerated as the cause of the conservatism.** Same 541
+lanes, same gates, only the gallery varying: **19 named without it, 16 with**,
+plus 56 lanes rejected outright. It costs 3 names, not 2,211. It is also rank-1
+on 269 of 541 lanes, which compresses margins further — a real effect, and a
+small one next to a gate set at p90.
+
+**Ruled out this session:** naive per-identity mean-centring, the textbook
+hubness fix. It hands rank-1 to Lainey Jarvis (**1 exemplar**) on 108 lanes and
+Izabelle (22) on another 108, because centring rewards identities whose exemplars
+score low on average. Any hubness correction here has to be normalised for
+exemplar count — CSLS with a per-identity k-NN radius is the candidate.
+
+**Next.** Two things worth doing before any threshold moves: re-run
+`slurm/validate_reid_frames.py` against the neg64 gallery to get the *precision*
+side of the recovery curve above (it has only ever been measured without the
+negative class), and test CSLS on the assignment distribution rather than on the
+45 held-out crops, where `CLAUDE.md` correctly records it as buying nothing.
