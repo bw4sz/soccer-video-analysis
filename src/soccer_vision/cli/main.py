@@ -160,6 +160,14 @@ def main():
                             help="Min gallery cosine similarity to name a track (default: 0.5)")
     p_identify.add_argument("--min-reid-margin", type=float, default=None,
                             help="Min similarity lead over the runner-up player (default: 0.05)")
+    p_identify.add_argument("--no-assign", action="store_true",
+                            help="Decide each lane on its own instead of solving "
+                                 "the match as an assignment. Off by default: "
+                                 "without the one-player-one-lane constraint a "
+                                 "name lands on two to four concurrent lanes, and "
+                                 "the margin gets measured against gallery "
+                                 "neighbours rather than against who else the "
+                                 "lane could actually be")
     p_identify.add_argument("--team",
                             help="Only name lanes on this kit colour (e.g. black) — the "
                                  "gallery holds one squad and cannot say 'none of the "

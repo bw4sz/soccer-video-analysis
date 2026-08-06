@@ -82,7 +82,8 @@ def run_identify(args):
     namable = {t: b for t, b in track_boxes.items() if t in eligible}
 
     if method.startswith("reid"):
-        _run_reid(args, namable, proxy_path, gallery_path, reid_cfg, profile, results)
+        _run_reid(args, namable, proxy_path, gallery_path, reid_cfg, profile, results,
+                  tracks_path=tracks_path, run_dir=run_dir)
 
     verify = method == "reid+ocr" and not args.no_ocr_verify
 
@@ -124,9 +125,9 @@ def run_identify(args):
 
 def _blank() -> dict:
     return {"jersey": None, "name": None, "source": None, "confidence": 0.0,
-            "n_obs": 0, "legible_frac": 0.0, "similarity": None,
-            "crosscheck": None, "conflict": None, "kit": None, "span_s": None,
-            "excluded": None}
+            "n_obs": 0, "legible_frac": 0.0, "similarity": None, "margin": None,
+            "open_margin": None, "crosscheck": None, "conflict": None,
+            "kit": None, "span_s": None, "excluded": None}
 
 
 def _apply_team_gate(track_boxes, tracks_path: Path, kit, strict: bool,
@@ -210,9 +211,13 @@ def _resolve_gallery(flag, reid_cfg: dict, run_dir: Path) -> Path | None:
     return None
 
 
-def _run_reid(args, track_boxes, proxy_path, gallery_path, reid_cfg, profile, results):
+def _run_reid(args, track_boxes, proxy_path, gallery_path, reid_cfg, profile, results,
+              *, tracks_path, run_dir):
+    import numpy as np
+
+    from soccer_vision.identify.assign import Lane, assign_identities, concurrency
     from soccer_vision.identify.gallery import (
-        EXCLUDED_NEGATIVE, NEGATIVE_LABEL, load_gallery, match_track,
+        EXCLUDED_NEGATIVE, NEGATIVE_LABEL, load_gallery, match_track, track_scores,
     )
     from soccer_vision.identify.reid import ReIDEmbedder, embed_tracks
     from soccer_vision.io.video import VideoReader
@@ -241,16 +246,64 @@ def _run_reid(args, track_boxes, proxy_path, gallery_path, reid_cfg, profile, re
     finally:
         reader.close()
 
+    tids = list(per_track)
+    scores = np.stack([track_scores(per_track[t], gallery) for t in tids]) \
+        if tids else np.zeros((0, len(gallery["names"])), dtype="float32")
+
+    # Kept whatever the naming rule, so the assignment can be re-solved or
+    # re-tuned later without a GPU — the embedding pass is the expensive part.
+    np.savez_compressed(
+        run_dir / "reid_scores.npz",
+        track_ids=np.asarray([str(t) for t in tids]),
+        scores=scores,
+        names=np.asarray(gallery["names"], dtype=object),
+    )
+
     for tid, emb in per_track.items():
-        m = match_track(emb, gallery, min_similarity=min_sim, min_margin=min_margin)
-        results[tid]["similarity"] = round(m.similarity, 3)
-        results[tid]["n_obs"] = m.n_crops
-        if m.rejected:
-            results[tid]["excluded"] = EXCLUDED_NEGATIVE
-        elif m.name is not None:
-            results[tid].update(name=m.name, source="reid",
-                                confidence=round(m.similarity, 3),
-                                jersey=_jersey_for(m.name, profile))
+        results[tid]["n_obs"] = len(np.atleast_2d(emb))
+
+    if _use_assignment(args, reid_cfg):
+        fps = json.loads(tracks_path.read_text()).get("fps") or 0.0
+        lanes = [Lane(str(t), *_extent_s(track_boxes[t], fps)) for t in tids]
+        out = assign_identities(lanes, scores, gallery["names"],
+                                min_similarity=min_sim, min_margin=min_margin)
+        for tid in tids:
+            a = out[str(tid)]
+            results[tid]["similarity"] = round(a.score, 3)
+            results[tid]["margin"] = round(a.margin, 3)
+            results[tid]["open_margin"] = round(a.open_margin, 3)
+            if a.blocked_by:
+                results[tid]["blocked_by"] = [list(b) for b in a.blocked_by]
+            if a.rejected:
+                results[tid]["excluded"] = EXCLUDED_NEGATIVE
+            elif a.name is not None:
+                results[tid].update(name=a.name, source="reid",
+                                    confidence=round(a.score, 3),
+                                    jersey=_jersey_for(a.name, profile))
+        rule = (f"one lane per player at a time, margin measured against the "
+                f"identities still available")
+        worst = concurrency(out, lanes)
+        helped = sum(1 for t in tids
+                     if out[str(t)].name and out[str(t)].margin > out[str(t)].open_margin)
+        extra = (f"\n  {helped} lane(s) named on a margin the constraint opened up "
+                 f"— an identity that would have been the runner-up was already "
+                 f"committed to an overlapping lane") if helped else ""
+        print(f"Naming rule: {rule}{extra}")
+        if worst and max(worst.values()) > 1:  # pragma: no cover - invariant
+            print(f"  WARNING: a name still lands on {max(worst.values())} lanes at once")
+    else:
+        print("Naming rule: each lane decided alone (--no-assign) — a name can land "
+              "on several players at once")
+        for tid, emb in per_track.items():
+            m = match_track(emb, gallery, min_similarity=min_sim, min_margin=min_margin)
+            results[tid]["similarity"] = round(m.similarity, 3)
+            results[tid]["margin"] = round(m.margin, 3)
+            if m.rejected:
+                results[tid]["excluded"] = EXCLUDED_NEGATIVE
+            elif m.name is not None:
+                results[tid].update(name=m.name, source="reid",
+                                    confidence=round(m.similarity, 3),
+                                    jersey=_jersey_for(m.name, profile))
 
     matched = sum(1 for r in results.values() if r["source"] == "reid")
     print(f"Re-id matched {matched}/{len(track_boxes)} tracks "
@@ -259,6 +312,26 @@ def _run_reid(args, track_boxes, proxy_path, gallery_path, reid_cfg, profile, re
         rejected = sum(1 for r in results.values() if r["excluded"] == EXCLUDED_NEGATIVE)
         print(f"  {rejected} lane(s) matched '{NEGATIVE_LABEL}' and were rejected "
               f"as not our players")
+
+
+def _use_assignment(args, reid_cfg: dict) -> bool:
+    """Mutual exclusion is on unless explicitly turned off.
+
+    It is the default because the alternative is not a neutral baseline: deciding
+    each lane alone puts one child's name on two to four concurrent lanes, which
+    is what makes a reel's halo strobe between players.
+    """
+    if getattr(args, "no_assign", False):
+        return False
+    return bool(reid_cfg.get("assign", True))
+
+
+def _extent_s(samples, fps: float) -> tuple[float, float]:
+    """First and last second a lane is alive, from its ``(frame, box)`` samples."""
+    frames = [f for f, _ in samples]
+    if not frames or not fps:
+        return 0.0, 0.0
+    return min(frames) / fps, max(frames) / fps
 
 
 def _jersey_for(name: str, profile: dict | None) -> int | None:

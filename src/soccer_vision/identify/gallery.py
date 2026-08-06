@@ -137,6 +137,41 @@ def load_gallery(path: str | Path) -> dict:
         }
 
 
+def track_scores(
+    embeddings: np.ndarray,
+    gallery: dict,
+    *,
+    top_k: int = 3,
+) -> np.ndarray:
+    """Score one track against every gallery identity — one number per identity.
+
+    Each crop is scored against a player as the mean of its ``top_k`` best
+    similarities to that player's exemplars, then averaged over the track. This
+    is the whole of :func:`match_track`'s evidence; that function only adds the
+    thresholds. It is split out because deciding *between* identities is not the
+    only question worth asking of these numbers — :mod:`.assign` needs the full
+    vector to resolve several lanes against each other at once, and throwing
+    away everything but the winner and the runner-up is what makes a per-lane
+    decision unable to see that two lanes are claiming the same child.
+
+    An identity with no exemplars scores ``-1.0`` so it can never win.
+    """
+    embeddings = _l2_normalise(np.atleast_2d(np.asarray(embeddings, dtype=np.float32)))
+    n_players = len(gallery["names"])
+    sims = embeddings @ gallery["emb"].T  # (n_crops, n_exemplars)
+
+    scores = np.empty(n_players, dtype=np.float32)
+    for p in range(n_players):
+        cols = sims[:, gallery["label"] == p]
+        if cols.size == 0:
+            scores[p] = -1.0
+            continue
+        k = min(top_k, cols.shape[1])
+        # np.sort is ascending, so the k best per crop are the last k columns.
+        scores[p] = float(np.sort(cols, axis=1)[:, -k:].mean())
+    return scores
+
+
 def match_track(
     embeddings: np.ndarray,
     gallery: dict,
@@ -172,17 +207,7 @@ def match_track(
     if n_crops == 0 or n_players == 0:
         return GalleryMatch(None, 0.0, 0.0, n_crops)
 
-    sims = _l2_normalise(embeddings) @ gallery["emb"].T  # (n_crops, n_exemplars)
-
-    scores = np.empty(n_players, dtype=np.float32)
-    for p in range(n_players):
-        cols = sims[:, gallery["label"] == p]
-        if cols.size == 0:
-            scores[p] = -1.0
-            continue
-        k = min(top_k, cols.shape[1])
-        # -np.sort(-x) is a descending sort; take the k best per crop, then mean.
-        scores[p] = float(np.sort(cols, axis=1)[:, -k:].mean())
+    scores = track_scores(embeddings, gallery, top_k=top_k)
 
     order = np.argsort(-scores)
     best, runner = scores[order[0]], (scores[order[1]] if n_players > 1 else -1.0)

@@ -796,6 +796,91 @@ colours (issue #21 — no horizontal cut separates them either). And the kit
 classifier itself errs: a few plainly black-kit lanes are stamped `white` and are
 now excluded, which is the recall this buys its precision with.
 
+### Naming is an assignment, not twelve contests — one player, one lane
+
+**`match_track` decides every lane alone, and that breaks the margin as well as
+the identity.** Scoring a lane against each identity and keeping the winner if it
+leads the runner-up by 0.05 has no way to know there is one Morgan on the pitch,
+which is where the 2-to-4 concurrent lanes per name come from (issue #28). But
+the subtler cost is the margin itself. Measured on 541 eligible lanes of
+`runs/saints-u14g-full-30fps` (`slurm/diagnose_margin_gate.py`, off saved
+embeddings, no GPU):
+
+- **No lane abstains on similarity. Every abstention is a margin abstention.**
+- **Median margin is 0.009 against a gate of 0.05** — the gate sits above the p90
+  of the distribution it filters.
+- **Morgan is ranked first on 138 of 541 lanes, more than any other player, and
+  named on one of them.**
+
+The cause is a property of the gallery, not of the footage. A player whose
+exemplars are *spread* across poses and lighting has three reasonably close
+exemplars for any query — `track_scores` takes the mean of the top 3 of her 64 —
+so she scores ~0.65 against everybody. A player whose exemplars are
+near-duplicates from one window scores ~0.58 against everybody and ~0.83 against
+herself. **Correlation between exemplar tightness and mean score: r = −0.925.**
+
+| player | tightness | mean score | ranked 1st | median margin | named @0.05 |
+|---|---|---|---|---|---|
+| Morgan Lobey | 0.581 | 0.652 | **138** | 0.0073 | 1 |
+| Catherine Conroy | 0.602 | 0.638 | 97 | 0.0089 | 2 |
+| Morrighan Wright | 0.575 | 0.645 | 73 | 0.0067 | 1 |
+| Gia Olson | 0.595 | 0.627 | 68 | 0.0100 | 3 |
+| Riley McNicholas | 0.679 | 0.598 | 9 | 0.0041 | 2 |
+| Quinn Perrin | 0.654 | 0.583 | 8 | 0.0390 | **4** |
+
+**The relationship is monotone and inverted: the more often a player is ranked
+first, the less often she survives the gate**, because four wide-net players
+bunch within 0.014 of each other and mutually destroy each other's margins.
+Morgan converts 0.7% of her rank-1 lanes; Quinn converts 50%. It also explains
+why Quinn's and Riley's reels came out *identical* before and after the negative
+class — they are the decisive winners and nothing upstream touches them.
+
+**So the margin moved to where it means something**
+(`soccer_vision.identify.assign`, on by default, `--no-assign` restores the old
+behaviour). Candidates are taken best-first; an identity already committed to a
+lane that overlaps in time is unavailable, and the margin is measured against the
+identities still **available**. If three of Morgan's rivals are committed
+elsewhere, they were never alternatives and her real lead is over whoever remains.
+
+| margin | per-lane named / worst | **assignment named / worst** |
+|---|---|---|
+| 0.05 | 19 / 2 | 19 / **1** |
+| 0.03 | 45 / 2 | **81** / **1** |
+| 0.02 | 105 / 4 | **200** / **1** |
+| 0.01 | 244 / 9 | 255 / **1** |
+| 0.00 | 541 / 18 | 278 / **1** |
+
+("worst" = most lanes carrying one name at the same instant.) Two things to read
+there. **Concurrency stays at 1 at every margin**, so the collision cannot come
+back through a looser threshold. And naming **saturates** near 270 as the margin
+goes to zero — the constraint, not the threshold, becomes the binding rule.
+
+**Concurrency of 1 is true by construction and is not evidence of correctness.**
+It removes the one error mode measurable without labels; it cannot make a name
+right. Do not read the recovered names as accuracy without
+`slurm/validate_reid_frames.py` and watching a reel.
+
+Three details worth knowing:
+
+- **The negative class is never exclusive.** A crowd is full of people who are
+  all simultaneously not ours. It still competes for the margin.
+- **Containment is a conflict**, which `merge_duplicate_lanes` cannot see because
+  it only pairs a lane's death with another's birth. A 3-frame ghost box living
+  inside a 30 s lane now loses to it instead of taking its name.
+- **`reid_scores.npz`** holds the per-lane score vector over every identity, so
+  the assignment can be re-solved at any margin with no GPU. The embedding pass
+  is the expensive part and only needs doing once.
+
+**Ruled out: naive hubness correction.** Per-identity mean-centring, the textbook
+fix, hands 108 lanes to Lainey Jarvis — who has **one** exemplar — because
+subtracting each identity's mean rewards whoever scores low on average. Any
+correction has to be normalised for exemplar count and spread; CSLS is the
+candidate. The other open lead is at *enrolment*: choose each player's 64
+exemplars by farthest-point sampling so every net is the same width, rather than
+letting annotation accident decide who becomes a hub. This is **not** the
+exemplar cap already ruled out above — that capped by count and discarded good
+crops; this keeps 64 and changes only which 64.
+
 ### A lane too short to vote on is not evidence — `--min-lane-seconds`
 
 **81% of re-id's naming decisions on the 30 fps run were made on lanes shorter
