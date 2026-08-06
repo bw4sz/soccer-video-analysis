@@ -1877,6 +1877,13 @@ player in live play on our pitch in every one, none on a spectator. Whether it i
 zoom on the halo is not worth building — this venue's red/orange painted lines
 share the halo's hue.
 
+**Hand-verified by Ben, 2026-08-05, watching the reels:** Eveleigh and Gia are
+both good. **Catherine's is all spectators** — she keeps 7 lanes at foot-y
+0.37-0.59H and the two that produced on-ball spans are people watching, so the
+negative class did not reach the residual case that matters most for her. She was
+the largest hub (670 lanes) and is now the emptiest reel; rejecting 99% of her
+lanes still left the wrong ones. Worth sheeting her 7 surviving lanes next.
+
 **Next.** The clean experiment has not been run: same lane file, same kit and
 length gates, `saints-u14g.fullmatch.npz` vs `saints-u14g.fullmatch-neg64.npz`,
 propagation either on in both or off in both. Until then no number here isolates
