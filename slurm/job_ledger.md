@@ -1812,3 +1812,72 @@ So 2.4% is an upper bound on cost, not an estimate.
 `slurm/compare_negclass_run.py`. Watch whether the whole-match number matches the
 windowed sample — the sample's baseline named only 4/189 off-pitch lanes, so the
 name-level effect there rested on small n.
+
+## 38790413 — negative-class reels, and what 38746007 actually measured (2026-08-05)
+
+**Why.** 38746007 reported "named lanes: 2311 → 100 (-2211)" and read it as the
+cost of the negative class. It is not. Decomposing the 1,425 lanes re-id had
+named in the baseline against their fate in the new run:
+
+| fate in the negclass run | lanes |
+|---|---|
+| excluded by `--min-lane-seconds` (median span **0.03 s**) | 1,002 |
+| absent — dedup/link rebuilt the lane file (42,636 → 26,211 lanes) | 223 |
+| scored, abstained | 100 |
+| still named | 92 |
+| **rejected as "not ours"** | **8** |
+
+The baseline also carried **886 propagated names** (`source: "linked"`) that this
+run never ran `propagate_names` to produce. So three changes were stacked into
+one diff, and the negative class is the smallest of them: counting linked names
+too, it took a name off **19 lanes**, not 2,211.
+
+**Those 19 were rendered and checked by eye**
+(`slurm/sheet_negclass_name_losses.py` → `negclass_name_losses/name_loss_*.jpg`,
+one row per lane, five moments across its life so motion is legible). Every one
+is an adult on the far touchline, a figure in the neighbouring pitch's crowd, a
+white-kit opponent, or a red-kit keeper in the next pitch's goal. **No rejection
+in the set is one of our players**, so the negative class is precise here — it is
+just small.
+
+Named on-ball coverage went 351 s → 121 s (19.3% → 6.7% of the 1,814 s ceiling),
+but that number inherits the same three-way confound.
+
+**What this job does.** Re-cuts all 13 reels off the post-negclass `jerseys.json`
+into `reels_negclass/`, leaving 38723488's baseline set in `reels/` untouched, so
+the two can be watched side by side. `reel` has no `--jerseys` flag, so a
+parallel render is the only way to A/B.
+
+**Result.** 10 of 13 reels cut, 8m15s wall. Joelle (no gallery exemplars) and
+Lainey are empty as always; Ila now is too. Minutes, negclass vs baseline:
+
+| player | negclass | baseline | lanes named (before → after) |
+|---|---|---|---|
+| Catherine Conroy | 0.4 | 5.4 | 670 → 7 |
+| Gia Olson | 2.6 | 7.7 | 638 → 23 |
+| Izabelle Scott-Snow | 1.7 | 6.5 | 352 → 16 |
+| Leire Cabral | 0.4 | 3.3 | 248 → 10 |
+| Iris McDonald | 0.2 | 1.2 | 150 → 3 |
+| Morgan Lobey | 0.4 | 2.0 | 77 → 2 |
+| Eveleigh Bottorff | 1.7 | 2.2 | 56 → 12 |
+| Riley McNicholas | **1.2** | **1.2** | 56 → 8 |
+| Quinn Perrin | **2.8** | **2.8** | 24 → 13 |
+| Morrighan Wright | **0.2** | **0.2** | 21 → 4 |
+
+**The reels that shrank are exactly the hub identities.** The four attractors
+from the *Identity coverage* skew table (Catherine, Gia, Izabelle, Leire) lost
+85-93% of their footage; the three tail identities (Quinn, Riley, Morrighan) lost
+**nothing at all**. Reel-length spread across the squad went 38x to 14x. That is
+the hubness skew being cut, not uniform attrition — and it is the first thing in
+this line of work to move that number.
+
+Sampled 11 frames across `reels_negclass/reel_gia_olson.mp4`: the halo is on a
+player in live play on our pitch in every one, none on a spectator. Whether it is
+*Gia* is still unanswerable without labels (issue #25, unchanged). A colour-keyed
+zoom on the halo is not worth building — this venue's red/orange painted lines
+share the halo's hue.
+
+**Next.** The clean experiment has not been run: same lane file, same kit and
+length gates, `saints-u14g.fullmatch.npz` vs `saints-u14g.fullmatch-neg64.npz`,
+propagation either on in both or off in both. Until then no number here isolates
+the negative class.
