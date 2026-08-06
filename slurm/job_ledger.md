@@ -1959,3 +1959,24 @@ exemplar count — CSLS with a per-identity k-NN radius is the candidate.
 side of the recovery curve above (it has only ever been measured without the
 negative class), and test CSLS on the assignment distribution rather than on the
 45 held-out crops, where `CLAUDE.md` correctly records it as buying nothing.
+
+---
+
+## 38794172 — `process` the U11 XbotGo match at 30 fps
+
+**Why.** Between-video generalization needs a second camera with a real run
+behind it. `SaintsU11_OVF_Jul192026.MP4` is XbotGo Falcon footage of the U11
+boys (30:45, Saints in white) — a different camera, venue, kit and age group
+from every number in `CLAUDE.md`, all of which come from one Veo match. The
+existing `runs/saints-u11-ovf-2026-07-19` is 5 fps with 182 lanes and no `teams`
+block, which is too thin to label Simon against; detection rate is an identity
+lever, not just a tracking one (job 38526638).
+
+Submitted 2026-08-05 with the default config (`sample_interval: 1`), profile
+`saints-u11.yaml`. Feeds `heldout.yaml` block `u11-xbotgo-2026-07-19-secondhalf`
+and research record 0001.
+
+**Result.** _pending — queued behind QOSGrpGRES._
+
+**Next.** `sbatch slurm/stage_u11_gold.sh` to render both Label Studio projects
+(enrolment windows over 0-900 s, gold set over 945-1845 s).

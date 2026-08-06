@@ -47,5 +47,14 @@ profiles
 :caption: Improving it
 
 training-detectors
+research/index
 contributing
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Annotating
+
+annotating-u14g-gold
+annotating-u11-simon
 ```

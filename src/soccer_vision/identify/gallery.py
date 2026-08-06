@@ -67,12 +67,38 @@ class GalleryMatch:
     rejected: bool = False
 
 
+#: Format of a ``source`` entry: ``"<run-or-video>@<frame>"``. Kept as one string
+#: rather than parallel arrays so it survives ``merge_galleries`` and an ``.npz``
+#: round trip without a schema, and stays readable when someone prints it.
+def source_key(key: str, frame: int) -> str:
+    """Provenance stamp for one exemplar — which footage, which frame."""
+    from pathlib import Path as _Path
+
+    return f"{_Path(str(key)).name}@{int(frame)}"
+
+
+def parse_source(source: str) -> tuple[str, int] | None:
+    """``"run@1234"`` → ``("run", 1234)``, or ``None`` if unstamped.
+
+    A frame of ``-1`` means the footage is known but the frame isn't — the OCR
+    bootstrap route embeds per track and never learns which frames survived. The
+    held-out gate still ran, so such an exemplar is not a leak; it just can't be
+    re-checked from the file alone, and the audit says so rather than passing it.
+    """
+    text = str(source or "")
+    if "@" not in text:
+        return None
+    key, _, frame = text.rpartition("@")
+    return (key, int(frame)) if frame.lstrip("-").isdigit() else None
+
+
 def build_gallery(
     embeddings: np.ndarray,
     names: list[str],
     *,
     max_per_player: int = 64,
     rng: np.random.Generator | None = None,
+    source: list[str] | None = None,
 ) -> dict:
     """Build a gallery from labelled crop embeddings.
 
@@ -81,10 +107,18 @@ def build_gallery(
     capped at ``max_per_player`` exemplars (uniformly subsampled) to keep the
     gallery small and stop a player who happened to get a long track from
     dominating the nearest-neighbour search.
+
+    ``source[i]`` records which footage and frame row ``i`` came from (see
+    :func:`source_key`). It is optional only for backwards compatibility with
+    galleries built before :mod:`soccer_vision.heldout` existed — without it a
+    gallery cannot be audited against the held-out registry, and "we think it's
+    clean" is exactly the claim that registry exists to stop anyone making.
     """
     embeddings = np.asarray(embeddings, dtype=np.float32)
     if embeddings.ndim != 2 or len(names) != len(embeddings):
         raise ValueError("embeddings must be (N, D) with one name per row")
+    if source is not None and len(source) != len(embeddings):
+        raise ValueError("source must have one entry per row when given")
 
     rng = rng or np.random.default_rng(0)
     roster = sorted(set(names))
@@ -101,40 +135,60 @@ def build_gallery(
 
     emb = _l2_normalise(embeddings[sel])
     label = np.asarray([name_idx[n] for n in names_arr[sel]], dtype=np.int32)
-    return {"names": roster, "emb": emb, "label": label}
+    gallery = {"names": roster, "emb": emb, "label": label}
+    if source is not None:
+        gallery["source"] = [str(source[i]) for i in sel]
+    return gallery
 
 
 def merge_galleries(base: dict, extra: dict, *, max_per_player: int = 64) -> dict:
     """Union two galleries, re-capping per player.
 
     This is how a season's gallery grows: enrol from one match, then top up from
-    the next without re-embedding anything already banked.
+    the next without re-embedding anything already banked. Provenance is carried
+    through when *both* sides have it; when either doesn't, the merged gallery
+    drops it rather than stamping rows it can't vouch for — a half-stamped
+    gallery would audit clean on the half that was recorded and say nothing about
+    the rest, which is worse than admitting it is unauditable.
     """
     emb = np.concatenate([base["emb"], extra["emb"]])
     names = [base["names"][i] for i in base["label"]] + [
         extra["names"][i] for i in extra["label"]
     ]
-    return build_gallery(emb, names, max_per_player=max_per_player)
+    source = None
+    if base.get("source") and extra.get("source"):
+        source = list(base["source"]) + list(extra["source"])
+    return build_gallery(emb, names, max_per_player=max_per_player, source=source)
 
 
 def save_gallery(gallery: dict, path: str | Path) -> None:
-    """Write a gallery to ``.npz`` (names, exemplar embeddings, labels)."""
-    np.savez_compressed(
-        path,
-        names=np.asarray(gallery["names"], dtype=object),
-        emb=gallery["emb"],
-        label=gallery["label"],
-    )
+    """Write a gallery to ``.npz`` (names, exemplar embeddings, labels, provenance)."""
+    arrays = {
+        "names": np.asarray(gallery["names"], dtype=object),
+        "emb": gallery["emb"],
+        "label": gallery["label"],
+    }
+    if gallery.get("source"):
+        arrays["source"] = np.asarray(list(gallery["source"]), dtype=object)
+    np.savez_compressed(path, **arrays)
 
 
 def load_gallery(path: str | Path) -> dict:
-    """Read a gallery written by :func:`save_gallery`."""
+    """Read a gallery written by :func:`save_gallery`.
+
+    ``source`` comes back empty for galleries written before provenance was
+    stamped; :mod:`scripts.audit_heldout` reports those as unauditable rather
+    than as clean.
+    """
     with np.load(path, allow_pickle=True) as z:
-        return {
+        gallery = {
             "names": [str(n) for n in z["names"]],
             "emb": np.asarray(z["emb"], dtype=np.float32),
             "label": np.asarray(z["label"], dtype=np.int32),
         }
+        gallery["source"] = ([str(s) for s in z["source"]]
+                             if "source" in z.files else [])
+    return gallery
 
 
 def track_scores(

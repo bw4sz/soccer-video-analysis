@@ -1617,6 +1617,75 @@ If ball detection is poor (bad lighting, camera angle), fall back to Pipeline A.
 
 ---
 
+## Held-out footage — a number without a block behind it is not a result
+
+**Every accuracy figure above this line was measured on data that overlaps its
+own gallery.** The labelled frames behind `galleries/saints-u14g.npz` are spaced
+~150 s apart and the tracklet windows behind the full-match gallery every 329 s,
+so for any crop in that match an enrolled crop of the same player exists within
+about a minute — same sun, same patch of pitch, same stride. Leave-one-frame-out
+holds out a *frame*; it does not hold out the appearance, because the frame
+beside it is the same picture. **The held-out unit has to be at least as large as
+the unit of correlation**, and for one fixed camera watching one match that unit
+is time. See `docs/research/0001-heldout-validation.md`.
+
+`heldout.yaml` (repo root) declares the spans nothing may learn from:
+
+| Block | Flavour | Footage | Gold set |
+|---|---|---|---|
+| `u14g-2026-07-11-secondhalf` | **within-video** | Saints U14G Veo, 38:00–48:00 | `u14g-gold-3min` — every lane ≥1 s, both kits, 40:00–43:00 |
+| `u11-xbotgo-2026-07-19-secondhalf` | **between-video** | Saints U11 boys XbotGo, 15:45–30:45 | `u11-simon-gold` — Simon, completely |
+
+The block is larger than the gold set on purpose: the surplus is guard band and
+reserve, so the next gold set can be cut without renegotiating what is protected.
+
+**It is enforced, not agreed.** `enroll --heldout-mode` defaults to `exclude` and
+gates all five routes into a gallery; `only` inverts it (that is how the gold
+projects were staged) and enrolment refuses that mode. Exemplars now carry
+provenance (`source` = `run@frame`), so a finished gallery can be checked:
+
+```bash
+python scripts/audit_heldout.py --all                    # CLEAN / UNAUDITABLE / LEAK
+python scripts/audit_heldout.py --run runs/<match>       # what the block costs
+python slurm/size_tracklet_project.py --run runs/<match> --at 2400 --all-lanes \
+    --heldout-mode only --sweep-min-lane-seconds         # annotation cost, before rendering
+```
+
+**`UNAUDITABLE` is not a pass.** Every gallery built before 2026-08-05 returns it
+— they carry no provenance, so they cannot support a generalization claim either
+way. Rebuild from the source annotations rather than appending (appending to an
+unstamped gallery drops provenance for the whole file).
+
+**Two rules that follow.** Never tune a threshold on a gold set — sweep outside
+the block, report once inside it. And when quoting any figure from this file,
+say which block it was measured on; the ones above were measured on none, which
+is why they should be re-run against `u14g-gold-3min` before anything is built on
+them. The 42% ceiling and the 2026-08-04 `p90` margin gate are first in that
+queue.
+
+The U14G block costs `runs/saints-u14g-full-30fps` 17.5% of its track samples
+and the gallery 4 of 24 labelled frames and 2 of 12 tracklet windows — chosen as
+the cheapest 10-minute block in the match.
+
+## Research records — write down why, not just what
+
+`docs/research/` is the standing log: one numbered file per investigation, what
+problem it attacked, which papers it drew on and what transferred across the
+domain gap, which held-out block it was assessed on, and what came back. Written
+with the `research-record` skill (`.claude/skills/research-record/`), which
+carries the standards; `docs/research/TEMPLATE.md` is the shape.
+
+Open one at status `proposed` **before** non-trivial work on detection, tracking,
+re-id, linking, identity or selection — the hypothesis and the assessment plan
+are worth more written down while they can still be falsified. Close the same
+file to `adopted` / `rejected` / `inconclusive`; never open a second record for
+the same question. Routine fixes, refactors and plumbing don't need one.
+
+The negative results are the point. This repo adopted a detector on a count that
+never reproduced, shipped an OCR veto that was 0 for 2 against hand-verified
+truth, and spent two annotation batches on a ceiling that was a property of the
+embedding. Each cost a cycle because the reasoning lived in a commit message.
+
 ## Community — file issues for open problems, don't just fix and move on
 
 This project grows through outside contributors, and the issue tracker is how

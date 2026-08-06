@@ -12,6 +12,53 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from soccer_vision import heldout as heldout_mod
+
+
+def heldout_gate(args, key):
+    """``(registry, mode, key)`` for this invocation, having said what it will do.
+
+    Every route into the gallery goes through this, and it prints on every run —
+    including when it finds nothing to protect. A silent gate is one nobody
+    notices has stopped working, and the failure mode here (a gallery quietly
+    banking crops from the footage we score on) leaves no trace in the numbers it
+    corrupts.
+    """
+    mode = getattr(args, "heldout_mode", heldout_mod.EXCLUDE)
+    registry = heldout_mod.load_registry(getattr(args, "heldout", None))
+    if mode == heldout_mod.OFF:
+        print("Held out: OFF — nothing is being excluded. Any gallery built this "
+              "way is unfit to evaluate against.")
+        return registry, mode, key
+    print(registry.describe_coverage(key))
+    if mode == heldout_mod.ONLY:
+        print("  --heldout-mode only: keeping ONLY protected footage. This builds "
+              "evaluation data; enrolment from it is refused.")
+    return registry, mode, key
+
+
+def refuse_enrol_in_only_mode(mode) -> bool:
+    """Enrolment in ``only`` mode is a contradiction — say so and stop."""
+    if mode == heldout_mod.ONLY:
+        print("--heldout-mode only selects the held-out footage itself, which is "
+              "the one thing a gallery may not contain. Drop the flag to enrol "
+              "from everything else.")
+        return True
+    return False
+
+
+def gallery_source_key(key, frame_no) -> str:
+    """Provenance stamp for one exemplar, so a gallery can be audited later."""
+    from soccer_vision.identify.gallery import source_key
+
+    return source_key(key, frame_no)
+
+
+def report_heldout_drop(dropped, mode, what: str = "crops") -> None:
+    if dropped:
+        verb = "excluded" if mode == heldout_mod.EXCLUDE else "kept (held-out only)"
+        print(f"  held-out gate: {len(dropped)} {what} {verb}")
+
 
 def run_enroll(args):
     import numpy as np
@@ -97,10 +144,24 @@ def run_enroll(args):
         print("Nothing to enrol. Lower --min-confidence or annotate frames.")
         return
 
+    registry, mode, key = heldout_gate(args, run_dir)
+    if refuse_enrol_in_only_mode(mode):
+        return
+    # Filter the *samples*, not the lanes: a lane that runs into the held-out
+    # span is still enrollable from the part outside it, and dropping it whole
+    # would make the protected block cost far more gallery than it protects.
+    track_boxes, n_dropped = {}, 0
+    for tid, samples in load_track_boxes(tracks_path).items():
+        kept, dropped = heldout_mod.filter_frames(samples, mode, key=key, registry=registry)
+        n_dropped += len(dropped)
+        if kept:
+            track_boxes[tid] = kept
+    report_heldout_drop(range(n_dropped), mode, "track samples")
+
     reader = VideoReader(proxy_path)
     try:
         per_track = embed_tracks(
-            load_track_boxes(tracks_path), embedder, reader,
+            track_boxes, embedder, reader,
             max_samples_per_track=args.max_samples,
             track_ids=set(track_names),
         )
@@ -111,11 +172,18 @@ def run_enroll(args):
                   else np.zeros((0, 512), dtype=np.float32))
     names = [track_names[t] for t, e in per_track.items() for _ in range(len(e))]
 
-    _save_gallery(embeddings, names, out_path, args,
+    # embed_tracks returns embeddings per track without saying which frames they
+    # came from, so provenance here is the run only. That is enough for the
+    # audit (the gate above already dropped protected frames) but not enough to
+    # re-derive a crop, which is why the annotated routes stamp the frame too.
+    source = [gallery_source_key(run_dir, -1) for _ in names]
+
+    _save_gallery(embeddings, names, out_path, args, source=source,
                   next_hint=f"--run {run_dir} --method reid --gallery {out_path}")
 
 
-def _save_gallery(embeddings, names: list[str], out_path: Path, args, *, next_hint: str):
+def _save_gallery(embeddings, names: list[str], out_path: Path, args, *, next_hint: str,
+                  source: list[str] | None = None):
     """Build, optionally merge, and write the gallery — then say what's in it."""
     from soccer_vision.identify.gallery import (
         build_gallery,
@@ -128,7 +196,8 @@ def _save_gallery(embeddings, names: list[str], out_path: Path, args, *, next_hi
         print("No crops could be embedded — nothing enrolled.")
         return
 
-    gallery = build_gallery(embeddings, names, max_per_player=args.max_per_player)
+    gallery = build_gallery(embeddings, names, max_per_player=args.max_per_player,
+                            source=source)
     if args.append and out_path.exists():
         existing = load_gallery(out_path)
         gallery = merge_galleries(existing, gallery, max_per_player=args.max_per_player)
@@ -141,6 +210,14 @@ def _save_gallery(embeddings, names: list[str], out_path: Path, args, *, next_hi
     print(f"\nGallery: {len(gallery['names'])} players, {len(gallery['emb'])} exemplars")
     for name, n in counts.most_common():
         print(f"  {name:<24} {n} exemplars")
+    if gallery.get("source"):
+        print(f"  provenance stamped on all {len(gallery['source'])} exemplars "
+              f"— audit with scripts/audit_heldout.py --gallery {out_path}")
+    else:
+        print("  NOTE: no provenance on these exemplars, so this gallery cannot be "
+              "audited against heldout.yaml. (Appending to a gallery built before "
+              "provenance existed drops it for the whole file — rebuild from the "
+              "annotations instead of appending if you need it auditable.)")
     print(f"Saved: {out_path}")
     print(f"Next: soccer-vision identify {next_hint}")
 
@@ -181,6 +258,24 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
               f"{f' on team {args.team}' if args.team else ''}. "
               "Lower --min-track-frames, or drop --team.")
         return
+
+    # Gate the *windows*, not the crops: a tracklet window is a unit of a
+    # person's attention, and half of one is worse than none. `exclude` keeps the
+    # windows that don't touch a protected span (so a gallery batch can never be
+    # staged over held-out footage in the first place); `only` keeps exactly the
+    # ones that do, which is how the gold set gets built.
+    registry, mode, key = heldout_gate(args, run_dir)
+    windows, dropped = heldout_mod.filter_frames(
+        windows, mode, key=key, registry=registry,
+        frame_of=lambda w: (w["start_frame"] + w["end_frame"]) // 2)
+    report_heldout_drop(dropped, mode, "windows")
+    if not windows:
+        print("No window survived the held-out gate. With --heldout-mode only, "
+              "point --at inside a protected block; without it, --at is landing "
+              "inside one.")
+        return
+    for i, w in enumerate(windows, start=1):  # renumber, so clip names stay dense
+        w["window"] = i
 
     out_dir.mkdir(parents=True, exist_ok=True)
     clips_dir = out_dir / "clips"
@@ -270,6 +365,12 @@ def _enroll_from_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
     )
     boxes = [(f, b, roster_full_name(profile, n)) for f, b, n in boxes]
 
+    registry, mode, key = heldout_gate(args, run_dir)
+    if refuse_enrol_in_only_mode(mode):
+        return
+    boxes, dropped = heldout_mod.filter_frames(boxes, mode, key=key, registry=registry)
+    report_heldout_drop(dropped, mode)
+
     print(f"Source: tracklets — {summary['lanes_named']} lanes named across "
           f"{summary['windows']} windows ({summary['lanes_skipped']} skipped as "
           f"not-ours/unsure), {len(boxes)} crops")
@@ -280,8 +381,12 @@ def _enroll_from_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
     if summary["unmatched_tasks"]:
         print(f"  WARNING: {summary['unmatched_tasks']} task(s) matched no window in "
               f"{manifest_path} — is this the manifest that produced these clips?")
-    for name, n in sorted(summary["per_player"].items(), key=lambda kv: -kv[1]):
-        print(f"  {roster_full_name(profile, name):<24} {n} crops")
+    # Counted after the gate, not before: the interesting number is what actually
+    # got enrolled, and a per-player tally taken upstream of an exclusion reads as
+    # a promise the gallery doesn't keep.
+    kept_per_player = Counter(name for _, _, name in boxes)
+    for name, n in kept_per_player.most_common():
+        print(f"  {name:<24} {n} crops")
     if not boxes:
         print("Nothing named in the export — nothing to enrol.")
         return
@@ -290,7 +395,7 @@ def _enroll_from_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
     embedder = ReIDEmbedder.from_pretrained(weights=args.weights, device=args.device)
 
     reader = VideoReader(proxy_path)
-    crops, names = [], []
+    crops, names, source = [], [], []
     try:
         by_frame: dict[int, list] = {}
         for frame_no, bbox, name in boxes:
@@ -304,11 +409,12 @@ def _enroll_from_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
                 if crop is not None:
                     crops.append(crop)
                     names.append(name)
+                    source.append(gallery_source_key(run_dir, frame_no))
     finally:
         reader.close()
 
     embeddings = embedder.embed(crops) if crops else np.zeros((0, 512), dtype=np.float32)
-    _save_gallery(embeddings, names, out_path, args,
+    _save_gallery(embeddings, names, out_path, args, source=source,
                   next_hint=f"--run {run_dir} --method reid --gallery {out_path}")
 
 
@@ -338,6 +444,19 @@ def _enroll_from_label_studio(args, profile):
 
     boxes = boxes_from_label_studio(export)
     named, unresolved = named_boxes(boxes, profile)
+
+    # The export carries frame numbers but not which video they belong to, so the
+    # gate is keyed on whatever the caller named: --run, else --video, else the
+    # export's own folder. A folder name that matches no block is reported as
+    # unprotected rather than assumed safe (see Registry.describe_coverage).
+    heldout_key = (Path(args.run) if args.run
+                   else Path(args.video) if args.video
+                   else export_path.parent)
+    registry, mode, key = heldout_gate(args, heldout_key)
+    if refuse_enrol_in_only_mode(mode):
+        return
+    named, dropped = heldout_mod.filter_frames(named, mode, key=key, registry=registry)
+    report_heldout_drop(dropped, mode, "labelled boxes")
 
     frames_with_boxes = {f for f, _, _ in named}
     print(f"Source: Label Studio — {len(named)} named boxes on "
@@ -378,7 +497,7 @@ def _enroll_from_label_studio(args, profile):
     for frame_no, bbox, name in named:
         by_frame.setdefault(int(frame_no), []).append((bbox, name))
 
-    crops, names = [], []
+    crops, names, source = [], [], []
     try:
         for frame_no in sorted(by_frame):
             path = frames.get(frame_no)
@@ -391,6 +510,7 @@ def _enroll_from_label_studio(args, profile):
                 if crop is not None:
                     crops.append(crop)
                     names.append(name)
+                    source.append(gallery_source_key(heldout_key, frame_no))
     finally:
         if reader is not None:
             reader.close()
@@ -399,7 +519,7 @@ def _enroll_from_label_studio(args, profile):
 
     embeddings = embedder.embed(crops) if crops else np.zeros((0, 512), dtype=np.float32)
     hint = f"--run runs/<match> --method reid --gallery {out_path}"
-    _save_gallery(embeddings, names, out_path, args, next_hint=hint)
+    _save_gallery(embeddings, names, out_path, args, source=source, next_hint=hint)
 
 
 def named_boxes(boxes, profile):
@@ -496,6 +616,16 @@ def _dump_frames_from_video(video: Path, out_dir: Path, args):
     pool = max(args.n_frames, args.n_frames * 3)
     step = max(1, total // (pool + 1))
     candidates = [step * (i + 1) for i in range(pool)]
+
+    # Ahead of detection, so protected frames cost no forward passes either.
+    registry, mode, key = heldout_gate(args, video)
+    candidates, dropped = heldout_mod.filter_frames(
+        candidates, mode, key=key, registry=registry, frame_of=lambda f: f)
+    report_heldout_drop(dropped, mode, "candidate frames")
+    if not candidates:
+        print("No candidate frame survived the held-out gate.")
+        reader.close()
+        return
 
     print(f"Detecting players on {len(candidates)} candidate frames "
           f"(keeping the busiest {args.n_frames})...")
@@ -705,6 +835,13 @@ def _dump_frames(run_dir: Path, tracks_path: Path, proxy_path: Path, out_dir: Pa
     # patch of pitch in one light. Spread the frames evenly over the whole match,
     # and only keep frames showing enough of the squad to be worth annotating.
     candidates = sorted(f for f, boxes in by_frame.items() if len(boxes) >= args.min_players)
+    # Gate before binning, not after: the bins are what spread the frames evenly
+    # over the match, and dropping frames from finished bins would leave holes
+    # exactly where the protected block is instead of redistributing around it.
+    registry, mode, key = heldout_gate(args, run_dir)
+    candidates, dropped = heldout_mod.filter_frames(
+        candidates, mode, key=key, registry=registry, frame_of=lambda f: f)
+    report_heldout_drop(dropped, mode, "candidate frames")
     if not candidates:
         print(f"No frames with >= {args.min_players} "
               f"{'“' + wanted + '” ' if wanted else ''}players. "

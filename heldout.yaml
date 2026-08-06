@@ -1,0 +1,97 @@
+# Held-out footage — frames nothing may learn from.
+#
+# A gallery exemplar taken from the same stretch we later score on doesn't just
+# inflate the score, it inflates it *invisibly*: re-id is nearest-neighbour, so a
+# crop enrolled 40 s from the query is close to a duplicate of it, and the number
+# that comes back is a memory test dressed up as a generalization test. Every
+# accuracy figure in CLAUDE.md predates this file, and none of them can say what
+# they were measured against.
+#
+# So the spans below are declared off-limits *before* the annotation exists.
+# `soccer_vision.heldout` reads this file, `enroll` refuses to bank a crop from a
+# protected span, and `scripts/audit_heldout.py` checks a finished gallery. The
+# registry is the authority; a comment in a commit message is not.
+#
+# Two flavours of generalization are being separated here, and they need
+# different blocks:
+#
+#   within-video   — name a player in a stretch of a match we enrolled her from,
+#                    but did not enrol her *in*. Block: u14g-2026-07-11-secondhalf.
+#   between-video  — take settings, thresholds and workflow tuned on the U14G Veo
+#                    footage and apply them to a different camera (XbotGo), a
+#                    different squad, a different kit and a different age group.
+#                    Block: u11-xbotgo-2026-07-19-secondhalf.
+#
+# `gold` names the subset inside a block that is actually annotated. The block is
+# deliberately larger: the surplus is a guard band (appearance a minute either
+# side of a query is near-duplicate) and reserve for the next gold set, which can
+# then be cut without renegotiating what was already protected.
+
+version: 1
+
+blocks:
+  - id: u14g-2026-07-11-secondhalf
+    flavour: within-video
+    video: wfc-rangers-vs-saints-pcu-cup-2026-07-11.mp4
+    # Every run over this match. `broadcast_proxy.mp4` is the same footage under a
+    # generic name in each, so runs are matched by directory name as well.
+    runs:
+      - saints-u14g-full
+      - saints-u14g-full-30fps
+      - saints-u14g-full-linked
+      - saints-u14g-sampler
+    fps: 29.97
+    start_s: 2280        # 38:00
+    end_s: 2880          # 48:00
+    gold:
+      - id: u14g-gold-3min
+        start_s: 2400    # 40:00
+        end_s: 2580      # 43:00
+        project: runs/saints-u14g-full-30fps/heldout_gold
+        scope: >
+          Every lane of every kit lasting at least 1.0 s — the same floor
+          `identify --min-lane-seconds` applies, so a lane out of scope here is
+          one production never names either. Opponents, officials, spectators and
+          the neighbouring pitch are labelled "not ours" rather than skipped:
+          naming those is the largest measured error in the pipeline (878 of 1595
+          names landed on the white kit before the kit gate), and a ground truth
+          holding only our own squad cannot see it.
+    why: >
+      Mid-second-half, normal light, ~12 tracked black-kit players per frame and
+      the ball visible in 75% of samples — an ordinary passage rather than a
+      convenient one. It sits in the widest gap between existing enrolment
+      sources (labelled frames at 2290 s and 2539 s, tracklet windows at
+      2301-2321 s and 2630-2650 s), so protecting it costs the gallery three
+      labelled frames and two tracklet windows, which is the cheapest such block
+      in the match.
+
+  - id: u11-xbotgo-2026-07-19-secondhalf
+    flavour: between-video
+    video: SaintsU11_OVF_Jul192026.MP4
+    runs:
+      - saints-u11-xbotgo-30fps
+    fps: 30.0
+    start_s: 945         # 15:45
+    end_s: 1845          # 30:45 (end of video)
+    gold:
+      - id: u11-simon-gold
+        start_s: 945
+        end_s: 1845
+        project: runs/saints-u11-xbotgo-30fps/heldout_gold
+        scope: >
+          Simon Weinstein, completely: every lane he appears in across the whole
+          held-out half, with everyone else labelled "not ours". One player
+          rather than a squad because the question is different — not "can we
+          tell teammates apart" (issue #25, measured at 42% on the U14G) but
+          "does any of this survive a new camera, venue, kit and age group".
+    why: >
+      The second half is held out and the first half (0-900 s) is where Simon is
+      enrolled from, with a 45 s guard between them. That makes this a genuine
+      test of the *settings* — detection rate, lane gate, kit gate, margin — all
+      of which were tuned on 1080p Veo footage of a girls' U14 match and are
+      applied here to XbotGo Falcon footage of a boys' U11 match at a different
+      venue, with the squad in white rather than black and the camera much closer
+      to the pitch.
+      It is not yet a test of gallery transfer *between matches*: we have one
+      XbotGo match, so Simon's exemplars come from the same video. A second U11
+      match would upgrade it, and that is the right next annotation to buy.

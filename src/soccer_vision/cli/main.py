@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import sys
 
+from soccer_vision.heldout import EXCLUDE as HELDOUT_EXCLUDE
+from soccer_vision.heldout import MODES as HELDOUT_MODES
+
 
 def _add_on_ball_args(parser: argparse.ArgumentParser) -> None:
     """Shared on-ball fallback options for `extract` and `reel`.
@@ -340,6 +343,12 @@ def main():
                           help="Min legible OCR reads to enrol a track (default: 5)")
     p_enroll.add_argument("--exclude-jersey", nargs="+", type=int,
                           help="Jersey numbers to never enrol (OCR hallucination classes)")
+    p_enroll.add_argument("--heldout", metavar="YAML", default=None,
+                          help="Held-out registry (default: heldout.yaml at the repo root)")
+    p_enroll.add_argument("--heldout-mode", choices=HELDOUT_MODES, default=HELDOUT_EXCLUDE,
+                          help="exclude: never enrol from protected footage (default). "
+                               "only: stage/annotate protected footage — for building a "
+                               "gold set; enrolment refuses it. off: no filtering.")
 
     # extract
     p_extract = subparsers.add_parser("extract", help="Extract clips from a processed run")
