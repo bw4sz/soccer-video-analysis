@@ -40,6 +40,10 @@ SLOT_COLORS = [
 NOT_OURS = "not ours"
 UNSURE = "unsure"
 
+# Below this many boxes shared between two frames, the median displacement is not
+# a camera estimate but a sample of whoever happened to be on screen.
+MIN_PAN_BOXES = 5
+
 
 def slot_label(slot: int) -> str:
     """What goes on the chip in the clip. Digits, matching the form's "Player N".
@@ -51,6 +55,67 @@ def slot_label(slot: int) -> str:
     with squad numbers, which the instruction header can address instead.
     """
     return str(int(slot))
+
+
+def camera_pan(present: list[tuple[int, int, list]]) -> dict[int, tuple[float, float]]:
+    """Per-frame camera displacement, as the median box displacement.
+
+    This Veo camera pans 1.35 px/frame at the median and over 1,000 px across a
+    20 s window, so raw box displacement is mostly the camera and says nothing
+    about whether a person moved. The median over every box present in both
+    frames is a robust estimate of it and costs no homography, no optical flow
+    and no second decode pass — the boxes are already in hand.
+
+    Players move in every direction at once, so their contribution to the median
+    largely cancels; what is left is the pan. It is an estimate and a biased one
+    when few boxes are on screen, which is what :data:`MIN_PAN_BOXES` guards.
+    """
+    by_frame: dict[int, dict[int, tuple[float, float]]] = {}
+    for _, tid, inside in present:
+        for frame, bbox in inside:
+            by_frame.setdefault(frame, {})[tid] = (
+                (float(bbox[0]) + float(bbox[2])) / 2.0, float(bbox[3]))
+
+    pan: dict[int, tuple[float, float]] = {}
+    frames = sorted(by_frame)
+    for f0, f1 in zip(frames, frames[1:]):
+        common = set(by_frame[f0]) & set(by_frame[f1])
+        if len(common) < MIN_PAN_BOXES:
+            pan[f1] = (0.0, 0.0)
+            continue
+        pan[f1] = (
+            float(np.median([by_frame[f1][i][0] - by_frame[f0][i][0] for i in common])),
+            float(np.median([by_frame[f1][i][1] - by_frame[f0][i][1] for i in common])),
+        )
+    return pan
+
+
+def motion_score(inside: list, pan: dict[int, tuple[float, float]]) -> float:
+    """How far this lane travelled net of the camera, in its own body-heights.
+
+    Body-heights rather than pixels because the same run costs three times the
+    pixels near the camera as it does at the far touchline, and a ranking in
+    pixels would simply promote whoever is closest.
+
+    A footballer scores in the tens over 20 s; someone standing on the touchline
+    scores under one. That is the signal lane *length* does not carry — a person
+    who stands still is on screen continuously and therefore outranks a player
+    who runs in and out of shot.
+    """
+    if len(inside) < 2:
+        return 0.0
+    height = float(np.median([float(b[3]) - float(b[1]) for _, b in inside]))
+    total = 0.0
+    for (f0, b0), (f1, b1) in zip(inside, inside[1:]):
+        # Consecutive frames only: across a gap the pan estimate does not
+        # accumulate, so the difference would be charged to the player.
+        if f1 - f0 != 1:
+            continue
+        dx = ((float(b1[0]) + float(b1[2])) - (float(b0[0]) + float(b0[2]))) / 2.0
+        dy = float(b1[3]) - float(b0[3])
+        px, py = pan.get(f1, (0.0, 0.0))
+        total += float(np.hypot(dx - px, dy - py))
+    return total / max(height, 1.0)
 
 
 def choose_windows(
@@ -65,14 +130,40 @@ def choose_windows(
     team: str | None = None,
     start_s: float | None = None,
     all_lanes: bool = False,
+    rank: str = "motion",
+    promote_kit: str | None = None,
 ) -> list[dict]:
     """Pick evenly spread windows and the lanes to ring in each.
 
     Even spread beats picking the busiest windows: a gallery built from one
     passage of play sees one end of the pitch in one light, and the sun moves
-    through a youth match. Within a window the *longest* lanes are ringed, since
-    a lane that survives longer both yields more crops and is easier to follow
-    with the eye.
+    through a youth match.
+
+    Within a window, lanes are ranked by how far they **moved**, net of camera
+    pan, in units of their own body-height (``rank="length"`` restores the old
+    ranking by frames on screen). Ranking by length looked right — a longer lane
+    yields more crops and is easier to follow — but it ranks by *staying in
+    shot*, which a person standing on the touchline does better than a
+    footballer. On the U14G gold set that filled the early pages with the
+    opposition, the officials and the match on the neighbouring pitch, and the
+    first annotator to look reported a page with none of our players on it.
+
+    This does not decide who is a player; it decides who is asked about first.
+    Under ``all_lanes`` nothing is dropped either way, so the ranking's whole job
+    is to make stopping early cheap rather than merely honest.
+
+    ``promote_kit`` sorts lanes wearing that kit ahead of the rest, ranking within
+    each group as above. It is the strongest lever available and the measured one:
+    on the U14G gold set it takes page 1 from 7 of our players to 16 of 16, and
+    pages 1-2 to 262 of 288, without dropping a lane. **Promote rather than
+    filter, even though ``team`` would cut the work by 59%.** The kit classifier
+    is known to stamp the yellow-shirted referee ``black`` and to misjudge shaded
+    figures, and there is an asymmetry in how that error lands: a misordered lane
+    is merely asked about later, while a filtered lane cannot be asked about at
+    all. On an answer sheet the lanes a kit filter would remove are exactly the
+    ones that measure this pipeline's largest known error — 878 of 1,595 names
+    landing on the opposition — so removing them buys cheapness by deleting the
+    measurement.
 
     Lanes are capped at ``max_lanes`` because the number of dropdowns is fixed
     by the config, and a window ringing thirty players is one nobody will finish.
@@ -136,9 +227,20 @@ def choose_windows(
                 present.append((len(inside), tid, inside))
         if not present:
             continue
-        # Longest first, so page 1 carries the most player-time and an annotator
-        # who stops early leaves a gap whose size is known.
-        present.sort(reverse=True, key=lambda x: (x[0], -x[1]))
+        # Busiest first, so page 1 carries the people actually playing football.
+        # Lane length breaks ties and is the fallback ranking; the negated track
+        # id past that only makes the order deterministic.
+        pan = camera_pan(present)
+        moved = {tid: motion_score(inside, pan) for _, tid, inside in present}
+        promoted = (promote_kit or "").strip().lower()
+
+        def sort_key(x):
+            n, tid, _ = x
+            ours = bool(promoted) and (teams or {}).get(tid, "").lower() == promoted
+            within = (n, -tid) if rank == "length" else (moved[tid], n, -tid)
+            return (ours, *within)
+
+        present.sort(reverse=True, key=sort_key)
         pages = (
             [present[i:i + max_lanes] for i in range(0, len(present), max_lanes)]
             if all_lanes else [present[:max_lanes]]
@@ -156,7 +258,11 @@ def choose_windows(
                 {"slot": i + 1, "track_id": tid, "n_frames": n,
                  "first_frame": inside[0][0], "last_frame": inside[-1][0],
                  "enters_s": round((inside[0][0] - start) / fps, 1),
-                 "leaves_s": round((inside[-1][0] - start) / fps, 1)}
+                 "leaves_s": round((inside[-1][0] - start) / fps, 1),
+                 # Recorded, not just used: it is what put this lane on this
+                 # page, and an analysis of what the annotator was shown needs
+                 # it without recomputing the pan.
+                 "moved_body_heights": round(moved[tid], 2)}
                 for i, (n, tid, inside) in enumerate(chosen)
             ]
             windows.append({

@@ -297,6 +297,18 @@ def main():
                                "passes over the same footage. Needed for a linking "
                                "measurement: truncating drops the short lanes, which are "
                                "exactly the ones linking exists to join")
+    p_enroll.add_argument("--rank", choices=["motion", "length"], default="motion",
+                          help="Which lanes get the low slot numbers and the early "
+                               "pages: how far they moved net of camera pan (default), "
+                               "or how long they stayed on screen. Length ranks by "
+                               "standing still in shot, which the crowd and the "
+                               "touchline do better than a footballer")
+    p_enroll.add_argument("--promote-kit",
+                          help="Sort lanes on this kit colour onto the early pages, "
+                               "without dropping any others. Unlike --team this only "
+                               "reorders, so a misclassified lane is asked about late "
+                               "rather than never — which matters on a gold set, where "
+                               "the opposition lanes are what measure a wrong name")
     p_enroll.add_argument("--n-frames", type=int, default=20,
                           help="Frames to export for labelling, spread across the match "
                                "(default: 20)")

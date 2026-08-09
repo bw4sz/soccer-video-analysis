@@ -252,6 +252,8 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
         max_lanes=args.max_lanes, teams=teams, team=args.team,
         start_s=getattr(args, "at", None),
         all_lanes=getattr(args, "all_lanes", False),
+        rank=getattr(args, "rank", "motion"),
+        promote_kit=getattr(args, "promote_kit", None),
     )
     if not windows:
         print(f"No lane lasted {args.min_track_frames} frames"
