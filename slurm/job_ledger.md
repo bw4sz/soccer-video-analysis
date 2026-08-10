@@ -2031,7 +2031,14 @@ The old slot map is kept at `runs/saints-u14g-full-30fps/heldout_gold.length-ran
 — the clips regenerate in an hour but `tracklets.json` is the only key to any
 annotation already sitting in a Label Studio project.
 
-**Result.** _pending._
+**Result.** COMPLETED in **18m32s** (I had estimated ~50 min). 51 clips, 626 MB.
+The per-pass table the job prints off the regenerated manifest matches the
+simulation exactly — pass 1 is 144 of 144 ours, passes 1-2 are 262 of 288, and
+passes 5-7 hold no black-kit lane at all. Spot-checked frame 150 of
+`window_001_2400s.mp4` by eye: thirteen rings, every one on a black-kit player.
+Several sit just under the crowd band, which is where our far-side players are
+and also where a spectator stamped `black` would be — the annotator settles
+that, which is the point of it being an ordering and not a filter.
 
 **Next.** Annotate. Passes 1-2 of all nine stretches (18 tasks) hold 262 of the
 313 lanes in our kit; stopping there measures whether we *found* our players but
