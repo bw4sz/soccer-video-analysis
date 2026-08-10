@@ -1980,3 +1980,59 @@ and research record 0001.
 
 **Next.** `sbatch slurm/stage_u11_gold.sh` to render both Label Studio projects
 (enrolment windows over 0-900 s, gold set over 945-1845 s).
+
+---
+
+## 39047457 — restage the U14G gold set, ours on the early pages (2026-08-09)
+
+**Why.** The annotator opened `window_003_2400s.mp4` — pass 3 of the 2400 s
+stretch — and found **not one of our squad in it**. `choose_windows` ranked a
+window's lanes by how many frames they stayed on screen and paged them sixteen
+at a time in that order, which ranks by *staying in shot*: a figure on the
+touchline does that better than a player running on and off it.
+
+Measured on these nine windows (767 lanes, 51 pages) before changing anything:
+
+| ordering | static lanes (<2 body-heights) on pages 1-3 | page 7 |
+|---|---|---|
+| lane length (as staged) | 15 of 432 | 62% static |
+| motion, net of camera pan | **5 of 432** | **100% static** |
+
+**Motion is a real but small gain, and it is not what the complaint was about.**
+Pages 1-3 were already ~0% static under the old ranking, so the reason pass 3
+held no Saints is that most *moving* people in frame are the opposition, the
+officials and the match on the neighbouring pitch. Motion cannot separate those
+and no threshold can. Its genuine benefit is a defined tail — the last pass is
+now entirely static, so stopping has a meaning.
+
+**Kit promotion is the lever that answers it**, and this is what the restage is
+for:
+
+| pass | lanes | ours (black) | white |
+|---|---|---|---|
+| 1 | 144 | **144** | 0 |
+| 2 | 144 | 118 | 25 |
+| 3 | 144 | 49 | 93 |
+| 4-7 | 335 | 2 | 327 |
+
+Page 1 goes from 7 of ours to 16 of 16 with **the same 767 lanes and nothing
+dropped**.
+
+**`--team` was rejected, though it would cut the work 59%** (767 → 313 lanes).
+The kit classifier stamps the yellow referee `black` and misjudges shaded
+figures, and the two errors do not cost the same: a misordered lane is asked
+about late, a filtered lane is never asked about at all. On an answer sheet the
+opposition lanes are precisely what measures this pipeline's largest known error
+— 878 of 1,595 names landing on the white kit — so filtering them buys a shorter
+job by deleting the measurement. Hence `--promote-kit`, which only reorders.
+
+Submitted 2026-08-09, `slurm/restage_u14g_gold.sh`. ~1 min per clip x 51, no GPU.
+The old slot map is kept at `runs/saints-u14g-full-30fps/heldout_gold.length-ranked/`
+— the clips regenerate in an hour but `tracklets.json` is the only key to any
+annotation already sitting in a Label Studio project.
+
+**Result.** _pending._
+
+**Next.** Annotate. Passes 1-2 of all nine stretches (18 tasks) hold 262 of the
+313 lanes in our kit; stopping there measures whether we *found* our players but
+not whether we named somebody else's.

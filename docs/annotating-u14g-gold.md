@@ -61,7 +61,17 @@ with 16 dropdowns and 9 players doesn't look broken.
 
 **The same 20 seconds comes round up to 7 times**, ringing different players each
 pass — the header says `PASS 3 of 7`. That is expected, not a duplicate task.
-Passes are ordered longest-lane-first, so pass 1 carries the most player-time.
+
+**Passes are ordered so that ours come first.** Pass 1 of every stretch is our
+black kit, all sixteen of them; pass 2 is mostly ours; from pass 4 on it is the
+opposition and the neighbouring pitch almost entirely. Within each group the
+busiest lanes come first — how far someone moved once the camera's own pan is
+subtracted, which is what separates a player from somebody standing on the
+touchline.
+
+Both are *orderings*. Every lane still gets a pass, including the ones the kit
+classifier got wrong, because it does get them wrong — it reads the yellow
+referee as black, and a shaded white shirt as black too.
 
 ## The decision, for each ringed player
 
@@ -94,14 +104,20 @@ from the outfield black.
 
 ## Working through it
 
-Pages are longest-lane-first, so **stopping early leaves a gap of known size**
-rather than a biased sample — which is the whole reason the clips are paged. If
-you only get through part of it, finish whole tasks and stop; a half-finished
-task is worse than an unstarted one.
+Pages are ordered, so **stopping early leaves a gap of known size** rather than a
+biased sample — which is the whole reason the clips are paged. If you only get
+through part of it, finish whole tasks and stop; a half-finished task is worse
+than an unstarted one.
 
-If 51 tasks is too many, do pass 1 and 2 of each of the 9 stretches first
-(18 tasks, most of the player-time), and tell me — the coverage is measurable
-and the analysis can state it honestly.
+If 51 tasks is too many, do **pass 1 and 2 of each of the 9 stretches** first —
+18 tasks, and they hold 262 of the 313 lanes wearing our kit. That is a coverage
+figure the analysis can state honestly: near-complete on our own squad, thin on
+the opposition.
+
+Be aware of what stopping there costs, though. The lanes on passes 4 to 7 are
+where a *wrong name* shows up — our biggest measured error is naming an opponent
+Gia — so a gold set that stops at pass 2 can measure whether we found our
+players but not whether we named somebody else's.
 
 ## When you're done
 

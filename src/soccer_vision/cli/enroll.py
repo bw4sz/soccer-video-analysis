@@ -291,9 +291,14 @@ def _dump_tracklets(run_dir: Path, tracks_path: Path, proxy_path: Path,
           f"({crops} crops behind them, {crops / max(1, total_lanes):.0f} per lane)")
     if getattr(args, "all_lanes", False):
         pages = max(w.get("n_pages", 1) for w in windows)
+        ranked_by = ("lane length" if getattr(args, "rank", "motion") == "length"
+                     else "motion, net of camera pan")
+        promoted = getattr(args, "promote_kit", None)
         print(f"  --all-lanes: every lane ringed, up to {pages} passes over the same "
-              f"footage. Pages are longest-lane-first, so stopping early leaves a "
-              f"gap you can measure rather than a biased sample.")
+              f"footage, so stopping early leaves a gap you can measure rather than "
+              f"a biased sample.")
+        print(f"  page order: {f'{promoted} kit first, then ' if promoted else ''}"
+              f"{ranked_by}")
 
     urls = {}
     for w in windows:
