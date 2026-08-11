@@ -67,7 +67,7 @@
 set -uo pipefail
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
 RUN_DIR="${1:-$REPO/runs/saints-u14g-full-30fps}"
@@ -91,9 +91,9 @@ echo "out:     $OUT_DIR"
 if [ "$RE_IDENTIFY" = "1" ]; then
   echo
   echo "=== 0. re-identify with current defaults (incl. --min-lane-seconds) ==="
-  export HF_HOME=/blue/ewhite/b.weinstein/.cache/huggingface
+  export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
   export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-  export TORCH_HOME=/blue/ewhite/b.weinstein/soccer-vision/torch_cache
+  export TORCH_HOME=/orange/ewhite/b.weinstein/soccer-vision/torch_cache
   [ -f "$RUN_DIR/tracks.unlinked.json" ] && \
     cp "$RUN_DIR/tracks.unlinked.json" "$RUN_DIR/tracks.json"
   "$PY" -m soccer_vision.cli.main identify --run "$RUN_DIR" --method reid \

@@ -30,7 +30,7 @@
 set -uo pipefail
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
 VIDEO="${1:?usage: sbatch slurm/submit_process.sh <video> <match_id> [profile] [config]}"
@@ -40,10 +40,10 @@ CONFIG="${4:-$REPO/examples/process_match.yaml}"   # detector config, not team-s
 RUN_DIR="$REPO/runs/$MATCH_ID"
 
 # RF-DETR weights are already in this cache, so the job loads fully offline.
-export HF_HOME=/blue/ewhite/b.weinstein/.cache/huggingface
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-export TORCH_HOME=/blue/ewhite/b.weinstein/soccer-vision/torch_cache
+export TORCH_HOME=/orange/ewhite/b.weinstein/soccer-vision/torch_cache
 # Unbuffered: SLURM redirects stdout to a file, so Python buffers it and a job
 # killed at the wall limit leaves a log showing only step 1 — indistinguishable
 # from a hang. Progress must land in the log as it happens (job 38162799).

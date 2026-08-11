@@ -24,14 +24,14 @@
 set -uo pipefail
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
 MATCH_ID="saints-u11-ovf-2026-07-19"
 RUN_DIR="$REPO/runs/$MATCH_ID"
 
-export HF_HOME=/blue/ewhite/b.weinstein/soccer-vision/hf_cache
-export TORCH_HOME=/blue/ewhite/b.weinstein/soccer-vision/torch_cache
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
+export TORCH_HOME=/orange/ewhite/b.weinstein/soccer-vision/torch_cache
 mkdir -p "$HF_HOME" "$TORCH_HOME"
 
 module load ffmpeg/4.3.1 2>/dev/null || module load ffmpeg 2>/dev/null || true

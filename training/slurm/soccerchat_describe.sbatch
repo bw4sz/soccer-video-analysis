@@ -23,14 +23,14 @@
 
 set -euo pipefail
 
-REPO=/blue/ewhite/b.weinstein/src/soccer-video-analysis
+REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
 cd "$REPO"
 
 RUN="${1:?usage: sbatch soccerchat_describe.sbatch <run-dir> [limit]}"
 LIMIT="${2:-0}"
 
-# Keep the big model cache on /blue, not the tiny home quota.
-export HF_HOME=/blue/ewhite/b.weinstein/soccer-vision/hf_cache
+# Keep the big model cache on /orange, not the tiny home quota.
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
 mkdir -p "$HF_HOME"
 
 # Install the soccerchat extra into the project venv if not already present.

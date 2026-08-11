@@ -16,12 +16,12 @@
 set -uo pipefail
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
 # julianzu9612/RFDETR-Soccernet is already cached here
 # and past their gates, so the job loads fully offline (no token, no network).
-export HF_HOME=/blue/ewhite/b.weinstein/.cache/huggingface
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 

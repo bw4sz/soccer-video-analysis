@@ -21,10 +21,10 @@ set -euo pipefail
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
 VENV_PY="$REPO/.venv/bin/python"
-FOOTPASS_PY=/blue/ewhite/b.weinstein/envs/footpass/bin/python
+FOOTPASS_PY=/orange/ewhite/b.weinstein/envs/footpass/bin/python
 VIDEO="$REPO/data/match-saints-16b-pre-mls-next-2026-04-26.mp4"
-CKPT=/blue/ewhite/b.weinstein/soccer-vision-data/footpass/runs/taad_03072026_1113/checkpoints/best_model.pt
-OUTROOT=/blue/ewhite/b.weinstein/soccer-vision-data/footpass/ours
+CKPT=/orange/ewhite/b.weinstein/soccer-vision-data/footpass/runs/taad_03072026_1113/checkpoints/best_model.pt
+OUTROOT=/orange/ewhite/b.weinstein/soccer-vision-data/footpass/ours
 H5="$OUTROOT/our_saints_ball.h5"
 KEY=our_saints_ball
 START=34466

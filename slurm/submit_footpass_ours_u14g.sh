@@ -53,11 +53,11 @@
 set -euo pipefail
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-VENV_PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python   # rfdetr + supervision
-FOOTPASS_PY=/blue/ewhite/b.weinstein/envs/footpass/bin/python    # torch 2.1 + decord for TAAD
+VENV_PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python   # rfdetr + supervision
+FOOTPASS_PY=/orange/ewhite/b.weinstein/envs/footpass/bin/python    # torch 2.1 + decord for TAAD
 VIDEO="$REPO/data/u14g_smoke180.mp4"
-CKPT=/blue/ewhite/b.weinstein/soccer-vision-data/footpass/runs/taad_03072026_1113/checkpoints/best_model.pt
-OUTROOT=/blue/ewhite/b.weinstein/soccer-vision-data/footpass/ours
+CKPT=/orange/ewhite/b.weinstein/soccer-vision-data/footpass/runs/taad_03072026_1113/checkpoints/best_model.pt
+OUTROOT=/orange/ewhite/b.weinstein/soccer-vision-data/footpass/ours
 TAG="${1:-u14g}"
 H5="$OUTROOT/our_u14g_rfdetr_${TAG}.h5"
 KEY="our_u14g_rfdetr_${TAG}"
@@ -65,7 +65,7 @@ START=2700
 NFRAMES=600
 
 export PYTHONUNBUFFERED=1   # SLURM redirects stdout to a file; buffering reads as a hang
-export HF_HOME=/blue/ewhite/b.weinstein/.cache/huggingface
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 

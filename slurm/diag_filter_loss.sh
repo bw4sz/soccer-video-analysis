@@ -12,9 +12,9 @@
 #SBATCH --error=/home/b.weinstein/logs/sv_filt_diag_%j.err
 set -uo pipefail
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
-export HF_HOME=/blue/ewhite/b.weinstein/.cache/huggingface
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export PYTHONPATH="$REPO/src:${PYTHONPATH:-}"

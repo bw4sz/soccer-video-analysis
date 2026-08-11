@@ -17,10 +17,10 @@
 # Single-GPU: feature-based training is lightweight.
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
-DATA_DIR=/blue/ewhite/b.weinstein/soccer-vision-data/soccernet
+DATA_DIR=/orange/ewhite/b.weinstein/soccer-vision-data/soccernet
 
 # Download data if not present
 if [ -z "$(ls -A "$DATA_DIR" 2>/dev/null)" ]; then
@@ -32,6 +32,6 @@ fi
 
 "$PY" training/sn_spotting/train_action_spotting.py \
   --data-dir "$DATA_DIR" \
-  --output-dir /blue/ewhite/b.weinstein/soccer-vision-data/training/sn_spotting/runs \
+  --output-dir /orange/ewhite/b.weinstein/soccer-vision-data/training/sn_spotting/runs \
   --features baidu \
   --epochs 50

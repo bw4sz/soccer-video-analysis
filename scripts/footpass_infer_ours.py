@@ -18,10 +18,10 @@ NOTE: this differs from the (buggy) CLASSES list in footpass_visualize.py — us
 this one.
 
 Usage (footpass env, GPU — the model's forward hardcodes .cuda()):
-    /blue/ewhite/b.weinstein/envs/footpass/bin/python scripts/footpass_infer_ours.py \
-        --h5 /blue/.../our_saints_setpiece.h5 --game-key our_saints_setpiece \
-        --checkpoint /blue/.../runs/taad_03072026_1113/checkpoints/best_model.pt \
-        --out-dir /blue/.../taad_ours_smoke
+    /orange/ewhite/b.weinstein/envs/footpass/bin/python scripts/footpass_infer_ours.py \
+        --h5 /orange/.../our_saints_setpiece.h5 --game-key our_saints_setpiece \
+        --checkpoint /orange/.../runs/taad_03072026_1113/checkpoints/best_model.pt \
+        --out-dir /orange/.../taad_ours_smoke
 """
 
 from __future__ import annotations

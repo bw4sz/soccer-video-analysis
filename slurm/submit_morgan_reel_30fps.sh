@@ -55,7 +55,7 @@
 set -uo pipefail
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
 RUN_DIR="${1:-/orange/ewhite/b.weinstein/soccer-video-analysis/runs/saints-u14g-full-30fps}"
@@ -63,10 +63,10 @@ GALLERY="${2:-/orange/ewhite/b.weinstein/soccer-video-analysis/galleries/saints-
 PROFILE="${3:-/orange/ewhite/b.weinstein/soccer-video-analysis/examples/profiles/saints-u14g.yaml}"
 KIT="${4:-black}"
 
-export HF_HOME=/blue/ewhite/b.weinstein/.cache/huggingface
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-export TORCH_HOME=/blue/ewhite/b.weinstein/soccer-vision/torch_cache
+export TORCH_HOME=/orange/ewhite/b.weinstein/soccer-vision/torch_cache
 export PYTHONUNBUFFERED=1
 
 module load ffmpeg/4.3.1 2>/dev/null || module load ffmpeg 2>/dev/null || true

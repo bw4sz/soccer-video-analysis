@@ -35,7 +35,7 @@ at 352x640. The manifest records WxH so the inference adapter can rescale.
 Usage (short CPU smoke):
     python scripts/footpass_extract_tracklets.py \
         --video data/match-...mp4 --start-frame 18000 --num-frames 150 --stride 1 \
-        --game-key our_match_01_H1 --out-h5 /blue/.../our_tracklets.h5 --preview preview.mp4
+        --game-key our_match_01_H1 --out-h5 /orange/.../our_tracklets.h5 --preview preview.mp4
 Full match should run on GPU (--device cuda) via SLURM.
 """
 

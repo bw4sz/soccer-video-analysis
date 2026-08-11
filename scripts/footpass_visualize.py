@@ -41,7 +41,7 @@ TEAM_COLOR = sv.ColorPalette(colors=[sv.Color(56, 130, 246), sv.Color(239, 68, 6
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-root", default="/blue/ewhite/b.weinstein/soccer-vision-data/footpass")
+    ap.add_argument("--data-root", default="/orange/ewhite/b.weinstein/soccer-vision-data/footpass")
     ap.add_argument("--game", required=True, help="h5 key, e.g. game_18_H1")
     ap.add_argument("--split", default="val", choices=["train", "val"])
     ap.add_argument("--start-frame", type=int, required=True)

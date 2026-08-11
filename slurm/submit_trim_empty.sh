@@ -28,7 +28,7 @@ set -uo pipefail
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
 # Base env already carries torch(+CUDA), rfdetr and ffmpeg deps (run_pipeline uses it).
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
 VIDEO="${1:-$REPO/data/match-saints-16b-pre-mls-next-2026-04-26.mp4}"
@@ -42,7 +42,7 @@ SAMPLE_FPS="${2:-30}"
 MIN_DEAD="${3:-5}"       # cut dead spans longer than this many seconds
 
 # Keep the RF-DETR weight cache off the home quota (shared with other jobs).
-export HF_HOME=/blue/ewhite/b.weinstein/soccer-vision/hf_cache
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
 mkdir -p "$HF_HOME"
 
 module load ffmpeg/4.3.1 2>/dev/null || module load ffmpeg 2>/dev/null || true

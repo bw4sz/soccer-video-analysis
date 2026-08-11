@@ -28,9 +28,9 @@ VIDEO="${1:-$REPO/data/match-saints-16b-pre-mls-next-2026-04-26.mp4}"
 N="${2:-6}"
 
 # Cached weights live here (already downloaded); keep them off the home quota.
-export HF_HOME=/blue/ewhite/b.weinstein/soccer-vision/hf_cache
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
 # Build/run in an ISOLATED env so the dev .venv (base/gpu extras) is untouched.
-export UV_PROJECT_ENVIRONMENT=/blue/ewhite/b.weinstein/soccer-vision/venv_soccerchat
+export UV_PROJECT_ENVIRONMENT=/orange/ewhite/b.weinstein/soccer-vision/venv_soccerchat
 
 module load ffmpeg/4.3.1 2>/dev/null || module load ffmpeg 2>/dev/null || true
 

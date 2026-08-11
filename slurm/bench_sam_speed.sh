@@ -16,11 +16,11 @@
 set -uo pipefail
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
-export HF_HOME=/blue/ewhite/b.weinstein/soccer-vision/hf_cache
-export TORCH_HOME=/blue/ewhite/b.weinstein/soccer-vision/torch_cache
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
+export TORCH_HOME=/orange/ewhite/b.weinstein/soccer-vision/torch_cache
 
 module load ffmpeg/4.3.1 2>/dev/null || module load ffmpeg 2>/dev/null || true
 

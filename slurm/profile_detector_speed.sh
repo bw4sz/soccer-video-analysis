@@ -16,13 +16,13 @@
 set -uo pipefail
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
-export HF_HOME=/blue/ewhite/b.weinstein/.cache/huggingface
+export HF_HOME=/orange/ewhite/b.weinstein/soccer-vision/hf_cache
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-export TORCH_HOME=/blue/ewhite/b.weinstein/soccer-vision/torch_cache
+export TORCH_HOME=/orange/ewhite/b.weinstein/soccer-vision/torch_cache
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTHONUNBUFFERED=1
 

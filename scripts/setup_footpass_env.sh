@@ -8,7 +8,7 @@
 # Then: sbatch training/slurm/train_footpass_taad.sbatch  (uses $FOOTPASS_PY).
 set -euo pipefail
 
-ENV_DIR=${FOOTPASS_ENV:-/blue/ewhite/b.weinstein/envs/footpass}
+ENV_DIR=${FOOTPASS_ENV:-/orange/ewhite/b.weinstein/envs/footpass}
 UV=${UV:-uv}
 
 echo "Creating $ENV_DIR (python 3.11)..."

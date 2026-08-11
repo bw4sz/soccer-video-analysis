@@ -36,7 +36,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 FOOTPASS = REPO / "vendor" / "FOOTPASS"
 HF_REPO = "SoccerNet/SN-PCBAS-2026"
-DEFAULT_DEST = Path("/blue/ewhite/b.weinstein/soccer-vision-data/footpass")
+DEFAULT_DEST = Path("/orange/ewhite/b.weinstein/soccer-vision-data/footpass")
 
 # HF filenames per split. fullHD TRAIN is split into 5 parts.
 VIDEO_FILES = {
@@ -125,7 +125,7 @@ def main() -> int:
         sys.exit(
             "No HuggingFace token found. Authenticate first (the `.venv/bin/hf` on "
             "PATH is broken — use the blue env or $HF_TOKEN):\n"
-            "  /blue/ewhite/b.weinstein/envs/soccer-vision/bin/hf auth login\n"
+            "  /orange/ewhite/b.weinstein/envs/soccer-vision/bin/hf auth login\n"
             "  # or:  export HF_TOKEN=hf_xxx\n"
             f"and accept terms at https://huggingface.co/datasets/{HF_REPO}"
         )

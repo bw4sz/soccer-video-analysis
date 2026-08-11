@@ -61,7 +61,7 @@ videos_fullHD_{TRAIN_01..05,VAL,CHALLENGE}.zip  (large; TRAIN split in 5 parts)
 > (`huggingface_hub` 1.13 CLI vs typer mismatch). Use the **blue env's** working
 > CLI, or just export a token:
 > ```bash
-> /blue/ewhite/b.weinstein/envs/soccer-vision/bin/hf auth login   # writes ~/.cache/huggingface/token
+> /orange/ewhite/b.weinstein/envs/soccer-vision/bin/hf auth login   # writes ~/.cache/huggingface/token
 > # or, no CLI:
 > export HF_TOKEN=hf_xxxxxxxx
 > ```
@@ -81,10 +81,10 @@ videos_fullHD_{TRAIN_01..05,VAL,CHALLENGE}.zip  (large; TRAIN split in 5 parts)
 
 **Fetch (this repo)** — use the blue-env python (has `huggingface_hub` 1.21):
 ```bash
-BLUE=/blue/ewhite/b.weinstein/envs/soccer-vision/bin
+BLUE=/orange/ewhite/b.weinstein/envs/soccer-vision/bin
 $BLUE/hf auth login                                   # once
 $BLUE/python scripts/footpass_fetch_data.py           # train+val, 352x640, into
-                                                      # /blue/.../soccer-vision-data/footpass
+                                                      # /orange/.../soccer-vision-data/footpass
 $BLUE/python scripts/footpass_fetch_data.py --resolution fullHD --splits train val challenge
 $BLUE/python scripts/footpass_fetch_data.py --list-only   # preview file list (no token needed)
 ```
@@ -100,7 +100,7 @@ Expected layout the TAAD dataloader (`utils/TAAD_Dataset.py`) reads:
 ├── videos/game_<n>.mp4                 # per-match (both halves in one file)
 └── playbyplay_GT/playbyplay_{train,val}.json
 ```
-> **Verified** (`/blue/.../soccer-vision-data/footpass`): filenames match; h5 keys
+> **Verified** (`/orange/.../soccer-vision-data/footpass`): filenames match; h5 keys
 > are per-half `game_<n>_H<half>` (96 train / 6 val) and all resolve; videos are
 > per-match and the loader derives them via `curr_key.split('_')[1]` →
 > `game_<n>.mp4`. Dataset builds **6811 train / 2358 val** samples. Note the ROI
@@ -122,7 +122,7 @@ first `torch.hub.load`.
 
 ```bash
 cd vendor/FOOTPASS
-python train_TAAD_Baseline.py --data_root /blue/ewhite/b.weinstein/soccer-vision-data/footpass \
+python train_TAAD_Baseline.py --data_root /orange/ewhite/b.weinstein/soccer-vision-data/footpass \
     --run_path runs/taad_$(date +%d%m%Y) --epochs 20 --batch_size 6
 # then optionally: train_GNN.py / (run_TAAD_on_matches → NPpreds2HDF5 → train_DST)
 ```
@@ -144,7 +144,7 @@ python scripts/footpass_visualize.py --game game_18_H1 --split val \
 ```
 
 Ground-truth demo rendered at
-`/blue/.../soccer-vision-data/footpass/viz/footpass_gt_game18_632s.mp4`. Same tool
+`/orange/.../soccer-vision-data/footpass/viz/footpass_gt_game18_632s.mp4`. Same tool
 takes model predictions once trained (swap CLS with predicted class per
 tracklet). Reminder: **team + jersey come from the tracklets, not TAAD** — TAAD
 only predicts the action class.
@@ -163,7 +163,7 @@ footage we must first produce tactical data for our video. Two levels:
 ByteTrack + `TeamClassifier` and writes the FOOTPASS h5 schema + a manifest.
 Smoke-tested on our Saints match (frame 57000, ~1903s): 16 tracks, teams
 clustered black/green; preview at
-`/blue/.../footpass/our_footage/preview_smoke.mp4`. Runs on CPU (slow) — use
+`/orange/.../footpass/our_footage/preview_smoke.mp4`. Runs on CPU (slow) — use
 `--device cuda` via SLURM for full matches. **Observed quality gaps to fix:**
 sideline spectators get detected as players (apply
 `detection/field_filter.filter_spectators` / field-hull), team colour clustering

@@ -25,8 +25,8 @@
 set -euo pipefail
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
 FOOTPASS="$REPO/vendor/FOOTPASS"
-DATA_ROOT=/blue/ewhite/b.weinstein/soccer-vision-data/footpass
-FOOTPASS_PY=${FOOTPASS_PY:-/blue/ewhite/b.weinstein/envs/footpass/bin/python}
+DATA_ROOT=/orange/ewhite/b.weinstein/soccer-vision-data/footpass
+FOOTPASS_PY=${FOOTPASS_PY:-/orange/ewhite/b.weinstein/envs/footpass/bin/python}
 
 if [ ! -f "$DATA_ROOT/data/train_tactical_data.h5" ]; then
   echo "Missing $DATA_ROOT/data/train_tactical_data.h5 — run scripts/footpass_fetch_data.py first." >&2

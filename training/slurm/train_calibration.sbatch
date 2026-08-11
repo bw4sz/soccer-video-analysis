@@ -17,11 +17,11 @@
 # Single-GPU job: DeepLabv3-ResNet50 is ~40M params, fits easily on one L4.
 
 REPO=/orange/ewhite/b.weinstein/soccer-video-analysis
-PY=/blue/ewhite/b.weinstein/envs/soccer-vision/bin/python
+PY=/orange/ewhite/b.weinstein/envs/soccer-vision/bin/python
 cd "$REPO"
 
-DATA_DIR=/blue/ewhite/b.weinstein/soccer-vision-data/sn-calib
-PRETRAINED=/blue/ewhite/b.weinstein/soccer-vision-data/weights/deeplabv3_sn.pth
+DATA_DIR=/orange/ewhite/b.weinstein/soccer-vision-data/sn-calib
+PRETRAINED=/orange/ewhite/b.weinstein/soccer-vision-data/weights/deeplabv3_sn.pth
 
 # Download pretrained weights if not present
 if [ ! -f "$PRETRAINED" ]; then
@@ -42,7 +42,7 @@ fi
 "$PY" training/sn_calib/train.py \
   --data-dir "$DATA_DIR" \
   --pretrained "$PRETRAINED" \
-  --output-dir /blue/ewhite/b.weinstein/soccer-vision-data/training/sn_calib/runs \
+  --output-dir /orange/ewhite/b.weinstein/soccer-vision-data/training/sn_calib/runs \
   --epochs 30 \
   --lr 1e-4 \
   --batch-size 8 \

@@ -45,7 +45,7 @@ import cv2
 import h5py
 import numpy as np
 
-DATA_ROOT = "/blue/ewhite/b.weinstein/soccer-vision-data/footpass"
+DATA_ROOT = "/orange/ewhite/b.weinstein/soccer-vision-data/footpass"
 VAL_H5 = f"{DATA_ROOT}/data/val_tactical_data.h5"
 VIDEO_DIR = f"{DATA_ROOT}/videos"
 OUT_DIR = "/orange/ewhite/b.weinstein/soccer-video-analysis/runs/footpass_detector_eval"

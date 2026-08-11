@@ -151,7 +151,7 @@ Why: Resubmit after job 36260512's epoch-3 CUDA OOM. Root cause isn't a leak: th
   and full backprop through X3D-S needs much more activation memory on the 22GB L4
   — batch_size=6 no longer fits once that happens. Halved to batch_size=3 (AMP
   fp16 already in use, so batch size is the only lever left); run dir
-  `taad_$(date)` under `/blue/.../footpass/runs/`.
+  `taad_$(date)` under `/orange/.../footpass/runs/`.
 Result: COMPLETED (exit 0) 2026-07-03 20:56, 9h43m, all 20 epochs. The batch_size=3
   fix held — cleared the epoch-3 backbone-unfreeze boundary with no OOM. Logs to
   TensorBoard (runs/Jul03_11-13-14_c0606a-s22.ufhpc), NOT Comet. Checkpoints in
@@ -824,10 +824,10 @@ Next: nothing argues for revisiting the default. If SAM3 is wanted for a domain-
   (red=light kit, blue=dark), so the *split* works and only the colour *names*
   are wrong — `footpass_extract_tracklets.py` calls `TeamClassifier` directly
   and so misses the turf-relative lightness fix that `process` got in 59c396a.
-**Artifacts:** `/blue/.../footpass/ours/taad_smoke_u14g/` (predictions.json,
+**Artifacts:** `/orange/.../footpass/ours/taad_smoke_u14g/` (predictions.json,
   annotated.mp4, 8 keyframes), tracklets
-  `/blue/.../footpass/ours/our_u14g_rfdetr_u14g.h5` (+ manifest),
-  preview `/blue/.../footpass/ours/tracking_preview_u14g.mp4`.
+  `/orange/.../footpass/ours/our_u14g_rfdetr_u14g.h5` (+ manifest),
+  preview `/orange/.../footpass/ours/tracking_preview_u14g.mp4`.
 **Next:** Do NOT size the annotation budget off the XbotGo runs — they measured
   a failure mode this camera does not have. Two cheap things before annotating:
   (a) re-run this window with the sideline/bench figures excluded, to see how
