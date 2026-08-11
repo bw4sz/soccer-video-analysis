@@ -4,6 +4,36 @@ Two pipelines are available. Use **Pipeline A** for quick visual review or when
 YOLO detection is unreliable. Use **Pipeline B** when you want automated
 candidate detection and only need Claude for final verification.
 
+## Storage — everything lives on /orange, nothing goes on /blue
+
+`/blue` is the lab's high-value shared storage and this is a side project, so it
+has no claim on that space. All 182G of it moved to `/orange` on 2026-08-11,
+when blue hit 0 bytes free. **Don't put soccer videos, runs, datasets, caches or
+envs back on blue, however convenient.**
+
+| What | Where |
+|---|---|
+| repo | `/orange/ewhite/b.weinstein/soccer-video-analysis/` |
+| datasets (SoccerNet, FOOTPASS, sn-calib) | `/orange/ewhite/b.weinstein/soccer-vision-data/` |
+| model caches, weights | `/orange/ewhite/b.weinstein/soccer-vision/` |
+| uv venvs | `/orange/ewhite/b.weinstein/envs/{soccer-vision,footpass}` |
+
+`HF_HOME` is one path for the whole project now —
+`/orange/ewhite/b.weinstein/soccer-vision/hf_cache` — where the sbatch scripts
+used to be split between that and a *shared* lab cache under
+`/blue/.../.cache/huggingface`. **That shared cache is still on blue and must
+stay there**: it holds DeepForest, MillionTrees and CanopyRS weights for other
+projects. Same for the uv caches. Don't sweep them into a future cleanup.
+
+A path in an old doc, log or job-ledger entry pointing at `/blue/...soccer...`
+is stale — the data is at the same path with `/orange` substituted.
+
+**Searching these trees: `grep -r` here is a wrapper that honours `.gitignore`.**
+uv venvs ship a `.gitignore` containing `*`, so `grep -r` over a venv, `runs/`,
+`data/` or `galleries/` returns **zero hits no matter what is there**. Use
+`command grep` when searching anything gitignored, or you will get a confident
+wrong answer.
+
 ## SLURM job ledger
 
 `slurm/job_ledger.md` tracks every SLURM job submitted for this project (why it
