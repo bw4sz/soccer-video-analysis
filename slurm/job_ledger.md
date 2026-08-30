@@ -1962,6 +1962,38 @@ negative class), and test CSLS on the assignment distribution rather than on the
 
 ---
 
+## 38794159 — `identify` with one-player-one-lane assignment (2026-08-06)
+
+**Why.** First production run of the naming-assignment constraint
+(`soccer_vision.identify.assign`, default on since 2026-08-04) against
+`runs/saints-u14g-full-30fps`, combined for the first time with the kit gate,
+the `--min-lane-seconds 1.0` length gate, and the negative-class gallery
+(`galleries/saints-u14g.fullmatch-neg64.npz`) all together. Baseline
+`jerseys.json` saved to `jerseys.pre-assign.json` first.
+
+**Result.** COMPLETED, exit=0, 4m24s wall (01:14:26–01:18:50 EDT). Of 26,211
+tracks: kit gate excluded 7,360 on another kit (7,519 ours, 11,332 no-kit
+stayed eligible); length gate excluded 14,975 lanes under 1s (11,236 eligible).
+Gallery: 12 players / 684 exemplars plus a 64-exemplar 'not ours' class. Re-id
+matched 94/5,921 eligible tracks (min_similarity 0.5, min_margin 0.05); 546
+lanes matched 'not ours' and were rejected. 12 of the 94 names were only
+recoverable because the assignment constraint freed up a margin that a
+still-available runner-up would otherwise have lost. Concurrency: scoring each
+lane alone (no assignment) would have named 100 lanes with 4 names each
+landing on 2+ concurrent lanes (worst case 2 overlapping); the assignment
+version named 94 lanes with 0 names ever concurrent (worst case 1) — the
+mutual-exclusion collision (issue #28) is gone on this run by construction.
+Per-player named-lane counts, before → after: Gia Olson 23→17, Izabelle
+Scott-Snow 16→13, Quinn Perrin 13→14, Eveleigh Bottorff 12→11, Leire Cabral
+10→10, Riley McNicholas 8→8, Catherine Conroy 7→7, Morrighan Wright 4→4, Iris
+McDonald 3→4, Ila Sheets 2→2, Morgan Lobey 2→4.
+
+**Next.** Not stated in the job's own output. `jerseys.json` and
+`reid_scores.npz` are both in `runs/saints-u14g-full-30fps/` for re-solving at
+another margin without a GPU.
+
+---
+
 ## 38794172 — `process` the U11 XbotGo match at 30 fps
 
 **Why.** Between-video generalization needs a second camera with a real run
