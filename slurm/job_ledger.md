@@ -1639,7 +1639,14 @@ naming with current defaults first (needs a GPU partition, ~1 h).
 Render cost is small: a haloed reel runs sub-realtime, and the per-invocation
 cost is dominated by loading the 336 MB tracks.json (~60 s each).
 
-**Result:** _(pending)_
+**Result:** COMPLETED, 47m33s (20:35:51–21:23:24 EDT). Team reel: 694 spans
+merged into 10 clips, 59.1 min. 11 of 13 players got a reel (2.0–10.1 min each);
+Joelle Fontenot got none (`No track resolved to Joelle Fontenot in jerseys.json`
+— zero gallery exemplars) and Lainey Jarvis got none (`No matching events found`
+— her one named lane never entered the on-ball radius). Matches the pre-submit
+census exactly. These per-reel clip boundaries were superseded three days later
+by job 38723488, which fixed the sub-frame span floor and the multi-anchor halo
+bug and re-rendered all 14 files in place.
 
 Outputs: `runs/saints-u14g-full-30fps/reels/reel_team_black.mp4` and
 `reels/reel_<full_name>.mp4` per player.
@@ -1806,7 +1813,15 @@ All ten on-pitch rejections at broad/64 were rendered and checked by eye
 *near* touchline, plus a bag and a folding chair, that the foot-y proxy mis-binned.
 So 2.4% is an upper bound on cost, not an estimate.
 
-**Result.** _pending_
+**Result.** COMPLETED, exit=0, 4m03s (19:29:32–19:33:35 EDT). Whole-match run at
+broad/64: of 5,921 eligible tracks, re-id named 100 (baseline before this class
+was 2,311) and rejected 533 as `not ours` (345 of those above 0.40H, i.e.
+spectator-rich). Named lanes dropped 2,311 → 100 (lost 2,215, kept 96, gained 4);
+of the lanes that lost their name, 295/2,215 sat above 0.40H, against 5/96 of the
+lanes that kept one. Per-player named-lane counts collapsed by roughly an order
+of magnitude across the board (e.g. Catherine Conroy 670→7, Gia Olson 638→23,
+Izabelle Scott-Snow 352→16) — consistent with the whole-match number landing in
+the same direction as the windowed sweep above, not just the small-n sample.
 
 **Follow-up.** Baseline kept at `jerseys.pre-negclass.json`; diff with
 `slurm/compare_negclass_run.py`. Watch whether the whole-match number matches the
@@ -2008,7 +2023,12 @@ Submitted 2026-08-05 with the default config (`sample_interval: 1`), profile
 `saints-u11.yaml`. Feeds `heldout.yaml` block `u11-xbotgo-2026-07-19-secondhalf`
 and research record 0001.
 
-**Result.** _pending — queued behind QOSGrpGRES._
+**Result.** COMPLETED, exit=0, 59m03s (01:15:25–02:14:28 EDT). 55,354 frames
+(30.8 min) at 30 fps. 10,968 tracks, 8,270 kit-stamped (turf-relative lightness
+split, 8,261/8,270; rest by colour). Ball track: 33,109/55,354 samples visible
+(59.8%), flicker gate rejected 8,597/33,231 raw detections (25.9%). 0 events (no
+action engine configured, as expected — on-ball spans are the selection
+pathway). Wrote `runs/saints-u11-xbotgo-30fps/{ball_track,stats,annotations}.json`.
 
 **Next.** `sbatch slurm/stage_u11_gold.sh` to render both Label Studio projects
 (enrolment windows over 0-900 s, gold set over 945-1845 s).
